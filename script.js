@@ -1243,15 +1243,17 @@
       allFiles.forEach((f) => {
         const opened = viewedNames.has(f.name);
         const row = el("div", "progress-file-row");
+        // Deliberately a plain <span>, not a button — this list is
+        // for seeing what's left, not a shortcut to skip straight to
+        // a file bypassing the normal subject/folder browsing.
         row.innerHTML = `
           <span class="progress-file-row__status ${opened ? "progress-file-row__status--opened" : ""}" title="${opened ? "Opened" : "Not opened yet"}">${opened ? "\u25CF" : "\u25CB"}</span>
-          <button type="button" class="progress-file-row__name">${f.name}</button>
+          <span class="progress-file-row__name">${f.name}</span>
           <span class="progress-file-row__folder">${f.folderName}</span>
           <label class="progress-file-row__check">
             <input type="checkbox" ${getRevisedSet().has(f.path) ? "checked" : ""}>
             Revised
           </label>`;
-        row.querySelector(".progress-file-row__name").addEventListener("click", () => openViewer(f.path, f.name));
         row.querySelector('input[type="checkbox"]').addEventListener("change", (e) => {
           setRevised(f.path, e.target.checked);
           paintHeader();
@@ -1327,6 +1329,28 @@
 
   // ── Subjects ───────────────────────────────────────────
   function renderSubjects() {
+    // Big, prominent summary — the small nav icon was easy to miss;
+    // this sits right up top so progress is the first thing seen on
+    // the home screen. Percentage is revised-based, same metric as
+    // the full My Progress page, so the two numbers always agree.
+    const allFiles = SITE_CONFIG.subjects.flatMap((s) => s.subfolders.flatMap((f) => f.files));
+    const totalFiles = allFiles.length;
+    if (totalFiles && currentName) {
+      const revisedSet = getRevisedSet();
+      const revisedCount = allFiles.filter((f) => revisedSet.has(f.path)).length;
+      const pct = Math.round((revisedCount / totalFiles) * 100);
+
+      const banner = el("button", "progress-banner fade-up");
+      banner.innerHTML = `
+        <div class="progress-banner__text">
+          <span class="progress-banner__label">My Progress</span>
+          <span class="progress-banner__stat">${revisedCount}/${totalFiles} chapters revised</span>
+        </div>
+        <div class="progress-banner__pct">${pct}%</div>`;
+      banner.addEventListener("click", () => nav("progress"));
+      content.appendChild(banner);
+    }
+
     const recent = getRecentFiles();
     if (recent.length) {
       const rLabel = el("p", "section-label", "Continue where you left off");
