@@ -621,6 +621,153 @@ html.fonts-ready .gate__spine {
 
 .recent-chip:hover { border-color: var(--brass-dim); color: var(--paper); transform: translateY(-1px); }
 .recent-chip svg { width: 14px; height: 14px; flex-shrink: 0; }
+.recent-chip--bookmark { color: var(--brass-dim); }
+.recent-chip--bookmark:hover { color: var(--brass); }
+
+/* ── My Progress page ─────────────────────────────────── */
+.progress-subject {
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 18px 20px;
+  margin-bottom: 14px;
+}
+
+.progress-subject__head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.progress-subject__icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--subject-color, var(--brass));
+}
+.progress-subject__icon svg { width: 18px; height: 18px; }
+
+.progress-subject__title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.progress-subject__title h3 {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--paper);
+  margin: 0;
+}
+.progress-subject__stat {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--paper-faint);
+}
+
+.progress-subject__pct {
+  font-family: var(--sans);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--subject-color, var(--brass));
+  flex-shrink: 0;
+}
+
+.progress-bar {
+  margin-top: 12px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ink);
+  overflow: hidden;
+}
+.progress-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--subject-color, var(--brass));
+  width: 0%;
+  transition: width 0.4s var(--ease-soft);
+}
+
+.progress-subject__toggle {
+  margin-top: 12px;
+  background: none;
+  border: none;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--paper-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  padding: 0;
+}
+.progress-subject__toggle:hover { color: var(--paper); }
+
+.progress-file-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.progress-file-list.hidden { display: none; }
+
+.progress-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  font-family: var(--sans);
+  font-size: 13px;
+}
+
+.progress-file-row__status {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  color: var(--paper-faint);
+  font-size: 10px;
+}
+.progress-file-row__status--opened { color: var(--brass); }
+
+.progress-file-row__name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--paper-dim);
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-file-row__name:hover { color: var(--paper); text-decoration: underline; }
+
+.progress-file-row__folder {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--paper-faint);
+}
+
+.progress-file-row__check {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--paper-faint);
+  cursor: pointer;
+}
+.progress-file-row__check input { accent-color: var(--brass); cursor: pointer; }
 
 .recent-chip__name {
   max-width: 220px;
@@ -805,6 +952,30 @@ html.fonts-ready .gate__spine {
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.3);
 }
 .file-card:active .file-card__preview { transform: translateY(-1px) scale(0.98); }
+
+.file-card__bookmark {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--paper-faint);
+  background: rgba(18, 18, 24, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: color 0.2s var(--ease-soft), border-color 0.2s var(--ease-soft), transform 0.15s var(--ease-spring);
+}
+.file-card__bookmark:hover { color: var(--brass); border-color: var(--brass-dim); }
+.file-card__bookmark:active { transform: scale(0.88); }
+.file-card__bookmark--active { color: var(--brass); }
+.file-card__bookmark--active svg { fill: currentColor; }
 
 .file-card__preview canvas {
   width: 100%;
@@ -1472,9 +1643,17 @@ html.fonts-ready .gate__spine {
   width: 100%;
   margin: 0 auto;
   padding: 14px 24px 0;
+  /* 4 tabs at this padding don't fit a narrow phone screen — scroll
+     horizontally rather than wrap (wrapping a tab bar reads as broken
+     layout) or silently clip (which just hides "Content" with no
+     indication it's there). */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.admin__tabs::-webkit-scrollbar { display: none; }
 
 .admin__tab {
+  flex-shrink: 0;
   font-family: var(--sans);
   font-size: 13px;
   font-weight: 600;
@@ -1638,6 +1817,21 @@ html.fonts-ready .gate__spine {
   color: var(--paper);
   margin-bottom: 20px;
 }
+
+.confirm-box__input {
+  display: block;
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  margin: -8px 0 20px;
+}
+
+.confirm-box__input:focus { outline: none; border-color: var(--brass-dim); }
 
 .confirm-box__actions {
   display: flex;

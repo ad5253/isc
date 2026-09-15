@@ -98,6 +98,9 @@
                     </a>
                     <span class="nav__greeting" id="greeting"></span>
                     <span class="nav__studytime" id="studyTime" title="Time studied today"></span>
+                    <button class="nav__contact" id="progressBtn" aria-label="My Progress" title="My Progress">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>
+                    </button>
                     <div class="nav__search">
                         <input type="text" id="searchInput" class="nav__search-input" placeholder="Search files…" autocomplete="off">
                     </div>
@@ -214,6 +217,8 @@
                     <div class="admin__toolbar">
                         <input type="text" id="adminAddNameInput" class="admin__toolbar-input" placeholder="Add a name directly…">
                         <button type="button" id="adminAddNameBtn" class="admin__nav-btn">Add</button>
+                        <button type="button" id="adminApproveSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Approve selected (0)</button>
+                        <button type="button" id="adminRejectSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Reject selected (0)</button>
                     </div>
                     <div id="adminApprovalList" class="admin__presence-list"></div>
                 </section>
@@ -223,6 +228,7 @@
                     <div class="admin__toolbar">
                         <input type="text" id="adminRosterSearch" class="admin__toolbar-input" placeholder="Search by name…">
                         <button type="button" id="adminMergeBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Merge selected (0)</button>
+                        <button type="button" id="adminSuspendSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Suspend selected (0)</button>
                         <button type="button" id="adminExportBtn" class="admin__nav-btn admin__nav-btn--ghost">Export CSV</button>
                     </div>
                     <div id="adminRosterList" class="admin__roster-list"></div>
@@ -272,6 +278,7 @@
     <div id="confirmOverlay" class="confirm-overlay hidden">
         <div class="confirm-box">
             <p id="confirmMessage" class="confirm-box__message"></p>
+            <input type="text" id="confirmInput" class="confirm-box__input hidden">
             <div class="confirm-box__actions">
                 <button type="button" id="confirmCancelBtn" class="admin__nav-btn admin__nav-btn--ghost">Cancel</button>
                 <button type="button" id="confirmOkBtn" class="admin__nav-btn">Confirm</button>

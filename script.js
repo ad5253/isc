@@ -46,7 +46,6 @@
   function makePdfLoadingTask(path) {
     const task = { onProgress: null };
     task.promise = ensurePdfToken().then((token) => {
-      if (!token) throw new Error("no_pdf_token");
       const realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
       realTask.onProgress = (p) => { if (task.onProgress) task.onProgress(p); };
       return realTask.promise;
@@ -122,7 +121,8 @@
     chemistry: `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h5"/><path d="M10.3 2.5v6.4L4.6 18.8a1.6 1.6 0 0 0 1.4 2.4h12a1.6 1.6 0 0 0 1.4-2.4L13.7 8.9V2.5"/><path d="M7.6 15.3h8.8"/></svg>`,
     folder: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
     doc: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
-    tray: `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 3h6l2-3h4"/><path d="M5 12 3.5 6.4A1.6 1.6 0 0 1 5 4.5h14a1.6 1.6 0 0 1 1.5 1.9L19 12v5.4A1.6 1.6 0 0 1 17.4 19H6.6A1.6 1.6 0 0 1 5 17.4z"/></svg>`
+    tray: `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 3h6l2-3h4"/><path d="M5 12 3.5 6.4A1.6 1.6 0 0 1 5 4.5h14a1.6 1.6 0 0 1 1.5 1.9L19 12v5.4A1.6 1.6 0 0 1 17.4 19H6.6A1.6 1.6 0 0 1 5 17.4z"/></svg>`,
+    star: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2.5 15.1 9 22 10 17 15 18.2 22 12 18.6 5.8 22 7 15 2 10 8.9 9"/></svg>`
   };
 
   // ── DOM refs ───────────────────────────────────────────
@@ -133,6 +133,7 @@
   const nameInput   = $("#nameInput");
   const app         = $("#app");
   const homeBtn     = $("#homeBtn");
+  const progressBtn = $("#progressBtn");
   const greeting    = $("#greeting");
   const logoutBtn   = $("#logoutBtn");
   const breadcrumb  = $("#breadcrumb");
@@ -162,8 +163,11 @@
   const adminApprovalList  = $("#adminApprovalList");
   const adminAddNameInput  = $("#adminAddNameInput");
   const adminAddNameBtn    = $("#adminAddNameBtn");
+  const adminApproveSelectedBtn = $("#adminApproveSelectedBtn");
+  const adminRejectSelectedBtn  = $("#adminRejectSelectedBtn");
   const adminRosterSearch  = $("#adminRosterSearch");
   const adminMergeBtn      = $("#adminMergeBtn");
+  const adminSuspendSelectedBtn = $("#adminSuspendSelectedBtn");
   const adminFlagsList     = $("#adminFlagsList");
   const adminAuditList     = $("#adminAuditList");
   const adminBroadcastBtn  = $("#adminBroadcastBtn");
@@ -178,6 +182,7 @@
   const confirmMessage = $("#confirmMessage");
   const confirmCancelBtn = $("#confirmCancelBtn");
   const confirmOkBtn = $("#confirmOkBtn");
+  const confirmInput = $("#confirmInput");
 
   // ── State ──────────────────────────────────────────────
   let curView     = "home";
@@ -206,10 +211,6 @@
   }
 
   // ── Helpers ────────────────────────────────────────────
-  function encodePath(p) {
-    return p.split("/").map((s) => encodeURIComponent(s)).join("/");
-  }
-
   // ── PDF access token (Apps Script → Cloudflare Worker) ──────────
   // PDFs are no longer fetched as static files from this repo. Every
   // open goes through the Worker, which only streams file bytes back
@@ -224,29 +225,39 @@
   let pdfTokenExpiresAt = 0;
   let pdfTokenPromise = null;
 
+  // Throws instead of returning null on failure, carrying the SPECIFIC
+  // reason as the error message ("suspended", "unauthorized", or one
+  // of the three local codes below) instead of collapsing everything
+  // into one generic failure. This is what lets openViewer's catch
+  // handler show "you've been suspended" instead of "please try
+  // again" to someone who's been blocked — the old version discarded
+  // the server's actual reason and made every failure look like a
+  // network blip, which is actively misleading for that case.
   async function fetchPdfToken() {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     const workerUrl = SITE_CONFIG.pdfWorker && SITE_CONFIG.pdfWorker.url;
-    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return null;
-    if (!workerUrl || workerUrl.indexOf("PASTE_YOUR") === 0) return null;
-    if (!sessionId || !currentName) return null;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
+    if (!workerUrl || workerUrl.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
+    if (!sessionId || !currentName) throw new Error("not_logged_in");
+
+    let data;
     try {
       const url = `${endpoint}?action=getPdfToken&name=${encodeURIComponent(currentName)}&sessionId=${encodeURIComponent(sessionId)}`;
       const res = await fetch(url);
-      const data = await res.json();
-      if (data && data.ok && data.token) {
-        pdfToken = data.token;
-        // Real token is good for 20 minutes (see mintPdfToken in the
-        // Apps Script) — refresh a few minutes early so we're never
-        // caught handing out a token that expires mid-fetch.
-        pdfTokenExpiresAt = Date.now() + 17 * 60 * 1000;
-        return pdfToken;
-      }
+      data = await res.json();
     } catch {
-      // network hiccup — fall through and return null; caller retries
-      // next time a PDF is opened.
+      throw new Error("network");
     }
-    return null;
+
+    if (data && data.ok && data.token) {
+      pdfToken = data.token;
+      // Real token is good for 20 minutes (see mintPdfToken in the
+      // Apps Script) — refresh a few minutes early so we're never
+      // caught handing out a token that expires mid-fetch.
+      pdfTokenExpiresAt = Date.now() + 17 * 60 * 1000;
+      return pdfToken;
+    }
+    throw new Error((data && data.error) || "network");
   }
 
   // Returns a usable token, fetching a new one only if there's no
@@ -696,6 +707,7 @@
       else onNameSubmit(e);
     });
     homeBtn.addEventListener("click", () => nav("home"));
+    if (progressBtn) progressBtn.addEventListener("click", () => nav("progress"));
     logoutBtn.addEventListener("click", () => performLogout("logout"));
     if (searchInput) searchInput.addEventListener("input", () => render());
     document.addEventListener("visibilitychange", () => {
@@ -727,6 +739,9 @@
     adminAddNameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") onAdminAddName(); });
     adminRosterSearch.addEventListener("input", () => renderAdminRoster(true));
     adminMergeBtn.addEventListener("click", onMergeSelected);
+    adminApproveSelectedBtn.addEventListener("click", onApproveSelected);
+    adminRejectSelectedBtn.addEventListener("click", onRejectSelected);
+    adminSuspendSelectedBtn.addEventListener("click", onSuspendSelected);
     adminBroadcastBtn.addEventListener("click", onBroadcastMessage);
     adminExportBtn.addEventListener("click", onExportCsv);
     adminArchiveBtn.addEventListener("click", onArchiveOldLogs);
@@ -863,7 +878,13 @@
 
       if (!(await isAuthorized(name))) {
         logEvent("login", name, "unauthorized", trace);
-        showGateError("You're not authorized to view this page. Please enter your actual name.");
+        // Framed as "not yet approved" rather than a flat rejection —
+        // this used to read like a locked door ("you're not
+        // authorized"), which doesn't fit a free, word-of-mouth
+        // resource where you WANT people to ask for access. Points
+        // at the WhatsApp/Email links already sitting right below the
+        // form instead of duplicating contact info here.
+        showGateError("You're not on the approved list yet — tap WhatsApp or Email below to request access.");
         return;
       }
 
@@ -1125,6 +1146,10 @@
 
   function updateCrumbs() {
     let h = `<button class="crumb ${curView === 'home' ? 'crumb--active' : ''}" onclick="window.__nav('home')">Home</button>`;
+    if (curView === "progress") {
+      h += `<span class="crumb-sep">/</span>`;
+      h += `<button class="crumb crumb--active">My Progress</button>`;
+    }
     if (curSubject) {
       h += `<span class="crumb-sep">/</span>`;
       h += `<button class="crumb ${curView === 'subject' ? 'crumb--active' : ''}" onclick="window.__nav('subject','${curSubject.id}')">${curSubject.name}</button>`;
@@ -1147,6 +1172,7 @@
       case "home":      renderSubjects(); break;
       case "subject":   renderFolders();  break;
       case "subfolder": renderFiles();    break;
+      case "progress":  renderProgress(); break;
     }
   }
 
@@ -1154,6 +1180,96 @@
   // file name, case-insensitive substring. Doesn't touch curView or
   // the breadcrumb, so clearing the box drops you back exactly where
   // you were, not back at Home.
+  // ── My Progress ────────────────────────────────────────
+  // Combines two different kinds of data on purpose: "opened" comes
+  // from the server (the Log already tracks it, scoped by sessionId
+  // so nobody can read anyone else's — same pattern as todayStats),
+  // while "revised" is the self-marked, local-only checkbox above.
+  // Percentage shown is based on REVISED, not opened — opening a file
+  // isn't the same as being done with it, and revised is the number
+  // that's actually the student's own judgment of their progress.
+  async function renderProgress() {
+    const label = el("p", "section-label", "My Progress");
+    content.appendChild(label);
+
+    if (!sessionId) return;
+
+    let viewedNames = new Set();
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (endpoint && endpoint.indexOf("PASTE_YOUR") !== 0) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(`${endpoint}?action=myProgress&sessionId=${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+        clearTimeout(timeout);
+        const data = await res.json();
+        if (data && data.ok) viewedNames = new Set((data.viewedFiles || []).map((f) => f.file));
+      } catch {
+        // network hiccup — falls back to showing 0 opened rather than blocking the page
+      }
+    }
+
+    SITE_CONFIG.subjects.forEach((s) => {
+      const allFiles = s.subfolders.flatMap((f) => f.files.map((file) => ({ ...file, folderName: f.name })));
+      const total = allFiles.length;
+      if (!total) return;
+      const openedCount = allFiles.filter((f) => viewedNames.has(f.name)).length;
+
+      const card = el("div", "progress-subject fade-up");
+      card.style.setProperty("--subject-color", s.color);
+
+      const paintHeader = () => {
+        const revisedCount = allFiles.filter((f) => getRevisedSet().has(f.path)).length;
+        const pct = Math.round((revisedCount / total) * 100);
+        card.querySelector(".progress-subject__pct").textContent = `${pct}%`;
+        card.querySelector(".progress-bar__fill").style.width = `${pct}%`;
+        card.querySelector(".progress-subject__stat").textContent = `${revisedCount}/${total} revised \u00B7 ${openedCount}/${total} opened`;
+      };
+
+      card.innerHTML = `
+        <div class="progress-subject__head">
+          <span class="progress-subject__icon">${ICONS[s.id] || ICONS.maths}</span>
+          <div class="progress-subject__title">
+            <h3>${s.name}</h3>
+            <span class="progress-subject__stat"></span>
+          </div>
+          <span class="progress-subject__pct"></span>
+        </div>
+        <div class="progress-bar"><div class="progress-bar__fill"></div></div>
+        <button type="button" class="progress-subject__toggle" data-toggle>Show files</button>
+        <div class="progress-file-list hidden"></div>`;
+
+      const fileList = card.querySelector(".progress-file-list");
+      allFiles.forEach((f) => {
+        const opened = viewedNames.has(f.name);
+        const row = el("div", "progress-file-row");
+        row.innerHTML = `
+          <span class="progress-file-row__status ${opened ? "progress-file-row__status--opened" : ""}" title="${opened ? "Opened" : "Not opened yet"}">${opened ? "\u25CF" : "\u25CB"}</span>
+          <button type="button" class="progress-file-row__name">${f.name}</button>
+          <span class="progress-file-row__folder">${f.folderName}</span>
+          <label class="progress-file-row__check">
+            <input type="checkbox" ${getRevisedSet().has(f.path) ? "checked" : ""}>
+            Revised
+          </label>`;
+        row.querySelector(".progress-file-row__name").addEventListener("click", () => openViewer(f.path, f.name));
+        row.querySelector('input[type="checkbox"]').addEventListener("change", (e) => {
+          setRevised(f.path, e.target.checked);
+          paintHeader();
+        });
+        fileList.appendChild(row);
+      });
+
+      card.querySelector("[data-toggle]").addEventListener("click", () => {
+        const willShow = fileList.classList.contains("hidden");
+        fileList.classList.toggle("hidden");
+        card.querySelector("[data-toggle]").textContent = willShow ? "Hide files" : "Show files";
+      });
+
+      paintHeader();
+      content.appendChild(card);
+    });
+  }
+
   function renderSearchResults(query) {
     const q = query.toLowerCase();
     const matches = [];
@@ -1222,6 +1338,19 @@
         rRow.appendChild(chip);
       });
       content.append(rLabel, rRow);
+    }
+
+    const bookmarks = getBookmarks();
+    if (bookmarks.length) {
+      const bLabel = el("p", "section-label", "Bookmarked");
+      const bRow = el("div", "recent-row stagger");
+      bookmarks.forEach((b) => {
+        const chip = el("button", "recent-chip recent-chip--bookmark fade-up");
+        chip.innerHTML = `${ICONS.star}<span class="recent-chip__name">${b.name}</span>`;
+        chip.addEventListener("click", () => openViewer(b.path, b.name));
+        bRow.appendChild(chip);
+      });
+      content.append(bLabel, bRow);
     }
 
     const label = el("p", "section-label", "Select a subject");
@@ -1311,6 +1440,19 @@
 
       overlay.append(viewBtn);
       preview.appendChild(overlay);
+
+      // Always-visible (not hover-only, unlike the overlay above) so
+      // it's actually reachable on mobile, where there's no hover.
+      const bookmarkBtn = document.createElement("button");
+      bookmarkBtn.className = "file-card__bookmark" + (isBookmarked(file.path) ? " file-card__bookmark--active" : "");
+      bookmarkBtn.setAttribute("aria-label", "Bookmark this file");
+      bookmarkBtn.innerHTML = ICONS.star;
+      bookmarkBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleBookmark(file.path, file.name);
+        bookmarkBtn.classList.toggle("file-card__bookmark--active");
+      });
+      preview.appendChild(bookmarkBtn);
 
       card.addEventListener("click", () => openViewer(file.path, file.name));
       card.addEventListener("keydown", (e) => {
@@ -1445,6 +1587,64 @@
     }
   }
 
+  // ── Bookmarks (per-browser, scoped to this name) ────────────────
+  // Same storage model as recently-viewed above, but manual and
+  // uncapped — recently-viewed is "what did I just open" (automatic,
+  // short); this is "what do I keep coming back to all term" (a
+  // deliberate choice, kept until removed).
+  function bookmarksKey() {
+    return `c12_bookmarks_${normalizeName(currentName || "")}`;
+  }
+  function getBookmarks() {
+    try {
+      return JSON.parse(localStorage.getItem(bookmarksKey()) || "[]");
+    } catch {
+      return [];
+    }
+  }
+  function isBookmarked(path) {
+    return getBookmarks().some((b) => b.path === path);
+  }
+  function toggleBookmark(path, name) {
+    if (!currentName) return;
+    try {
+      const list = getBookmarks();
+      const idx = list.findIndex((b) => b.path === path);
+      if (idx === -1) list.unshift({ path, name, ts: Date.now() });
+      else list.splice(idx, 1);
+      localStorage.setItem(bookmarksKey(), JSON.stringify(list));
+    } catch {
+      // localStorage unavailable — fine to just skip
+    }
+  }
+
+  // ── Self-marked revision status (per-browser, scoped to this name) ──
+  // Deliberately local, not server-side: "opened" is an objective fact
+  // the Log already tracks; "revised" is a personal judgment call the
+  // student makes about themselves, closer in spirit to bookmarks than
+  // to anything admin needs to see or verify.
+  function revisedKey() {
+    return `c12_revised_${normalizeName(currentName || "")}`;
+  }
+  function getRevisedSet() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(revisedKey()) || "[]"));
+    } catch {
+      return new Set();
+    }
+  }
+  function setRevised(path, isRevised) {
+    if (!currentName) return;
+    try {
+      const set = getRevisedSet();
+      if (isRevised) set.add(path);
+      else set.delete(path);
+      localStorage.setItem(revisedKey(), JSON.stringify(Array.from(set)));
+    } catch {
+      // localStorage unavailable — fine to just skip
+    }
+  }
+
   function openViewer(path, name) {
     endCurrentView(); // in case a different PDF was already open — close out its timer first
     viewerName.textContent = name;
@@ -1515,9 +1715,22 @@
       status.remove();
       viewerPages.appendChild(pagesInner);
       return renderAllPages(myToken);
-    }).catch(() => {
+    }).catch((err) => {
       if (myToken !== viewerLoadToken) return;
-      statusText.textContent = "Couldn't load this PDF. Please try again.";
+      const reason = err && err.message;
+      // "suspended"/"unauthorized" are the Apps Script's own error
+      // codes (same convention as the rest of this backend) — surface
+      // them specifically instead of a generic retry message that
+      // would be actively wrong for someone who's actually been
+      // blocked: retrying will never work for them, and telling them
+      // to "try again" reads as a glitch rather than a real decision.
+      if (reason === "suspended") {
+        statusText.textContent = (SITE_CONFIG.suspended && SITE_CONFIG.suspended.message) || "You've lost access to this content.";
+      } else if (reason === "unauthorized") {
+        statusText.textContent = "You're not authorized to view this file.";
+      } else {
+        statusText.textContent = "Couldn't load this PDF. Please try again.";
+      }
       track.remove();
     });
   }
@@ -1795,6 +2008,7 @@
   function showConfirm(message) {
     return new Promise((resolve) => {
       confirmMessage.textContent = message;
+      confirmInput.classList.add("hidden");
       confirmOverlay.classList.remove("hidden");
       const cleanup = (result) => {
         confirmOverlay.classList.add("hidden");
@@ -1806,6 +2020,38 @@
       const onCancel = () => cleanup(false);
       confirmOkBtn.addEventListener("click", onOk);
       confirmCancelBtn.addEventListener("click", onCancel);
+    });
+  }
+
+  // Same overlay as showConfirm, with the text input shown — a
+  // drop-in replacement for the browser's native prompt(), which
+  // (like alert()/confirm()) looks nothing like the rest of this
+  // site. Resolves to the typed string, or null on Cancel — same
+  // contract as prompt() itself, so call sites barely change.
+  function showPrompt(message, defaultValue) {
+    return new Promise((resolve) => {
+      confirmMessage.textContent = message;
+      confirmInput.value = defaultValue || "";
+      confirmInput.classList.remove("hidden");
+      confirmOverlay.classList.remove("hidden");
+      confirmInput.focus();
+      const cleanup = (result) => {
+        confirmOverlay.classList.add("hidden");
+        confirmInput.classList.add("hidden");
+        confirmOkBtn.removeEventListener("click", onOk);
+        confirmCancelBtn.removeEventListener("click", onCancel);
+        confirmInput.removeEventListener("keydown", onKeydown);
+        resolve(result);
+      };
+      const onOk = () => cleanup(confirmInput.value);
+      const onCancel = () => cleanup(null);
+      const onKeydown = (e) => {
+        if (e.key === "Enter") onOk();
+        if (e.key === "Escape") onCancel();
+      };
+      confirmOkBtn.addEventListener("click", onOk);
+      confirmCancelBtn.addEventListener("click", onCancel);
+      confirmInput.addEventListener("keydown", onKeydown);
     });
   }
 
@@ -1914,10 +2160,14 @@
     });
   }
 
+  let selectedQueueNames = new Set();
+
   async function renderApprovalQueue(preloaded) {
     const data = preloaded ? { ok: true, queue: preloaded } : await adminFetch("unauthorizedQueue");
     const queue = (data && data.queue) || [];
     adminApprovalList.innerHTML = "";
+    selectedQueueNames.clear();
+    updateQueueBulkBtns();
 
     if (!data) {
       adminApprovalList.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
@@ -1932,19 +2182,53 @@
       const when = q.lastAttempt ? new Date(q.lastAttempt).toLocaleString() : "";
       const row = el("div", "admin__presence-row");
       row.innerHTML = `
+        <input type="checkbox" class="admin__roster-checkbox" data-queue-check>
         <div class="admin__presence-info">
           <span class="admin__presence-name">${q.name}</span>
           <span class="admin__presence-meta">${q.count} attempt${q.count === 1 ? "" : "s"} · last ${when}</span>
         </div>
         <div class="admin__presence-actions">
           <button type="button" class="admin__presence-btn" data-action="approve">Approve</button>
+          <button type="button" class="admin__presence-btn admin__presence-btn--danger" data-action="reject">Reject</button>
         </div>`;
+      row.querySelector('[data-queue-check]').addEventListener("change", (e) => {
+        if (e.target.checked) selectedQueueNames.add(q.name);
+        else selectedQueueNames.delete(q.name);
+        updateQueueBulkBtns();
+      });
       row.querySelector('[data-action="approve"]').addEventListener("click", async () => {
         await adminFetch("approveName", { name: q.name });
         renderApprovalQueue();
       });
+      row.querySelector('[data-action="reject"]').addEventListener("click", async () => {
+        await adminFetch("rejectName", { name: q.name });
+        renderApprovalQueue();
+      });
       adminApprovalList.appendChild(row);
     });
+  }
+
+  function updateQueueBulkBtns() {
+    const n = selectedQueueNames.size;
+    adminApproveSelectedBtn.textContent = `Approve selected (${n})`;
+    adminRejectSelectedBtn.textContent = `Reject selected (${n})`;
+    adminApproveSelectedBtn.disabled = n === 0;
+    adminRejectSelectedBtn.disabled = n === 0;
+  }
+
+  async function onApproveSelected() {
+    const names = Array.from(selectedQueueNames);
+    if (!names.length) return;
+    await Promise.all(names.map((name) => adminFetch("approveName", { name })));
+    renderApprovalQueue();
+  }
+
+  async function onRejectSelected() {
+    const names = Array.from(selectedQueueNames);
+    if (!names.length) return;
+    if (!(await showConfirm(`Reject ${names.length} pending name${names.length === 1 ? "" : "s"}? They'll stop showing up here — this doesn't block their device or name, just clears this queue entry.`))) return;
+    await Promise.all(names.map((name) => adminFetch("rejectName", { name })));
+    renderApprovalQueue();
   }
 
   async function onAdminAddName() {
@@ -1959,15 +2243,27 @@
     const n = selectedForMerge.size;
     adminMergeBtn.textContent = `Merge selected (${n})`;
     adminMergeBtn.disabled = n !== 2;
+    adminSuspendSelectedBtn.textContent = `Suspend selected (${n})`;
+    adminSuspendSelectedBtn.disabled = n === 0;
   }
 
   async function onMergeSelected() {
     if (selectedForMerge.size !== 2) return;
     const [a, b] = Array.from(selectedForMerge);
-    const primary = prompt(`Merging "${a}" and "${b}" as one person.\nWhich name should show on the roster? (type it exactly, or leave as-is)`, a);
+    const primary = await showPrompt(`Merging "${a}" and "${b}" as one person. Which name should show on the roster? (type it exactly, or leave as-is)`, a);
     if (!primary) return;
     const alias = primary === a ? b : a;
     await adminFetch("mergeIdentities", { primary, alias });
+    selectedForMerge.clear();
+    updateMergeBtn();
+    renderAdminRoster();
+  }
+
+  async function onSuspendSelected() {
+    const names = Array.from(selectedForMerge);
+    if (!names.length) return;
+    if (!(await showConfirm(`Suspend ${names.length} selected ${names.length === 1 ? "person" : "people"}? This blocks every device and name each of them has ever used, and signs them out right now if online.`))) return;
+    await Promise.all(names.map((name) => adminFetch("suspendIdentity", { name })));
     selectedForMerge.clear();
     updateMergeBtn();
     renderAdminRoster();
@@ -1982,7 +2278,7 @@
 
   async function onSetExpiry(name, currentExpiresAt) {
     const current = currentExpiresAt ? new Date(currentExpiresAt).toISOString().slice(0, 10) : "";
-    const input = prompt(`Access expiry date for "${name}" (YYYY-MM-DD). Leave blank to remove expiry.`, current);
+    const input = await showPrompt(`Access expiry date for "${name}" (YYYY-MM-DD). Leave blank to remove expiry.`, current);
     if (input === null) return; // cancelled
     await adminFetch("setExpiry", { name, date: input.trim() });
     renderAdminRoster();
@@ -2029,7 +2325,7 @@
   }
 
   async function onArchiveOldLogs() {
-    const daysStr = prompt("Move log rows older than how many days into a separate archive tab? (nothing is deleted, just moved out of the live sheet)", "90");
+    const daysStr = await showPrompt("Move log rows older than how many days into a separate archive tab? (nothing is deleted, just moved out of the live sheet)", "90");
     if (daysStr === null) return;
     const days = Number(daysStr);
     if (!days || days < 1) { showToast("Enter a number of days.", true); return; }
@@ -2041,7 +2337,7 @@
   }
 
   async function onBroadcastMessage() {
-    const message = prompt("Message to send to everyone online right now:");
+    const message = await showPrompt("Message to send to everyone online right now:");
     if (!message || !message.trim()) return;
     const data = await adminFetch("presenceLive");
     const online = (data && data.online) || [];
@@ -2138,7 +2434,7 @@
   }
 
   async function sendAdminMessage(sessionId, name) {
-    const message = prompt(`Message to send ${name} (pops up on their screen within ~45s):`);
+    const message = await showPrompt(`Message to send ${name} (pops up on their screen within ~45s):`);
     if (!message) return;
     await adminFetch("sendMessage", { sessionId, message });
   }
