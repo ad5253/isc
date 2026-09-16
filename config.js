@@ -80,6 +80,27 @@ const SITE_CONFIG = {
     secretHash: "66575fc2e3bd47844b7bb501539c9aa1293b85640c9cf094c2c70840b9c21630",
   },
 
+  // ── Protected Accounts (name + password) ─────────────────────
+  //  For specific names that need a password on top of the normal
+  //  name check — currently Adnan, Kaushal Bhardwaj, Khushbu Bhavsar.
+  //  Unlike the access list above, NO password or password hash lives
+  //  in this file at all: only the salt (needed so the browser can
+  //  hash whatever gets typed before sending it) and the list of
+  //  which normalized names require a password prompt. The actual
+  //  correct-password check happens on the Apps Script side against
+  //  google-apps-script.gs's STATIC_PROTECTED_ACCOUNTS / a
+  //  ProtectedAccounts sheet — so unlike the access-list hashes above,
+  //  this can't be brute-forced offline just by reading this file;
+  //  every guess has to actually hit the live server.
+  //  To add someone: add their normalized name (lowercase, single
+  //  spaces) to usernames below, then add their username+password
+  //  hash to google-apps-script.gs's STATIC_PROTECTED_ACCOUNTS (same
+  //  salt, same formula — see the comment there).
+  protectedAccounts: {
+    salt: "c12-cred-9xQwZaK4",
+    usernames: ["adnan", "kaushal", "kaushal bhardwaj", "khushbu", "khushbu bhavsar"],
+  },
+
   // ── Access List (Who Can Log In) ─────────────────────────────
   //  Only names on this list can get past the gate. Matching is
   //  case-insensitive and ignores extra spaces — "PRIYA", "priya",

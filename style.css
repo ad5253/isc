@@ -323,6 +323,10 @@ html.fonts-ready .gate__spine {
   min-width: 180px;
 }
 
+.gate__field--password {
+  flex-basis: 100%;
+}
+
 .gate__input {
   width: 100%;
   height: 50px;
@@ -1358,11 +1362,100 @@ html.fonts-ready .gate__spine {
   transition: transform 0.05s linear;
 }
 
+.viewer__body {
+  flex: 1;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  min-height: 0; /* lets children actually scroll inside a flex column ancestor instead of overflowing it */
+}
+
+/* Overlays on top of the pages rather than squeezing the reading
+   width — this is meant for a quick "jump to page X" tap, not a
+   permanently-docked sidebar eating into a phone-sized reading area.
+   Closed by default (translated off-screen); .viewer__thumb-strip--open
+   slides it in. Its own thumbnails are rendered lazily too (same
+   IntersectionObserver pattern as everything else here) so opening
+   this panel on a 100-page document doesn't itself cause the same
+   kind of lag this whole rewrite exists to fix. */
+.viewer__thumb-strip {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 104px;
+  overflow-y: auto;
+  background: rgba(12, 12, 16, 0.97);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-right: 1px solid var(--line);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transform: translateX(-100%);
+  transition: transform 0.25s var(--ease-soft);
+  z-index: 5;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.viewer__thumb-strip--open { transform: translateX(0); }
+
+.viewer__thumb-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+}
+.viewer__thumb-item:hover { background: var(--ink-raised); }
+.viewer__thumb-item--current { border-color: var(--brass-dim); background: var(--ink-raised); }
+
+.viewer__thumb-item canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 2px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  background: #1a1a20; /* visible while its own render is still pending */
+}
+
+.viewer__thumb-item-num {
+  font-family: var(--sans);
+  font-size: 10px;
+  color: var(--paper-faint);
+}
+
 .viewer__page {
   height: auto;
   flex-shrink: 0;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
   border-radius: 2px;
+}
+
+/* Reserves exact, correct space for a page BEFORE it's actually
+   rendered — sized from the page's real dimensions (cheap to read
+   from pdf.js, unlike the expensive rasterize-to-canvas step). This
+   is the actual fix for the jittery/unusable scrollbar and the
+   "not loaded in one go" feeling: previously every page only took up
+   space once it finished rendering, so the scrollable area kept
+   growing taller underneath you while you were mid-scroll, one page
+   at a time. Now the full document height is correct and stable from
+   the very first frame; only the pixels inside each wrap fill in
+   later, lazily, as it scrolls into view. */
+.viewer__page-wrap {
+  flex-shrink: 0;
+  position: relative;
+  background: #14141a;
+  border-radius: 2px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.viewer__page-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* The instant cached-thumbnail stand-in shown the moment the viewer
@@ -2092,6 +2185,7 @@ html.fonts-ready .gate__spine {
 }
 
 .admin__roster-lastseen { color: var(--paper-faint); text-align: right; }
+.admin__roster-lastaction { color: var(--paper-faint); font-style: italic; }
 
 /* Per-person detail panel */
 .admin-detail {

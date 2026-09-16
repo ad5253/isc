@@ -56,6 +56,10 @@
                     <input type="text" id="nameInput" class="gate__input" placeholder="Your name" required autocomplete="off" minlength="2" enterkeyhint="go">
                     <span class="gate__field-line"></span>
                 </div>
+                <div class="gate__field gate__field--password hidden" id="gatePasswordField">
+                    <input type="password" id="gatePasswordInput" class="gate__input" placeholder="Password" autocomplete="current-password" enterkeyhint="go">
+                    <span class="gate__field-line"></span>
+                </div>
                 <button type="submit" class="gate__btn">
                     <span class="gate__btn-label">Continue</span>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
@@ -152,6 +156,9 @@
                     </div>
                 </div>
                 <div class="viewer__actions">
+                    <button id="viewerThumbToggle" class="viewer__btn" aria-label="Page thumbnails" title="Pages">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                    </button>
                     <button id="viewerClose" class="viewer__btn viewer__btn--close" aria-label="Close">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
@@ -169,9 +176,13 @@
                 <span id="viewerZoomLabel" class="viewer__zoom-label">100%</span>
                 <button id="viewerZoomIn" class="viewer__zoom-btn" aria-label="Zoom in">+</button>
             </div>
-            <div id="viewerPages" class="viewer__pages"></div>
+            <div class="viewer__body">
+                <div id="viewerThumbStrip" class="viewer__thumb-strip"></div>
+                <div id="viewerPages" class="viewer__pages"></div>
+            </div>
         </div>
     </div>
+
 
     <!-- ═══ ADMIN DASHBOARD ═══ -->
     <div id="adminApp" class="admin hidden">
@@ -221,6 +232,11 @@
                         <button type="button" id="adminRejectSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Reject selected (0)</button>
                     </div>
                     <div id="adminApprovalList" class="admin__presence-list"></div>
+                </section>
+
+                <section class="admin__section">
+                    <h2 class="admin__section-title">Rejected</h2>
+                    <div id="adminRejectedList" class="admin__presence-list"></div>
                 </section>
 
                 <section class="admin__section">

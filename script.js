@@ -145,6 +145,10 @@
   const viewerClose = $("#viewerClose");
   const viewerOverlay = $("#viewerOverlay");
   const viewerPages = $("#viewerPages");
+  const viewerThumbStrip = $("#viewerThumbStrip");
+  const viewerThumbToggle = $("#viewerThumbToggle");
+  const gatePasswordField = $("#gatePasswordField");
+  const gatePasswordInput = $("#gatePasswordInput");
   const gateBtn     = $(".gate__btn");
   const gateError   = $("#gateError");
   const gateField   = $(".gate__field");
@@ -161,6 +165,7 @@
   const adminDetailName    = $("#adminDetailName");
   const adminDetailBody    = $("#adminDetailBody");
   const adminApprovalList  = $("#adminApprovalList");
+  const adminRejectedList  = $("#adminRejectedList");
   const adminAddNameInput  = $("#adminAddNameInput");
   const adminAddNameBtn    = $("#adminAddNameBtn");
   const adminApproveSelectedBtn = $("#adminApproveSelectedBtn");
@@ -347,6 +352,31 @@
     const list = SITE_CONFIG.accessList;
     const salt = (list && list.salt) || "";
     return sha256Hex(salt + normalizeName(name));
+  }
+
+  // Verifies a protected-account password against the server, never
+  // sending the raw password itself — only a hash of it, salted with
+  // SITE_CONFIG.protectedAccounts.salt, matching the exact formula
+  // google-apps-script.gs's checkCredentials expects. Fails closed
+  // (false) on any network error, unlike most other checks in this
+  // file which fail open — a password gate should never accidentally
+  // let someone through just because a request timed out.
+  async function checkCredentialsRemote(username, password) {
+    const cred = SITE_CONFIG.protectedAccounts;
+    if (!cred) return false;
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return false;
+    const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(`${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await res.json();
+      return !!(data && data.ok && data.valid);
+    } catch {
+      return false;
+    }
   }
 
   async function isAuthorized(name) {
@@ -753,6 +783,9 @@
     adminDetailOverlay.addEventListener("click", closeAdminDetail);
 
     viewerClose.addEventListener("click", closeViewer);
+    viewerThumbToggle.addEventListener("click", () => {
+      viewerThumbStrip.classList.toggle("viewer__thumb-strip--open");
+    });
     viewerOverlay.addEventListener("click", closeViewer);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", syncViewerViewport);
@@ -833,6 +866,40 @@
         }
       }
 
+      // Protected accounts (name + password) — checked before the
+      // normal abuse/suspended/authorized flow below, since this is a
+      // fundamentally different kind of login. A correct password
+      // substitutes for the normal "on the approved list" check
+      // further down (that's the whole point of a password), but
+      // NOT for the suspended check — even a password holder can
+      // still be suspended if something goes wrong.
+      const normalizedEntry = normalizeName(name);
+      const protectedList = (SITE_CONFIG.protectedAccounts && SITE_CONFIG.protectedAccounts.usernames) || [];
+      let credentialsVerified = false;
+      if (protectedList.includes(normalizedEntry)) {
+        const password = gatePasswordInput.value;
+        if (!password) {
+          gatePasswordField.classList.remove("hidden");
+          gatePasswordInput.focus();
+          setGateBusy(false);
+          return;
+        }
+        const ok = await checkCredentialsRemote(name, password);
+        if (!ok) {
+          showGateError("Incorrect password.");
+          gatePasswordInput.value = "";
+          gatePasswordInput.focus();
+          return;
+        }
+        credentialsVerified = true;
+      } else if (!gatePasswordField.classList.contains("hidden")) {
+        // They'd triggered the password field for an earlier name,
+        // then changed the name field to something that isn't
+        // protected — clear it out so it doesn't linger irrelevantly.
+        gatePasswordField.classList.add("hidden");
+        gatePasswordInput.value = "";
+      }
+
       // Tagged distinctly as "suspended" (not folded into "unauthorized")
       // so the Apps Script backend can tell this specific case apart and
       // auto-add the device fingerprint (parsed out of the page field
@@ -876,7 +943,7 @@
         return;
       }
 
-      if (!(await isAuthorized(name))) {
+      if (!credentialsVerified && !(await isAuthorized(name))) {
         logEvent("login", name, "unauthorized", trace);
         // Framed as "not yet approved" rather than a flat rejection —
         // this used to read like a locked door ("you're not
@@ -902,6 +969,8 @@
       hideGateError();
       saveSession(name);
       logEvent("login", name, "authorized", trace);
+      gatePasswordField.classList.add("hidden");
+      gatePasswordInput.value = "";
       gate.classList.add("fade-out");
       setTimeout(() => { gate.classList.add("hidden"); showApp(name); }, 650);
     } finally {
@@ -1565,6 +1634,8 @@
   let currentPdf = null;
   let viewerZoom = 1;
   let pagesInner = null; // scaled independently of the scrolling outer container, so a live pinch can transform it without fighting scroll
+  let pageObserver = null;   // lazy-renders the main page canvases as they scroll near-view
+  let thumbObserver2 = null; // lazy-renders the thumbnail-strip canvases (separate from the folder-grid one above)
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 3;
   const ZOOM_INCREMENT = 0.25;
@@ -1761,23 +1832,15 @@
 
   function renderAllPages(token) {
     if (!pagesInner) return Promise.resolve();
-    pagesInner.querySelectorAll(".viewer__page").forEach((c) => c.remove());
+    pagesInner.querySelectorAll(".viewer__page-wrap").forEach((c) => c.remove());
+    viewerThumbStrip.innerHTML = "";
+    if (pageObserver) pageObserver.disconnect();
+    if (thumbObserver2) thumbObserver2.disconnect();
     const pdf = currentPdf;
     if (!pdf) return Promise.resolve();
 
-    // Rendered at devicePixelRatio so the base view is sharp on
-    // retina/high-DPI phones — this alone fixes a lot of perceived
-    // "blurriness" independent of zoom. The zoom buttons below then
-    // ask pdf.js to redraw at a genuinely higher resolution rather
-    // than stretching this canvas, which is what pinch-zoom was doing
-    // before (and why it went pixelated).
     const dpr = window.devicePixelRatio || 1;
 
-    // Stamps a faint, repeated, diagonal "name · date" watermark over
-    // a rendered PDF canvas. This does NOT stop screenshots or screen
-    // recording — nothing client-side can. What it does do is make
-    // any leaked page traceable back to whoever viewed it, which is
-    // the realistic goal for paid material shared as images.
     function drawWatermark(ctx, canvas) {
       const label = `${currentName || "unknown"} · ${new Date().toLocaleDateString()}`;
       ctx.save();
@@ -1796,9 +1859,18 @@
       ctx.restore();
     }
 
-    const renderPage = (pageNum) => {
-      if (token !== viewerLoadToken) return Promise.resolve();
-      return pdf.getPage(pageNum).then((page) => {
+    // Actually rasterizes ONE page into its already-placed, already-
+    // correctly-sized wrap div. Called lazily (see pageObserver below),
+    // never eagerly for the whole document — this is the change that
+    // fixes both the lag on underpowered hardware (a smart board's
+    // embedded Android chip doing 2–3 renders at a time instead of 50+
+    // up front) and the "loading slowly slowly" feeling, since the
+    // page's SPACE was already there the instant the document opened;
+    // only the pixels inside it arrive a moment later.
+    function renderPageInto(wrap, pageNum) {
+      if (token !== viewerLoadToken || wrap.dataset.rendered) return;
+      wrap.dataset.rendered = "1";
+      pdf.getPage(pageNum).then((page) => {
         if (token !== viewerLoadToken) return;
         const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
         const unscaledViewport = page.getViewport({ scale: 1 });
@@ -1809,24 +1881,88 @@
         canvas.className = "viewer__page";
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        canvas.style.width = `${displayWidth}px`;
-        canvas.style.height = `${viewport.height / dpr}px`;
-        pagesInner.appendChild(canvas);
+        wrap.appendChild(canvas);
 
         const ctx = canvas.getContext("2d");
         return page.render({ canvasContext: ctx, viewport }).promise.then(() => {
           drawWatermark(ctx, canvas);
         });
       });
-    };
-
-    // Rendered sequentially (not all at once) so a long document
-    // doesn't stall the browser trying to render every page up front.
-    let chain = Promise.resolve();
-    for (let i = 1; i <= pdf.numPages; i++) {
-      chain = chain.then(() => renderPage(i));
     }
-    return chain;
+
+    // rootMargin extends the "visible" zone 800px above and below the
+    // actual viewport, so the next page or two render just BEFORE
+    // they're scrolled into view rather than popping in a beat late —
+    // still nowhere near "render everything", just a small head start
+    // in both scroll directions.
+    pageObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const wrap = entry.target;
+        renderPageInto(wrap, Number(wrap.dataset.pageNum));
+      });
+    }, { root: viewerPages, rootMargin: "800px 0px 800px 0px" });
+
+    // Thumbnail-strip panel — same lazy approach, its own (smaller,
+    // cheaper) observer so opening this panel on a long document never
+    // reintroduces the "render everything at once" problem for the
+    // sidebar itself.
+    thumbObserver2 = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const item = entry.target;
+        if (item.dataset.rendered) return;
+        item.dataset.rendered = "1";
+        const pageNum = Number(item.dataset.pageNum);
+        const canvas = item.querySelector("canvas");
+        pdf.getPage(pageNum).then((page) => {
+          if (token !== viewerLoadToken) return;
+          const unscaledViewport = page.getViewport({ scale: 1 });
+          const scale = 90 / unscaledViewport.width;
+          const viewport = page.getViewport({ scale });
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          return page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        });
+      });
+    }, { root: viewerThumbStrip, rootMargin: "400px 0px 400px 0px" });
+
+    // Getting a page's dimensions (getPage + getViewport) is cheap
+    // metadata, not a rasterize — safe to do for every page up front
+    // so every placeholder is sized correctly and the document's full,
+    // final height is known from the very first frame.
+    const pageNumbers = [];
+    for (let i = 1; i <= pdf.numPages; i++) pageNumbers.push(i);
+
+    return Promise.all(pageNumbers.map((n) => pdf.getPage(n))).then((pages) => {
+      if (token !== viewerLoadToken) return;
+      pages.forEach((page, idx) => {
+        const pageNum = idx + 1;
+        const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
+        const unscaledViewport = page.getViewport({ scale: 1 });
+        const displayHeight = (unscaledViewport.height / unscaledViewport.width) * displayWidth;
+
+        const wrap = el("div", "viewer__page-wrap");
+        wrap.dataset.pageNum = String(pageNum);
+        wrap.style.width = `${displayWidth}px`;
+        wrap.style.height = `${displayHeight}px`;
+        pagesInner.appendChild(wrap);
+        pageObserver.observe(wrap);
+
+        const thumbItem = el("div", "viewer__thumb-item");
+        thumbItem.dataset.pageNum = String(pageNum);
+        const thumbCanvas = document.createElement("canvas");
+        thumbCanvas.style.aspectRatio = `${unscaledViewport.width} / ${unscaledViewport.height}`;
+        const thumbLabel = el("span", "viewer__thumb-item-num", String(pageNum));
+        thumbItem.append(thumbCanvas, thumbLabel);
+        thumbItem.addEventListener("click", () => {
+          wrap.scrollIntoView({ block: "start" });
+          viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
+        });
+        viewerThumbStrip.appendChild(thumbItem);
+        thumbObserver2.observe(thumbItem);
+      });
+    });
   }
 
   function updateZoomLabel() {
@@ -1923,6 +2059,10 @@
     viewerLoadToken++; // invalidate any render still in flight
     currentPdf = null;
     pagesInner = null;
+    if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+    if (thumbObserver2) { thumbObserver2.disconnect(); thumbObserver2 = null; }
+    viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
+    viewerThumbStrip.innerHTML = "";
     viewerPages.innerHTML = "";
     viewerPages.scrollTop = 0;
     document.body.style.overflow = "";
@@ -2089,13 +2229,23 @@
     });
   }
 
-  function renderSummaryStrip(online, flags, queue) {
+  function renderSummaryStrip(online, flags, queue, bandwidth) {
     const flagCount = (flags.deviceCycling || []).length + (flags.rapidRepeat || []).length + (flags.bulkView || []).length;
     const cards = [
       { num: online.length, label: "Online now" },
       { num: flagCount, label: "Flagged", alert: flagCount > 0 },
       { num: queue.length, label: "Pending approval", alert: queue.length > 0 }
     ];
+    if (bandwidth) {
+      const usedGB = (bandwidth.usedBytes / (1024 ** 3)).toFixed(2);
+      const limitGB = (bandwidth.limitBytes / (1024 ** 3)).toFixed(1);
+      const pct = bandwidth.limitBytes ? Math.round((bandwidth.usedBytes / bandwidth.limitBytes) * 100) : 0;
+      cards.push({
+        num: `${usedGB}/${limitGB} GB`,
+        label: "Bandwidth today",
+        alert: pct >= 80
+      });
+    }
     adminSummaryStrip.innerHTML = cards.map((c) => `
       <div class="admin__summary-card${c.alert ? " admin__summary-card--alert" : ""}">
         <div class="admin__summary-card__num">${c.num}</div>
@@ -2146,6 +2296,7 @@
     if (!data) {
       renderAdminPresence();
       renderApprovalQueue();
+      renderRejectedQueue();
       renderAdminRoster();
       renderFlags();
       renderAuditLog();
@@ -2155,12 +2306,13 @@
     }
     renderAdminPresence(data.online);
     renderApprovalQueue(data.queue);
+    renderRejectedQueue(data.rejectedQueue);
     renderAdminRoster(data.people);
     renderFlags(data.flags);
     renderAuditLog(data.log);
     renderContentStats(data.stats);
     renderBlockedDevices(data.devices);
-    renderSummaryStrip(data.online, data.flags, data.queue);
+    renderSummaryStrip(data.online, data.flags, data.queue, data.bandwidth);
   }
 
   async function renderContentStats(preloaded) {
@@ -2227,6 +2379,7 @@
       row.querySelector('[data-action="reject"]').addEventListener("click", async () => {
         await adminFetch("rejectName", { name: q.name });
         renderApprovalQueue();
+        renderRejectedQueue();
       });
       adminApprovalList.appendChild(row);
     });
@@ -2253,6 +2406,36 @@
     if (!(await showConfirm(`Reject ${names.length} pending name${names.length === 1 ? "" : "s"}? They'll stop showing up here — this doesn't block their device or name, just clears this queue entry.`))) return;
     await Promise.all(names.map((name) => adminFetch("rejectName", { name })));
     renderApprovalQueue();
+    renderRejectedQueue();
+  }
+
+  async function renderRejectedQueue(preloaded) {
+    const data = preloaded ? { ok: true, queue: preloaded } : await adminFetch("rejectedQueue");
+    if (!data) return;
+    const queue = data.queue || [];
+    adminRejectedList.innerHTML = "";
+    if (!queue.length) {
+      adminRejectedList.innerHTML = `<p class="admin__empty">Nothing rejected</p>`;
+      return;
+    }
+    queue.forEach((q) => {
+      const when = q.rejectedAt ? new Date(q.rejectedAt).toLocaleString() : "";
+      const row = el("div", "admin__presence-row");
+      row.innerHTML = `
+        <div class="admin__presence-info">
+          <span class="admin__presence-name">${q.name}</span>
+          <span class="admin__presence-meta">Rejected ${when}</span>
+        </div>
+        <div class="admin__presence-actions">
+          <button type="button" class="admin__presence-btn" data-action="restore">Restore</button>
+        </div>`;
+      row.querySelector('[data-action="restore"]').addEventListener("click", async () => {
+        await adminFetch("unrejectName", { name: q.name });
+        renderRejectedQueue();
+        renderApprovalQueue();
+      });
+      adminRejectedList.appendChild(row);
+    });
   }
 
   async function onAdminAddName() {
@@ -2320,15 +2503,18 @@
     const items = [
       ...deviceCycling.map((f) => ({
         label: `One device used ${f.names.length} different names: ${f.names.join(", ")}`,
-        when: f.when
+        when: f.when,
+        names: f.names
       })),
       ...rapidRepeat.map((f) => ({
         label: `"${f.name}" attempted login ${f.count} times, 5+ within a minute`,
-        when: f.when
+        when: f.when,
+        names: [f.name]
       })),
       ...bulkView.map((f) => ({
         label: `${f.name} opened/downloaded ${f.count} files, 8+ within 5 minutes`,
-        when: f.when
+        when: f.when,
+        names: [f.name]
       }))
     ].sort((a, b) => new Date(b.when) - new Date(a.when));
 
@@ -2339,11 +2525,24 @@
 
     items.forEach((f) => {
       const row = el("div", "admin__presence-row");
+      const actionsHtml = f.names.map((n) =>
+        `<button type="button" class="admin__presence-btn admin__presence-btn--danger" data-suspend="${n.replace(/"/g, "&quot;")}">Suspend${f.names.length > 1 ? ` "${n}"` : ""}</button>`
+      ).join("");
       row.innerHTML = `
         <div class="admin__presence-info">
           <span class="admin__presence-name">${f.label}</span>
           <span class="admin__presence-meta">${new Date(f.when).toLocaleString()}</span>
-        </div>`;
+        </div>
+        <div class="admin__presence-actions">${actionsHtml}</div>`;
+      row.querySelectorAll("[data-suspend]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.getAttribute("data-suspend");
+          if (!(await showConfirm(`Suspend "${name}"? This blocks every device and name they've used, and signs them out right now if online.`))) return;
+          await adminFetch("suspendIdentity", { name });
+          showToast(`Suspended "${name}".`);
+          renderFlags();
+        });
+      });
       adminFlagsList.appendChild(row);
     });
   }
@@ -2509,6 +2708,10 @@
       const totalMins = Math.round((p.totalSessionSeconds || 0) / 60);
       const akaText = p.aliases && p.aliases.length ? ` <span class="admin__roster-aka">aka ${p.aliases.join(", ")}</span>` : "";
       const expiryLabel = p.expiresAt ? "Expires " + new Date(p.expiresAt).toLocaleDateString() : "Set expiry…";
+      const actionLabels = { approveName: "Approved", rejectName: "Rejected", suspendIdentity: "Suspended", unsuspendIdentity: "Unsuspended", setExpiry: "Expiry set" };
+      const lastActionText = p.lastAction
+        ? `${actionLabels[p.lastAction.action] || p.lastAction.action} ${new Date(p.lastAction.timestamp).toLocaleDateString()}`
+        : "No admin action yet";
       row.innerHTML = `
         <input type="checkbox" class="admin__roster-checkbox" ${selectedForMerge.has(p.name) ? "checked" : ""}>
         <div class="admin__roster-name">${p.name}${akaText}${p.suspended ? ' <span class="admin__roster-badge">suspended</span>' : ""}</div>
@@ -2516,6 +2719,7 @@
         <div class="admin__roster-stat">${p.sessionCount} session${p.sessionCount === 1 ? "" : "s"}</div>
         <div class="admin__roster-stat">${p.filesTouched}/${p.totalKnownFiles} files</div>
         <div class="admin__roster-stat admin__roster-lastseen">Last seen ${lastSeen}</div>
+        <div class="admin__roster-stat admin__roster-lastaction">${lastActionText}</div>
         <div class="admin__row-menu">
           <button type="button" class="admin__row-menu-btn" data-action="menu-toggle" aria-label="Actions">\u22EF</button>
           <div class="admin__row-menu-dropdown hidden">
