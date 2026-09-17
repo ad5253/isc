@@ -64,6 +64,7 @@
     const task = { onProgress: null };
     let realTask = null; // captured once created, so a timeout can properly destroy() it instead of just walking away and leaving it running in the background — which would keep eating memory even after this code has given up on it, compounding exactly the RAM pressure this is meant to fix
     let timedOut = false;
+    let timeoutId = null;
 
     const realLoadPromise = ensurePdfToken().then((token) => {
       realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
@@ -72,17 +73,19 @@
     });
 
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         timedOut = true;
         if (realTask) realTask.destroy();
         reject(new Error("PDF load timed out"));
       }, 25000);
     });
 
-    task.promise = Promise.race([realLoadPromise, timeoutPromise]).catch((err) => {
-      if (pdfLoadingTasks.get(path) === task) pdfLoadingTasks.delete(path);
-      throw err;
-    });
+    task.promise = Promise.race([realLoadPromise, timeoutPromise])
+      .finally(() => { if (timeoutId) clearTimeout(timeoutId); })
+      .catch((err) => {
+        if (pdfLoadingTasks.get(path) === task) pdfLoadingTasks.delete(path);
+        throw err;
+      });
     // If the real load actually succeeds AFTER we've already given up
     // and moved on, still destroy() the now-unwanted document rather
     // than let it sit in memory unused — nothing holds a reference to
@@ -126,27 +129,35 @@
 
   let thumbObserver = null;
   function observeThumbnail(target, path, canvas, skeleton) {
-    if (!("IntersectionObserver" in window)) {
-      // No IntersectionObserver support — fall back to loading
-      // immediately (still throttled by the concurrency queue above).
-      queueThumbnailLoad(() => renderThumbnail(path, canvas, skeleton));
-      return;
-    }
-    if (!thumbObserver) {
-      thumbObserver = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (!entry.isIntersecting) return;
-            thumbObserver.unobserve(entry.target);
-            const data = entry.target.__thumbData;
-            if (data) queueThumbnailLoad(() => renderThumbnail(data.path, data.canvas, data.skeleton));
-          });
-        },
-        { rootMargin: "300px 0px", threshold: 0.01 }
-      );
-    }
-    target.__thumbData = { path, canvas, skeleton };
-    thumbObserver.observe(target);
+    // A card preview must never fetch the PDF. Loading whole documents merely
+    // to paint page one was the largest source of startup congestion and made
+    // normal clicks fail behind background requests. This lightweight canvas
+    // is immediate, works offline, and leaves all bandwidth for a chosen file.
+    drawInstantPdfPreview(path, canvas);
+    skeleton.style.display = "none";
+    canvas.style.display = "block";
+  }
+
+  function drawInstantPdfPreview(path, canvas) {
+    let label = String(path).split("/").pop() || "PDF";
+    try { label = decodeURIComponent(label); } catch { /* retain the safe raw filename */ }
+    label = label.replace(/\.pdf$/i, "");
+    canvas.width = 400;
+    canvas.height = 566;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#f8f6f0";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#b6463c";
+    ctx.fillRect(0, 0, canvas.width, 18);
+    ctx.fillStyle = "#202020";
+    ctx.font = "600 30px Archivo, sans-serif";
+    ctx.fillText("PDF", 36, 82);
+    ctx.fillStyle = "#9c988d";
+    for (let y = 138; y < 420; y += 28) ctx.fillRect(36, y, y % 56 ? 300 : 245, 6);
+    ctx.fillStyle = "#34312c";
+    ctx.font = "500 18px Archivo, sans-serif";
+    const words = label.split(/\s+/).slice(0, 5);
+    words.forEach((word, i) => ctx.fillText(word, 36, 468 + i * 24));
   }
 
   // ── Line icons (no emoji) ───────────────────────────────
@@ -513,6 +524,21 @@
     return hash;
   };
 
+  async function verifyAdminSecret(hash) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint) return false;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`${endpoint}?action=adminLogin&hash=${encodeURIComponent(hash)}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await res.json();
+      return !!(data && data.ok && data.valid);
+    } catch {
+      return false;
+    }
+  }
+
   // ── Device fingerprint ──────────────────────────────────
   // A hash of stable browser/hardware signals — NOT tied to any name
   // typed into the gate. This is what lets us block a specific phone
@@ -845,6 +871,9 @@
     viewerClose.addEventListener("click", closeViewer);
     viewerThumbToggle.addEventListener("click", () => {
       viewerThumbStrip.classList.toggle("viewer__thumb-strip--open");
+      if (viewerThumbStrip.classList.contains("viewer__thumb-strip--open")) {
+        populateViewerThumbStrip(viewerLoadToken);
+      }
     });
     viewerOverlay.addEventListener("click", closeViewer);
     if (window.visualViewport) {
@@ -906,9 +935,9 @@
       // your own student-facing data. Compared as a salted hash, same
       // model as the access list, so the real phrase never sits in
       // config.js as plain text.
-      if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled && SITE_CONFIG.admin.secretHash) {
+      if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled) {
         const candidateHash = await hashAdminSecret(name);
-        if (candidateHash === SITE_CONFIG.admin.secretHash) {
+        if (await verifyAdminSecret(candidateHash)) {
           // The hash IS the API token from here on — nothing else is
           // needed. This used to be a separate plaintext admin.key
           // sitting in config.js, which is a publicly downloadable
@@ -1111,9 +1140,13 @@
     greeting.textContent = `Hi, ${name}`;
     logEvent("session_start", name, "");
     startHeartbeat();
-    ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
-    await fetchAndApplyCatalog(); // awaited so the very first render already reflects the live file list, not a stale-then-updated flash
     nav("home");
+    ensurePdfToken().catch(() => {});
+    // The page is usable immediately. A fresh catalog is useful but it must
+    // never hold the first paint hostage to Apps Script's cold-start latency.
+    fetchAndApplyCatalog().then(() => {
+      if (curView === "home") nav("home");
+    });
   }
 
   // ── Heartbeat ("who's on the site right now") ───────────
@@ -2131,6 +2164,7 @@
         const unscaledViewport = page.getViewport({ scale: 1 });
         const renderScale = (displayWidth / unscaledViewport.width) * dpr;
         const viewport = page.getViewport({ scale: renderScale });
+        wrap.style.height = `${(unscaledViewport.height / unscaledViewport.width) * displayWidth}px`;
 
         const canvas = document.createElement("canvas");
         canvas.className = "viewer__page";
@@ -2158,66 +2192,56 @@
       });
     }, { root: viewerPages, rootMargin: "800px 0px 800px 0px" });
 
-    // Thumbnail-strip panel — same lazy approach, its own (smaller,
-    // cheaper) observer so opening this panel on a long document never
-    // reintroduces the "render everything at once" problem for the
-    // sidebar itself.
+    // Do not call getPage() for every page at open time. On a long scanned
+    // document that forces metadata/range work for the entire PDF before page
+    // one appears. Generic placeholders are cheap; each page is corrected to
+    // its real dimensions when it is about to be painted.
+    const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const wrap = el("div", "viewer__page-wrap");
+      wrap.dataset.pageNum = String(pageNum);
+      wrap.style.width = `${displayWidth}px`;
+      wrap.style.height = `${displayWidth * 1.414}px`;
+      pagesInner.appendChild(wrap);
+      pageObserver.observe(wrap);
+    }
+    return Promise.resolve();
+  }
+
+  function populateViewerThumbStrip(token) {
+    const pdf = currentPdf;
+    if (!pdf || token !== viewerLoadToken || viewerThumbStrip.childElementCount) return;
+    if (thumbObserver2) thumbObserver2.disconnect();
     thumbObserver2 = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
+        if (!entry.isIntersecting || entry.target.dataset.rendered) return;
         const item = entry.target;
-        if (item.dataset.rendered) return;
         item.dataset.rendered = "1";
         const pageNum = Number(item.dataset.pageNum);
         const canvas = item.querySelector("canvas");
         pdf.getPage(pageNum).then((page) => {
           if (token !== viewerLoadToken) return;
-          const unscaledViewport = page.getViewport({ scale: 1 });
-          const scale = 90 / unscaledViewport.width;
-          const viewport = page.getViewport({ scale });
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          return page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-        });
+          const vp = page.getViewport({ scale: 90 / page.getViewport({ scale: 1 }).width });
+          canvas.width = vp.width;
+          canvas.height = vp.height;
+          return page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+        }).catch(() => { item.dataset.rendered = ""; });
       });
     }, { root: viewerThumbStrip, rootMargin: "400px 0px 400px 0px" });
-
-    // Getting a page's dimensions (getPage + getViewport) is cheap
-    // metadata, not a rasterize — safe to do for every page up front
-    // so every placeholder is sized correctly and the document's full,
-    // final height is known from the very first frame.
-    const pageNumbers = [];
-    for (let i = 1; i <= pdf.numPages; i++) pageNumbers.push(i);
-
-    return Promise.all(pageNumbers.map((n) => pdf.getPage(n))).then((pages) => {
-      if (token !== viewerLoadToken) return;
-      pages.forEach((page, idx) => {
-        const pageNum = idx + 1;
-        const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
-        const unscaledViewport = page.getViewport({ scale: 1 });
-        const displayHeight = (unscaledViewport.height / unscaledViewport.width) * displayWidth;
-
-        const wrap = el("div", "viewer__page-wrap");
-        wrap.dataset.pageNum = String(pageNum);
-        wrap.style.width = `${displayWidth}px`;
-        wrap.style.height = `${displayHeight}px`;
-        pagesInner.appendChild(wrap);
-        pageObserver.observe(wrap);
-
-        const thumbItem = el("div", "viewer__thumb-item");
-        thumbItem.dataset.pageNum = String(pageNum);
-        const thumbCanvas = document.createElement("canvas");
-        thumbCanvas.style.aspectRatio = `${unscaledViewport.width} / ${unscaledViewport.height}`;
-        const thumbLabel = el("span", "viewer__thumb-item-num", String(pageNum));
-        thumbItem.append(thumbCanvas, thumbLabel);
-        thumbItem.addEventListener("click", () => {
-          wrap.scrollIntoView({ block: "start" });
-          viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
-        });
-        viewerThumbStrip.appendChild(thumbItem);
-        thumbObserver2.observe(thumbItem);
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const item = el("div", "viewer__thumb-item");
+      item.dataset.pageNum = String(pageNum);
+      const canvas = document.createElement("canvas");
+      const label = el("span", "viewer__thumb-item-num", String(pageNum));
+      item.append(canvas, label);
+      item.addEventListener("click", () => {
+        const wrap = pagesInner && pagesInner.querySelector(`[data-page-num="${pageNum}"]`);
+        if (wrap) wrap.scrollIntoView({ block: "start" });
+        viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
       });
-    });
+      viewerThumbStrip.appendChild(item);
+      thumbObserver2.observe(item);
+    }
   }
 
   function updateZoomLabel() {
