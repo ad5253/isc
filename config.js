@@ -77,6 +77,7 @@ const SITE_CONFIG = {
   admin: {
     enabled: true,
     salt: "c12-admin-r4k9",
+    secretHash: "66575fc2e3bd47844b7bb501539c9aa1293b85640c9cf094c2c70840b9c21630",
   },
 
   // ── Protected Accounts (name + password) ─────────────────────
