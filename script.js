@@ -43,16 +43,51 @@
   // rejected promise instead of trying again. Now a failure evicts its
   // own cache entry, so the next click on that file starts a genuinely
   // fresh load.
+  //
+  // A 25-second hard timeout was added here too, for a real bug this
+  // was masking: on a folder with several files, thumbnails load 4 at
+  // a time (see THUMBNAIL_CONCURRENCY below) — and each one calls the
+  // Worker, which itself range-requests the file from Backblaze
+  // multiple times per document, not once. That was blowing through
+  // the Worker's old per-minute request limit within the first few
+  // thumbnails, and pdf.js doesn't always turn a stalled/rate-limited
+  // connection into a clean rejection — sometimes it just hangs. A
+  // hung promise here never resolves OR rejects, so it never freed its
+  // slot in the concurrency queue below, which is exactly what made
+  // "only a few thumbnails load, the rest just sit there forever"
+  // happen: the queue wasn't broken, it was permanently stuck waiting
+  // on tasks that were never going to finish. This timeout forces any
+  // such hang to fail cleanly instead, freeing its slot and letting
+  // the file's own existing "click to open" behavior serve as a real
+  // retry once it's evicted from the cache below.
   function makePdfLoadingTask(path) {
     const task = { onProgress: null };
-    task.promise = ensurePdfToken().then((token) => {
-      const realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
+    let realTask = null; // captured once created, so a timeout can properly destroy() it instead of just walking away and leaving it running in the background — which would keep eating memory even after this code has given up on it, compounding exactly the RAM pressure this is meant to fix
+    let timedOut = false;
+
+    const realLoadPromise = ensurePdfToken().then((token) => {
+      realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
       realTask.onProgress = (p) => { if (task.onProgress) task.onProgress(p); };
       return realTask.promise;
-    }).catch((err) => {
+    });
+
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        timedOut = true;
+        if (realTask) realTask.destroy();
+        reject(new Error("PDF load timed out"));
+      }, 25000);
+    });
+
+    task.promise = Promise.race([realLoadPromise, timeoutPromise]).catch((err) => {
       if (pdfLoadingTasks.get(path) === task) pdfLoadingTasks.delete(path);
       throw err;
     });
+    // If the real load actually succeeds AFTER we've already given up
+    // and moved on, still destroy() the now-unwanted document rather
+    // than let it sit in memory unused — nothing holds a reference to
+    // it once the timeout has already rejected task.promise.
+    realLoadPromise.then((pdf) => { if (timedOut) pdf.destroy(); }).catch(() => {});
     return task;
   }
 
@@ -180,6 +215,10 @@
   const adminContentStatsList = $("#adminContentStatsList");
   const adminFeedbackAvg      = $("#adminFeedbackAvg");
   const adminFeedbackList     = $("#adminFeedbackList");
+  const adminScanBtn          = $("#adminScanBtn");
+  const adminScanProgress     = $("#adminScanProgress");
+  const adminScanTimer        = $("#adminScanTimer");
+  const adminScanResults      = $("#adminScanResults");
   const adminArchiveBtn    = $("#adminArchiveBtn");
   const adminBlockedDevicesList = $("#adminBlockedDevicesList");
   const adminTabs = $("#adminTabs");
@@ -357,28 +396,46 @@
   }
 
   // Verifies a protected-account password against the server, never
-  // sending the raw password itself — only a hash of it, salted with
-  // SITE_CONFIG.protectedAccounts.salt, matching the exact formula
-  // google-apps-script.gs's checkCredentials expects. Fails closed
-  // (false) on any network error, unlike most other checks in this
-  // file which fail open — a password gate should never accidentally
-  // let someone through just because a request timed out.
+  // Sends only a hash of the password, salted with
+  // SITE_CONFIG.protectedAccounts.salt — never the password itself.
+  // Returns "valid", "invalid", or "error" (never a plain boolean)
+  // so the caller can tell "the server said no" apart from "the
+  // check never actually finished" — those are NOT the same thing,
+  // and treating them the same was the actual bug behind "the first
+  // attempt always says incorrect password, the second always
+  // works": the very first check after this feature goes live has
+  // to make the Apps Script side create a brand-new sheet from
+  // scratch, which is genuinely slower than a quick timeout allows
+  // for — so it silently timed out and got mislabeled as a wrong
+  // password, when the real password was never actually checked.
+  // One quiet retry with a longer timeout now happens automatically
+  // before ever surfacing an error to the person typing.
   async function checkCredentialsRemote(username, password) {
     const cred = SITE_CONFIG.protectedAccounts;
-    if (!cred) return false;
+    if (!cred) return "error";
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
-    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return false;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return "error";
     const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
-    try {
+    const url = `${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`;
+
+    async function attempt(timeoutMs) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(`${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`, { signal: controller.signal });
-      clearTimeout(timeout);
-      const data = await res.json();
-      return !!(data && data.ok && data.valid);
-    } catch {
-      return false;
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeout);
+        const data = await res.json();
+        if (!data || !data.ok) return "error"; // the request completed but the server itself reported a problem — not a verified "wrong password"
+        return data.valid ? "valid" : "invalid";
+      } catch {
+        clearTimeout(timeout);
+        return "error";
+      }
     }
+
+    const first = await attempt(10000); // generous — a cold Apps Script execution creating a sheet for the first time can genuinely take a few seconds
+    if (first !== "error") return first;
+    return attempt(10000); // one quiet retry before giving up; by now the server is almost always warm
   }
 
   async function isAuthorized(name) {
@@ -777,6 +834,7 @@
     adminBroadcastBtn.addEventListener("click", onBroadcastMessage);
     adminExportBtn.addEventListener("click", onExportCsv);
     adminArchiveBtn.addEventListener("click", onArchiveOldLogs);
+    adminScanBtn.addEventListener("click", onScanBackblaze);
     adminTabs.addEventListener("click", (e) => {
       const btn = e.target.closest(".admin__tab");
       if (btn) switchAdminTab(btn.dataset.tab);
@@ -886,11 +944,21 @@
           setGateBusy(false);
           return;
         }
-        const ok = await checkCredentialsRemote(name, password);
-        if (!ok) {
+        const result = await checkCredentialsRemote(name, password);
+        if (result === "invalid") {
           showGateError("Incorrect password.");
           gatePasswordInput.value = "";
           gatePasswordInput.focus();
+          return;
+        }
+        if (result === "error") {
+          // The check itself couldn't complete (even after the
+          // built-in retry) — genuinely different from a wrong
+          // password, so it gets an honest message instead, and the
+          // password is deliberately NOT cleared: whatever they typed
+          // was never actually verified either way, so there's no
+          // reason to make them retype it.
+          showGateError("Couldn't verify your password — check your connection and try again.");
           return;
         }
         credentialsVerified = true;
@@ -1008,7 +1076,34 @@
     gateError.classList.add("hidden");
   }
 
-  function showApp(name) {
+  // Fetches the live file catalog and slots it into
+  // SITE_CONFIG.subjects[i].subfolders in place of whatever's
+  // hardcoded there — this is what lets a file added via the admin
+  // dashboard's "Scan Backblaze" feature show up without a GitHub
+  // edit. If the catalog sheet has nothing for a subject yet (a
+  // brand-new deployment before the first scan-and-confirm ever
+  // runs, or a network hiccup), that subject's hardcoded config.js
+  // list is left untouched as a safety net rather than wiped to empty.
+  async function fetchAndApplyCatalog() {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(`${endpoint}?action=catalog`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await res.json();
+      if (!data || !data.ok || !data.catalog) return;
+      SITE_CONFIG.subjects.forEach((s) => {
+        const liveSubfolders = data.catalog[s.id];
+        if (liveSubfolders && liveSubfolders.length) s.subfolders = liveSubfolders;
+      });
+    } catch {
+      // network hiccup — config.js's existing hardcoded list stands in as-is, site still works
+    }
+  }
+
+  async function showApp(name) {
     currentName = name;
     sessionId = makeId();
     sessionStart = Date.now();
@@ -1017,6 +1112,7 @@
     logEvent("session_start", name, "");
     startHeartbeat();
     ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
+    await fetchAndApplyCatalog(); // awaited so the very first render already reflects the live file list, not a stale-then-updated flash
     nav("home");
   }
 
@@ -2580,6 +2676,128 @@
         </div>`;
       adminFeedbackList.appendChild(row);
     });
+  }
+
+  // ── Scan Backblaze for new files ("scan and confirm") ────────────
+  // Lists everything currently in the bucket, compares it against the
+  // Catalog sheet, and shows only what's genuinely new — nothing gets
+  // added to the live site until you review each one here and confirm.
+  // A wrong guess at which subject/folder a file belongs to would put
+  // it in front of students immediately, which is exactly why nothing
+  // here is silent or automatic.
+  let scanTimerInterval = null;
+
+  async function onScanBackblaze() {
+    adminScanBtn.disabled = true;
+    adminScanResults.innerHTML = "";
+    adminScanProgress.classList.remove("hidden");
+    const startedAt = Date.now();
+    adminScanTimer.textContent = "Scanning… 0.0s";
+    scanTimerInterval = setInterval(() => {
+      adminScanTimer.textContent = `Scanning… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    }, 100);
+
+    const data = await adminFetch("scanBackblaze");
+
+    clearInterval(scanTimerInterval);
+    scanTimerInterval = null;
+    adminScanProgress.classList.add("hidden");
+    adminScanBtn.disabled = false;
+
+    if (!data) {
+      adminScanResults.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      return;
+    }
+    if (data.error) {
+      adminScanResults.innerHTML = `<p class="admin__empty">Scan failed: ${data.error}</p>`;
+      return;
+    }
+    renderScanResults(data);
+  }
+
+  function renderScanResults(data) {
+    const newFiles = data.newFiles || [];
+    const unrecognized = data.unrecognized || [];
+    adminScanResults.innerHTML = "";
+
+    const summary = el("p", "admin-scan-summary",
+      `Scanned ${data.totalInBucket || 0} file${data.totalInBucket === 1 ? "" : "s"} in the bucket — ${newFiles.length} new.`);
+    adminScanResults.appendChild(summary);
+
+    if (!newFiles.length && !unrecognized.length) {
+      adminScanResults.appendChild(el("p", "admin__empty", "Nothing new — the catalog is already up to date."));
+      return;
+    }
+
+    if (newFiles.length) {
+      const list = el("div", "admin-scan-list");
+      const subjectOptions = SITE_CONFIG.subjects.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
+
+      newFiles.forEach((item, idx) => {
+        const row = el("div", "admin-scan-row");
+        row.innerHTML = `
+          <input type="checkbox" class="admin__roster-checkbox" data-scan-check checked>
+          <div class="admin-scan-row__fields">
+            <select class="admin-scan-row__subject" data-field="subjectId">${subjectOptions}</select>
+            <input type="text" class="admin-scan-row__input" data-field="folderName" value="${item.folderName}" placeholder="Folder / chapter name">
+            <input type="text" class="admin-scan-row__input" data-field="displayName" value="${item.displayName}" placeholder="Display name">
+          </div>
+          <span class="admin-scan-row__path">${item.filePath}</span>
+        `;
+        row.querySelector('[data-field="subjectId"]').value = item.subjectId;
+        list.appendChild(row);
+        row.dataset.idx = String(idx);
+      });
+      adminScanResults.appendChild(list);
+
+      const confirmBtn = el("button", "admin__nav-btn", "Confirm selected");
+      confirmBtn.type = "button";
+      confirmBtn.addEventListener("click", () => onConfirmScanResults(list, newFiles));
+      adminScanResults.appendChild(confirmBtn);
+    }
+
+    if (unrecognized.length) {
+      const uLabel = el("p", "admin__section-title", "Couldn't figure out where these belong — fix the path in Backblaze and re-scan");
+      adminScanResults.appendChild(uLabel);
+      unrecognized.forEach((u) => {
+        adminScanResults.appendChild(el("p", "admin-scan-row__path", u.path));
+      });
+    }
+  }
+
+  async function onConfirmScanResults(list, newFiles) {
+    const items = [];
+    list.querySelectorAll(".admin-scan-row").forEach((row) => {
+      if (!row.querySelector("[data-scan-check]").checked) return;
+      const idx = Number(row.dataset.idx);
+      const original = newFiles[idx];
+      items.push({
+        subjectId: row.querySelector('[data-field="subjectId"]').value,
+        folderName: row.querySelector('[data-field="folderName"]').value.trim(),
+        fileName: original.fileName,
+        filePath: original.filePath,
+        displayName: row.querySelector('[data-field="displayName"]').value.trim() || original.displayName
+      });
+    });
+    if (!items.length) return;
+
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint) return;
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        body: JSON.stringify({ type: "confirmCatalogAdditions", key: adminApiToken, items })
+      });
+      const data = await res.json();
+      if (data && data.ok) {
+        showToast(`Added ${data.added} file${data.added === 1 ? "" : "s"} to the catalog.`);
+        adminScanResults.innerHTML = "";
+      } else {
+        showToast("Couldn't save — check the admin key and try again.", true);
+      }
+    } catch {
+      showToast("Couldn't reach the sheet — check your connection and try again.", true);
+    }
   }
 
   let selectedQueueNames = new Set();
