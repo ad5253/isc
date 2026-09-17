@@ -1265,20 +1265,6 @@
   // isn't the same as being done with it, and revised is the number
   // that's actually the student's own judgment of their progress.
   // ── Feedback ───────────────────────────────────────────
-  function feedbackStorageKey() {
-    return `c12_feedback_at_${normalizeName(currentName || "")}`;
-  }
-  function hasRecentFeedback() {
-    try {
-      const at = Number(localStorage.getItem(feedbackStorageKey()) || 0);
-      return at && (Date.now() - at) < 14 * 24 * 60 * 60 * 1000; // 14 days
-    } catch {
-      return false;
-    }
-  }
-  function markFeedbackSubmitted() {
-    try { localStorage.setItem(feedbackStorageKey(), String(Date.now())); } catch { /* fine to skip */ }
-  }
 
   // A deliberately stricter check than the loose one-liners floating
   // around online — requires a real-looking domain with a proper,
@@ -1411,7 +1397,6 @@
           // best-effort — still show the thank-you either way, no point making someone retry a review
         }
       }
-      markFeedbackSubmitted();
       wrap.innerHTML = `
         <div class="feedback-page__thanks">
           <span class="feedback-page__thanks-icon">${ICONS.star}</span>
@@ -1584,10 +1569,10 @@
       content.appendChild(banner);
     }
 
-    // Hidden if they've already submitted recently — a banner that
-    // keeps nagging after someone's already given feedback trains
-    // people to ignore it, which defeats the point.
-    if (currentName && !hasRecentFeedback()) {
+    // Always visible — explicitly kept, not hidden after someone
+    // submits once. A one-time review shouldn't mean the option to
+    // leave another disappears for good.
+    if (currentName) {
       const feedbackBanner = el("button", "feedback-banner fade-up");
       feedbackBanner.innerHTML = `${ICONS.star}<span>Help us improve — leave a quick review</span>`;
       feedbackBanner.addEventListener("click", () => nav("feedback"));

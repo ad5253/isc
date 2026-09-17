@@ -1448,6 +1448,17 @@ html.fonts-ready .gate__spine {
 
 .viewer__btn--close:hover { border-color: rgba(176, 99, 73, 0.5); color: var(--chemistry); }
 
+.viewer__btn--pages {
+  flex-shrink: 0;
+  background: none;
+  color: var(--paper-dim);
+  border: 1px solid var(--line-strong);
+  width: 20px;
+  height: 20px;
+  padding: 4px;
+}
+.viewer__btn--pages:hover { border-color: var(--brass-dim); color: var(--brass); }
+
 /* Floating bottom-center pill, like Drive/Docs — fixed to the
    viewport rather than sitting in the top bar, so it's always in
    thumb reach on a phone and never fights the document for space.
