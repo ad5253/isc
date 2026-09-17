@@ -178,6 +178,8 @@
   const adminBroadcastBtn  = $("#adminBroadcastBtn");
   const adminExportBtn     = $("#adminExportBtn");
   const adminContentStatsList = $("#adminContentStatsList");
+  const adminFeedbackAvg      = $("#adminFeedbackAvg");
+  const adminFeedbackList     = $("#adminFeedbackList");
   const adminArchiveBtn    = $("#adminArchiveBtn");
   const adminBlockedDevicesList = $("#adminBlockedDevicesList");
   const adminTabs = $("#adminTabs");
@@ -1219,6 +1221,10 @@
       h += `<span class="crumb-sep">/</span>`;
       h += `<button class="crumb crumb--active">My Progress</button>`;
     }
+    if (curView === "feedback") {
+      h += `<span class="crumb-sep">/</span>`;
+      h += `<button class="crumb crumb--active">Feedback</button>`;
+    }
     if (curSubject) {
       h += `<span class="crumb-sep">/</span>`;
       h += `<button class="crumb ${curView === 'subject' ? 'crumb--active' : ''}" onclick="window.__nav('subject','${curSubject.id}')">${curSubject.name}</button>`;
@@ -1242,6 +1248,7 @@
       case "subject":   renderFolders();  break;
       case "subfolder": renderFiles();    break;
       case "progress":  renderProgress(); break;
+      case "feedback":  renderFeedback(); break;
     }
   }
 
@@ -1257,6 +1264,163 @@
   // Percentage shown is based on REVISED, not opened — opening a file
   // isn't the same as being done with it, and revised is the number
   // that's actually the student's own judgment of their progress.
+  // ── Feedback ───────────────────────────────────────────
+  function feedbackStorageKey() {
+    return `c12_feedback_at_${normalizeName(currentName || "")}`;
+  }
+  function hasRecentFeedback() {
+    try {
+      const at = Number(localStorage.getItem(feedbackStorageKey()) || 0);
+      return at && (Date.now() - at) < 14 * 24 * 60 * 60 * 1000; // 14 days
+    } catch {
+      return false;
+    }
+  }
+  function markFeedbackSubmitted() {
+    try { localStorage.setItem(feedbackStorageKey(), String(Date.now())); } catch { /* fine to skip */ }
+  }
+
+  // A deliberately stricter check than the loose one-liners floating
+  // around online — requires a real-looking domain with a proper,
+  // alphabetic top-level domain (2–24 letters), and rejects
+  // consecutive dots and leading/trailing dots. This is format
+  // validation only — no code here can confirm the address actually
+  // exists or belongs to the person without sending a real
+  // verification email, which this feature doesn't do — but it does
+  // reliably reject things like "asdf@asdf", "a@b.c", or
+  // "test@@test.com" instead of letting anything with an @ sign through.
+  function isValidEmail(email) {
+    const trimmed = email.trim();
+    if (!trimmed || /\s/.test(trimmed) || trimmed.includes("..")) return false;
+    const pattern = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,24}$/;
+    return pattern.test(trimmed);
+  }
+
+  function renderFeedback() {
+    const IMPROVEMENT_OPTIONS = ["More PDFs", "Faster loading", "Easier navigation", "Better design", "Nothing, it's great!"];
+    let rating = 0;
+    const selectedImprovements = new Set();
+
+    const wrap = el("div", "feedback-page fade-up");
+    wrap.innerHTML = `
+      <div class="feedback-page__head">
+        <span class="feedback-page__title">Help us improve</span>
+        <span class="feedback-page__subtitle">Two quick questions — takes 15 seconds</span>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">Your email <span class="feedback-required">*</span></p>
+        <div class="feedback-email-wrap">
+          <input type="email" id="feedbackEmail" class="feedback-input" placeholder="you@example.com" autocomplete="email" inputmode="email">
+          <span class="feedback-email-check" id="feedbackEmailCheck"></span>
+        </div>
+        <p class="feedback-email-hint" id="feedbackEmailHint"></p>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">How would you rate this portal overall?</p>
+        <div class="feedback-stars" id="feedbackStars"></div>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">What could we improve? (pick any)</p>
+        <div class="feedback-chips" id="feedbackChips"></div>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">Anything specific to add?</p>
+        <textarea id="feedbackSuggestion" class="feedback-textarea" placeholder="Optional — a chapter that's missing, a bug you hit, anything at all" rows="4"></textarea>
+      </div>
+      <button type="button" id="feedbackSubmitBtn" class="feedback-submit-btn" disabled>Submit feedback</button>
+    `;
+    content.appendChild(wrap);
+
+    const emailInput = wrap.querySelector("#feedbackEmail");
+    const emailCheck = wrap.querySelector("#feedbackEmailCheck");
+    const emailHint = wrap.querySelector("#feedbackEmailHint");
+    const submitBtn = wrap.querySelector("#feedbackSubmitBtn");
+
+    // Live — checked on every keystroke, not just on submit — so
+    // someone typing "asdf" sees it's invalid immediately instead of
+    // filling out the whole form first and only finding out at the end.
+    // The submit button itself stays disabled the entire time the
+    // email is invalid or empty, so there's no way to submit gibberish
+    // by just ignoring the hint text.
+    emailInput.addEventListener("input", () => {
+      const value = emailInput.value;
+      const valid = isValidEmail(value);
+      submitBtn.disabled = !valid;
+      emailInput.classList.toggle("feedback-input--valid", valid);
+      emailInput.classList.toggle("feedback-input--invalid", value.length > 0 && !valid);
+      emailCheck.innerHTML = valid ? "✓" : "";
+      emailHint.textContent = value.length > 0 && !valid ? "Enter a real email address (e.g. name@gmail.com)" : "";
+    });
+
+    const starsEl = wrap.querySelector("#feedbackStars");
+    for (let i = 1; i <= 5; i++) {
+      const star = document.createElement("button");
+      star.type = "button";
+      star.className = "feedback-star";
+      star.dataset.value = String(i);
+      star.innerHTML = ICONS.star;
+      star.addEventListener("click", () => {
+        rating = i;
+        starsEl.querySelectorAll(".feedback-star").forEach((s) => {
+          s.classList.toggle("feedback-star--active", Number(s.dataset.value) <= rating);
+        });
+      });
+      starsEl.appendChild(star);
+    }
+
+    const chipsEl = wrap.querySelector("#feedbackChips");
+    IMPROVEMENT_OPTIONS.forEach((opt) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "feedback-chip";
+      chip.textContent = opt;
+      chip.addEventListener("click", () => {
+        if (selectedImprovements.has(opt)) selectedImprovements.delete(opt);
+        else selectedImprovements.add(opt);
+        chip.classList.toggle("feedback-chip--active");
+      });
+      chipsEl.appendChild(chip);
+    });
+
+    submitBtn.addEventListener("click", async () => {
+      const email = emailInput.value.trim();
+      if (!isValidEmail(email)) {
+        // Re-checked here too (not just trusting the live check /
+        // disabled-button state) since the button's disabled attribute
+        // can't be relied on as the only gate — belt and braces.
+        emailInput.classList.add("feedback-input--invalid");
+        emailHint.textContent = "Enter a real email address (e.g. name@gmail.com)";
+        return;
+      }
+      const suggestion = wrap.querySelector("#feedbackSuggestion").value.trim();
+      const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (endpoint && endpoint.indexOf("PASTE_YOUR") !== 0) {
+        try {
+          await fetch(endpoint, {
+            method: "POST",
+            body: JSON.stringify({
+              type: "feedback",
+              name: currentName,
+              email,
+              rating: rating || "",
+              improvements: Array.from(selectedImprovements),
+              suggestion
+            })
+          });
+        } catch {
+          // best-effort — still show the thank-you either way, no point making someone retry a review
+        }
+      }
+      markFeedbackSubmitted();
+      wrap.innerHTML = `
+        <div class="feedback-page__thanks">
+          <span class="feedback-page__thanks-icon">${ICONS.star}</span>
+          <p>Thanks — this genuinely helps.</p>
+        </div>`;
+      setTimeout(() => nav("home"), 1400);
+    });
+  }
+
   async function renderProgress() {
     const label = el("p", "section-label", "My Progress");
     content.appendChild(label);
@@ -1418,6 +1582,16 @@
         <div class="progress-banner__pct">${pct}%</div>`;
       banner.addEventListener("click", () => nav("progress"));
       content.appendChild(banner);
+    }
+
+    // Hidden if they've already submitted recently — a banner that
+    // keeps nagging after someone's already given feedback trains
+    // people to ignore it, which defeats the point.
+    if (currentName && !hasRecentFeedback()) {
+      const feedbackBanner = el("button", "feedback-banner fade-up");
+      feedbackBanner.innerHTML = `${ICONS.star}<span>Help us improve — leave a quick review</span>`;
+      feedbackBanner.addEventListener("click", () => nav("feedback"));
+      content.appendChild(feedbackBanner);
     }
 
     const recent = getRecentFiles();
@@ -1974,29 +2148,62 @@
     return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   }
 
-  function setZoom(next) {
+  function setZoom(next, pinchAnchor) {
     next = Math.round(clampZoom(next) * 100) / 100;
-    if (!currentPdf || next === viewerZoom) return;
+    if (!currentPdf || next === viewerZoom) {
+      if (pagesInner) pagesInner.style.transform = ""; // clear a lingering live-pinch transform even if the zoom level didn't actually change (e.g. already at max/min)
+      return;
+    }
+    const prevZoom = viewerZoom;
     viewerZoom = next;
     updateZoomLabel();
     const myToken = ++viewerLoadToken; // supersedes any render still in flight from a prior zoom click
 
-    // renderAllPages wipes every page canvas before redrawing them at
-    // the new size — and the instant they're removed, the container's
-    // scroll position collapses to 0. Left alone, that meant zooming
-    // while reading (say) page 6 always dumped you back on page 1.
-    // Capture how far down you were as a fraction of the scrollable
-    // height *before* the wipe, then re-apply that same fraction once
-    // the new (differently-sized) pages are back in — since every page
-    // scales by the same zoom factor, the fraction lands you back on
-    // the same page at roughly the same spot within it.
-    const maxScrollBefore = viewerPages.scrollHeight - viewerPages.clientHeight;
-    const scrollRatio = maxScrollBefore > 0 ? viewerPages.scrollTop / maxScrollBefore : 0;
+    let restoreScroll;
+    if (pinchAnchor) {
+      // Precise version, used for pinch: pinchAnchor.contentX/Y is the
+      // exact content-space point (unscaled) that was under the
+      // fingers, captured in onViewerTouchStart. Every page's on-
+      // screen size scales by the same zoom factor from that same
+      // top-left origin, so that point's new position is just the old
+      // one scaled by (next / prevZoom) — placing it back at the exact
+      // same viewport pixel is what actually keeps the spot you were
+      // pinching under your fingers, instead of "same % down the page."
+      const scaleRatio = next / prevZoom;
+      const targetContentX = pinchAnchor.contentX * scaleRatio;
+      const targetContentY = pinchAnchor.contentY * scaleRatio;
+      restoreScroll = () => {
+        viewerPages.scrollLeft = targetContentX - pinchAnchor.viewportOffsetX;
+        viewerPages.scrollTop = targetContentY - pinchAnchor.viewportOffsetY;
+      };
+    } else {
+      // Coarser version, used for the +/- toolbar buttons: renderAllPages
+      // wipes every page canvas before redrawing them at the new size —
+      // and the instant they're removed, the container's scroll position
+      // collapses to 0. Left alone, that meant zooming while reading
+      // (say) page 6 always dumped you back on page 1. Capture how far
+      // down you were as a fraction of the scrollable height *before*
+      // the wipe, then re-apply that same fraction once the new
+      // (differently-sized) pages are back in.
+      const maxScrollBefore = viewerPages.scrollHeight - viewerPages.clientHeight;
+      const scrollRatio = maxScrollBefore > 0 ? viewerPages.scrollTop / maxScrollBefore : 0;
+      restoreScroll = () => {
+        const maxScrollAfter = viewerPages.scrollHeight - viewerPages.clientHeight;
+        viewerPages.scrollTop = maxScrollAfter > 0 ? scrollRatio * maxScrollAfter : 0;
+      };
+    }
 
     renderAllPages(myToken).then(() => {
       if (myToken !== viewerLoadToken) return;
-      const maxScrollAfter = viewerPages.scrollHeight - viewerPages.clientHeight;
-      viewerPages.scrollTop = maxScrollAfter > 0 ? scrollRatio * maxScrollAfter : 0;
+      restoreScroll();
+      // Only NOW clear the live-pinch CSS transform — clearing it the
+      // instant fingers lifted (before the real re-render and scroll
+      // fix landed) used to cause a visible snap-back-then-jump-forward:
+      // content would pop to its pre-pinch size for a frame, then jump
+      // again once the real render finished. Keeping the transform in
+      // place until this exact moment means the size change and the
+      // scroll correction land in the same tick.
+      if (pagesInner) pagesInner.style.transform = "";
     });
   }
 
@@ -2020,16 +2227,41 @@
   let pinchStartDist = null;
   let pinchStartZoom = 1;
   let pinchLiveZoom = null;
+  let pinchAnchor = null; // set at touchstart — the content-space point under the fingers, kept fixed for the whole gesture
 
   function touchDistance(touches) {
     const [a, b] = touches;
     return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
   }
 
+  function touchMidpoint(touches) {
+    const [a, b] = touches;
+    return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+  }
+
   function onViewerTouchStart(e) {
-    if (e.touches.length === 2 && currentPdf) {
+    if (e.touches.length === 2 && currentPdf && pagesInner) {
       pinchStartDist = touchDistance(e.touches);
       pinchStartZoom = viewerZoom;
+
+      // Anchor the zoom to wherever the fingers actually are, not the
+      // center of the whole document (pagesInner's own default
+      // transform-origin) — for anything longer than one screen's
+      // worth of page, that center could be hundreds of pixels from
+      // where someone is actually pinching, which is exactly what made
+      // this feel uncontrollable: content zoomed from a point you
+      // weren't even looking at.
+      const mid = touchMidpoint(e.touches);
+      const rect = viewerPages.getBoundingClientRect();
+      const contentX = mid.x - rect.left + viewerPages.scrollLeft;
+      const contentY = mid.y - rect.top + viewerPages.scrollTop;
+      pagesInner.style.transformOrigin = `${contentX}px ${contentY}px`;
+      pinchAnchor = {
+        contentX,
+        contentY,
+        viewportOffsetX: mid.x - rect.left, // fingers' position relative to the viewer, not the page — this is what "under the fingers" gets restored to after the real re-render
+        viewportOffsetY: mid.y - rect.top
+      };
     }
   }
 
@@ -2045,9 +2277,12 @@
   function onViewerTouchEnd(e) {
     if (pinchStartDist !== null && e.touches.length < 2) {
       pinchStartDist = null;
-      if (pagesInner) pagesInner.style.transform = "";
-      if (pinchLiveZoom !== null) setZoom(pinchLiveZoom);
+      const finalZoom = pinchLiveZoom;
+      const anchor = pinchAnchor;
       pinchLiveZoom = null;
+      pinchAnchor = null;
+      if (finalZoom !== null) setZoom(finalZoom, anchor);
+      else if (pagesInner) pagesInner.style.transform = "";
     }
   }
 
@@ -2302,6 +2537,7 @@
       renderAuditLog();
       renderContentStats();
       renderBlockedDevices();
+      renderFeedbackAdmin();
       return;
     }
     renderAdminPresence(data.online);
@@ -2313,6 +2549,7 @@
     renderContentStats(data.stats);
     renderBlockedDevices(data.devices);
     renderSummaryStrip(data.online, data.flags, data.queue, data.bandwidth);
+    renderFeedbackAdmin(data.feedback);
   }
 
   async function renderContentStats(preloaded) {
@@ -2333,6 +2570,30 @@
           <span class="admin__presence-meta">${s.views} views · ${s.downloads} downloads · ${s.distinctViewers} people · ${mins}m total</span>
         </div>`;
       adminContentStatsList.appendChild(row);
+    });
+  }
+
+  async function renderFeedbackAdmin(preloaded) {
+    const data = preloaded ? { ok: true, ...preloaded } : await adminFetch("feedbackList");
+    if (!data) return;
+    const entries = data.entries || [];
+    adminFeedbackAvg.textContent = data.averageRating ? `${data.averageRating} / 5 average (${data.count} response${data.count === 1 ? "" : "s"})` : `No ratings yet`;
+    adminFeedbackList.innerHTML = "";
+    if (!entries.length) {
+      adminFeedbackList.innerHTML = `<p class="admin__empty">No feedback yet</p>`;
+      return;
+    }
+    entries.slice(0, 30).forEach((f) => {
+      const when = f.timestamp ? new Date(f.timestamp).toLocaleString() : "";
+      const stars = f.rating ? "★".repeat(f.rating) + "☆".repeat(5 - f.rating) : "—";
+      const row = el("div", "admin__presence-row");
+      row.innerHTML = `
+        <div class="admin__presence-info">
+          <span class="admin__presence-name">${f.name || "Anonymous"} <span class="admin__feedback-stars">${stars}</span></span>
+          <span class="admin__presence-meta">${f.email ? f.email + " · " : ""}${f.improvements ? f.improvements + " · " : ""}${when}</span>
+          ${f.suggestion ? `<p class="admin__feedback-suggestion">${f.suggestion}</p>` : ""}
+        </div>`;
+      adminFeedbackList.appendChild(row);
     });
   }
 
