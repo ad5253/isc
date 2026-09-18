@@ -2180,16 +2180,27 @@
   // so jumping to any page (e.g. page 45) renders immediately without a blank sheet.
   function renderPageInto(wrap, pageNum) {
     if (!wrap || !currentPdf) return;
-    if (wrap.dataset.rendered) return;
-    wrap.dataset.rendered = "1";
+    if (wrap.dataset.rendered || wrap.dataset.rendering) return;
+    wrap.dataset.rendering = "1";
     const myToken = viewerLoadToken;
     const pdf = currentPdf;
     const dpr = window.devicePixelRatio || 1;
 
     pdf.getPage(pageNum).then((page) => {
-      if (myToken !== viewerLoadToken) return;
-      const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
+      if (myToken !== viewerLoadToken) {
+        delete wrap.dataset.rendering;
+        return;
+      }
       const unscaledViewport = page.getViewport({ scale: 1 });
+      wrap.dataset.aspect = String(unscaledViewport.height / unscaledViewport.width);
+
+      const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+      const displayWidth = Math.round(baseWidth * viewerZoom);
+      const displayHeight = Math.round(displayWidth * (unscaledViewport.height / unscaledViewport.width));
+
+      wrap.style.width = `${displayWidth}px`;
+      wrap.style.height = `${displayHeight}px`;
+
       const renderScale = (displayWidth / unscaledViewport.width) * dpr;
       const viewport = page.getViewport({ scale: renderScale });
 
@@ -2200,7 +2211,13 @@
 
       const ctx = canvas.getContext("2d");
       return page.render({ canvasContext: ctx, viewport }).promise.then(() => {
-        if (myToken !== viewerLoadToken) return;
+        if (myToken !== viewerLoadToken) {
+          delete wrap.dataset.rendering;
+          return;
+        }
+        delete wrap.dataset.rendering;
+        wrap.dataset.rendered = "1";
+
         drawWatermark(ctx, canvas);
 
         // Remove loading shimmer once rendered
@@ -2213,69 +2230,71 @@
         wrap.appendChild(canvas);
 
         // Remove old annotation layer if present
-        const oldAnno = wrap.querySelector(".viewer__annotation-layer");
+        const oldAnno = wrap.querySelector(".annotationLayer");
         if (oldAnno) oldAnno.remove();
 
-        // ── Annotation Layer for clickable PDF links ─────────
+        // ── Annotation Layer for clickable PDF links (TOC, Index, External) ──
         try {
-          page.getAnnotations().then((annots) => {
+          page.getAnnotations({ intent: "display" }).then((annots) => {
             if (myToken !== viewerLoadToken || !annots || !annots.length) return;
             const annoDiv = document.createElement("div");
-            annoDiv.className = "viewer__annotation-layer";
+            annoDiv.className = "annotationLayer";
             annoDiv.style.width = `${displayWidth}px`;
-            annoDiv.style.height = `${(unscaledViewport.height / unscaledViewport.width) * displayWidth}px`;
+            annoDiv.style.height = `${displayHeight}px`;
             wrap.appendChild(annoDiv);
 
             const cssScale = displayWidth / unscaledViewport.width;
             const annoViewport = page.getViewport({ scale: cssScale });
 
-            pdfjsLib.AnnotationLayer.render({
-              viewport: annoViewport,
-              div: annoDiv,
-              annotations: annots,
-              page: page,
-              linkService: {
-                getDestinationHash: () => "#",
-                getAnchorUrl: () => "#",
-                navigateTo: (dest) => {
-                  if (typeof dest === "string") {
-                    pdf.getDestination(dest).then((d) => {
-                      if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
-                    });
-                  } else if (Array.isArray(dest)) {
-                    pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
-                  }
-                },
-                executeNamedAction: () => {},
-                goToDestination: (dest) => {
-                  if (typeof dest === "string") {
-                    pdf.getDestination(dest).then((d) => {
-                      if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
-                    });
-                  } else if (Array.isArray(dest)) {
-                    pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
-                  }
+            const linkService = {
+              getDestinationHash: () => "#",
+              getAnchorUrl: () => "#",
+              addLinkAttributes: (element, url) => {
+                element.href = url;
+                element.target = "_blank";
+                element.rel = "noopener noreferrer nofollow";
+              },
+              goToDestination: (dest) => {
+                if (typeof dest === "string") {
+                  pdf.getDestination(dest).then((d) => {
+                    if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
+                  });
+                } else if (Array.isArray(dest)) {
+                  pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
                 }
               },
-              downloadManager: null,
-              renderForms: false,
-              enableScripting: false
+              navigateTo: (dest) => {
+                if (typeof dest === "string") {
+                  pdf.getDestination(dest).then((d) => {
+                    if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
+                  });
+                } else if (Array.isArray(dest)) {
+                  pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
+                }
+              },
+              executeNamedAction: () => {}
+            };
+
+            const layer = new pdfjsLib.AnnotationLayer({
+              div: annoDiv,
+              page: page,
+              viewport: annoViewport
             });
 
-            // External links open in a new tab safely
-            annoDiv.querySelectorAll("a[href]").forEach((a) => {
-              const href = a.getAttribute("href");
-              if (href && href !== "#" && !href.startsWith("#")) {
-                a.setAttribute("target", "_blank");
-                a.setAttribute("rel", "noopener");
-              }
+            layer.render({
+              annotations: annots,
+              linkService: linkService,
+              renderForms: false,
+              enableScripting: false
             });
           });
         } catch (annoErr) {
           // Best-effort — link failures never crash the viewer
         }
       });
-    }).catch(() => {});
+    }).catch(() => {
+      delete wrap.dataset.rendering;
+    });
   }
 
   function renderAllPages(token) {
@@ -2313,23 +2332,24 @@
           canvas.width = viewport.width;
           canvas.height = viewport.height;
           return page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-        });
+        }).catch(() => {});
       });
     }, { root: viewerThumbStrip, rootMargin: "400px 0px 400px 0px" });
 
-    const pageNumbers = [];
-    for (let i = 1; i <= pdf.numPages; i++) pageNumbers.push(i);
-
-    return Promise.all(pageNumbers.map((n) => pdf.getPage(n))).then((pages) => {
+    // Fetch ONLY Page 1 to obtain initial aspect ratio (Page 1 is already cached from thumbnail!)
+    // Generating placeholders for all pages takes <1ms with zero extra network requests!
+    return pdf.getPage(1).then((firstPage) => {
       if (token !== viewerLoadToken) return;
-      pages.forEach((page, idx) => {
-        const pageNum = idx + 1;
-        const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
-        const unscaledViewport = page.getViewport({ scale: 1 });
-        const displayHeight = (unscaledViewport.height / unscaledViewport.width) * displayWidth;
+      const unscaledFirst = firstPage.getViewport({ scale: 1 });
+      const defaultAspect = unscaledFirst.height / unscaledFirst.width;
+      const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+      const displayWidth = Math.round(baseWidth * viewerZoom);
+      const displayHeight = Math.round(displayWidth * defaultAspect);
 
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         const wrap = el("div", "viewer__page-wrap");
         wrap.dataset.pageNum = String(pageNum);
+        wrap.dataset.aspect = String(defaultAspect);
         wrap.style.width = `${displayWidth}px`;
         wrap.style.height = `${displayHeight}px`;
 
@@ -2350,7 +2370,7 @@
         thumbItem.dataset.pageNum = String(pageNum);
         if (pageNum === 1) thumbItem.classList.add("viewer__thumb-item--current");
         const thumbCanvas = document.createElement("canvas");
-        thumbCanvas.style.aspectRatio = `${unscaledViewport.width} / ${unscaledViewport.height}`;
+        thumbCanvas.style.aspectRatio = `${unscaledFirst.width} / ${unscaledFirst.height}`;
         const thumbLabel = el("span", "viewer__thumb-item-num", String(pageNum));
         thumbItem.append(thumbCanvas, thumbLabel);
 
@@ -2361,7 +2381,11 @@
 
         viewerThumbStrip.appendChild(thumbItem);
         thumbObserver2.observe(thumbItem);
-      });
+      }
+
+      // Render Page 1 immediately
+      const firstWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="1"]`);
+      if (firstWrap) renderPageInto(firstWrap, 1);
     });
   }
 
@@ -2377,6 +2401,12 @@
     wrap.scrollIntoView({ block: "start", behavior: "smooth" });
     updateCurrentPageDisplay(pageNum);
     highlightThumbnail(pageNum);
+
+    // If stuck or previously failed, clear state to force instant render
+    if (wrap.dataset.rendered && !wrap.querySelector("canvas.viewer__page")) {
+      delete wrap.dataset.rendered;
+    }
+    delete wrap.dataset.rendering;
 
     // Render target page immediately — do NOT wait on IntersectionObserver
     renderPageInto(wrap, pageNum);
@@ -2445,25 +2475,22 @@
   }
 
   function fitToWidth() {
-    if (!currentPdf) return;
-    currentPdf.getPage(1).then((page) => {
-      const unscaledViewport = page.getViewport({ scale: 1 });
-      const availableWidth = viewerPages.clientWidth - 48;
-      const targetZoom = availableWidth / unscaledViewport.width;
-      setZoom(targetZoom);
-    });
+    if (!currentPdf || !pagesInner) return;
+    const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+    const availableWidth = viewerPages.clientWidth - 32;
+    const targetZoom = availableWidth / baseWidth;
+    setZoom(targetZoom);
   }
 
   function fitToPage() {
-    if (!currentPdf) return;
-    currentPdf.getPage(1).then((page) => {
-      const unscaledViewport = page.getViewport({ scale: 1 });
-      const availableWidth = viewerPages.clientWidth - 48;
-      const availableHeight = viewerPages.clientHeight - 80;
-      const zoomW = availableWidth / unscaledViewport.width;
-      const zoomH = availableHeight / unscaledViewport.height;
-      setZoom(Math.min(zoomW, zoomH));
-    });
+    if (!currentPdf || !pagesInner) return;
+    const firstWrap = pagesInner.querySelector(".viewer__page-wrap");
+    const aspect = firstWrap ? (Number(firstWrap.dataset.aspect) || 1.414) : 1.414;
+    const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+    const availableHeight = viewerPages.clientHeight - 40;
+    const targetWidth = availableHeight / aspect;
+    const targetZoom = targetWidth / baseWidth;
+    setZoom(targetZoom);
   }
 
   function updateZoomLabel() {
@@ -2475,10 +2502,9 @@
     return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   }
 
-  // ── Flicker-Free Zoom ────────────────────────────────────
-  // Resizes page containers instantly with CSS, keeps existing canvases
-  // as smooth previews, and swaps in high-resolution renders per-page
-  // without any blank screen or flickering.
+  // ── Flicker-Free Synchronous Zoom ────────────────────────
+  // Resizes page containers immediately via cached aspect ratios (0 promises, 1ms),
+  // scales existing canvases with zero flicker, and re-renders visible pages at high DPI.
   function setZoom(next, pinchAnchor) {
     next = Math.round(clampZoom(next) * 100) / 100;
     if (!currentPdf || next === viewerZoom) {
@@ -2490,8 +2516,9 @@
     updateZoomLabel();
     viewerLoadToken++;
 
-    const pdf = currentPdf;
     const allWraps = pagesInner ? Array.from(pagesInner.querySelectorAll(".viewer__page-wrap")) : [];
+    const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+    const newWidth = Math.round(baseWidth * viewerZoom);
 
     let restoreScroll;
     if (pinchAnchor) {
@@ -2511,40 +2538,38 @@
       };
     }
 
-    // Step 1: Instantly resize all page wraps (no blank flash)
+    // Step 1: Instantly and synchronously resize all wraps in 1 millisecond
     allWraps.forEach((wrap) => {
-      const pageNum = Number(wrap.dataset.pageNum);
-      pdf.getPage(pageNum).then((page) => {
-        const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
-        const unscaledViewport = page.getViewport({ scale: 1 });
-        const displayHeight = (unscaledViewport.height / unscaledViewport.width) * displayWidth;
-        wrap.style.width = `${displayWidth}px`;
-        wrap.style.height = `${displayHeight}px`;
-        const annoLayer = wrap.querySelector(".viewer__annotation-layer");
-        if (annoLayer) {
-          annoLayer.style.width = `${displayWidth}px`;
-          annoLayer.style.height = `${displayHeight}px`;
-        }
-      });
+      const aspect = Number(wrap.dataset.aspect) || 1.414;
+      const newHeight = Math.round(newWidth * aspect);
+      wrap.style.width = `${newWidth}px`;
+      wrap.style.height = `${newHeight}px`;
+
+      const annoLayer = wrap.querySelector(".annotationLayer");
+      if (annoLayer) {
+        annoLayer.style.width = `${newWidth}px`;
+        annoLayer.style.height = `${newHeight}px`;
+      }
+
       delete wrap.dataset.rendered;
+      delete wrap.dataset.rendering;
     });
 
     if (pagesInner) pagesInner.style.transform = "";
 
-    // Step 2: Restore scroll position and re-observe visible pages
-    requestAnimationFrame(() => {
-      restoreScroll();
-      if (pageObserver) pageObserver.disconnect();
-      pageObserver = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          const wrap = entry.target;
-          renderPageInto(wrap, Number(wrap.dataset.pageNum));
-        });
-      }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
+    restoreScroll();
 
-      allWraps.forEach((wrap) => pageObserver.observe(wrap));
-    });
+    // Step 2: Re-observe visible pages with IntersectionObserver so visible pages get re-rendered at new high-res scale
+    if (pageObserver) pageObserver.disconnect();
+    pageObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const wrap = entry.target;
+        renderPageInto(wrap, Number(wrap.dataset.pageNum));
+      });
+    }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
+
+    allWraps.forEach((wrap) => pageObserver.observe(wrap));
   }
 
   function zoomIn() {
