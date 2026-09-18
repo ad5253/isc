@@ -8,12 +8,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=13">
+    <link rel="stylesheet" href="style.css?v=14">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
 </head>
 <body>
 
@@ -172,9 +173,24 @@
                  of .viewer__bar instead, its position:fixed now correctly
                  anchors to the screen again. -->
             <div class="viewer__zoom">
+                <button id="viewerPrevPage" class="viewer__zoom-btn viewer__nav-btn" aria-label="Previous page" title="Previous page">‹</button>
+                <div class="viewer__page-indicator">
+                    <input type="number" id="viewerPageInput" class="viewer__page-input" min="1" value="1" aria-label="Page number">
+                    <span class="viewer__page-sep">/</span>
+                    <span id="viewerPageTotal" class="viewer__page-total">1</span>
+                </div>
+                <button id="viewerNextPage" class="viewer__zoom-btn viewer__nav-btn" aria-label="Next page" title="Next page">›</button>
+                <span class="viewer__toolbar-sep"></span>
                 <button id="viewerZoomOut" class="viewer__zoom-btn" aria-label="Zoom out">−</button>
                 <span id="viewerZoomLabel" class="viewer__zoom-label">100%</span>
                 <button id="viewerZoomIn" class="viewer__zoom-btn" aria-label="Zoom in">+</button>
+                <span class="viewer__toolbar-sep"></span>
+                <button id="viewerFitWidth" class="viewer__zoom-btn viewer__fit-btn" aria-label="Fit to width" title="Fit to width">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3H3v18h18V3z"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>
+                </button>
+                <button id="viewerFitPage" class="viewer__zoom-btn viewer__fit-btn" aria-label="Fit to page" title="Fit to page">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+                </button>
             </div>
             <div class="viewer__body">
                 <div id="viewerThumbStrip" class="viewer__thumb-strip"></div>
@@ -320,6 +336,6 @@
     </div>
 
     <script src="config.js?v=5"></script>
-    <script src="script.js?v=9"></script>
+    <script src="script.js?v=10"></script>
 </body>
 </html>

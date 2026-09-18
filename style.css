@@ -1485,8 +1485,8 @@ html.fonts-ready .gate__spine {
 }
 
 .viewer__zoom-btn {
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1494,21 +1494,90 @@ html.fonts-ready .gate__spine {
   border: none;
   border-radius: 50%;
   color: var(--paper-dim);
-  font-size: 19px;
+  font-size: 16px;
   line-height: 1;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, color 0.15s;
 }
 
 .viewer__zoom-btn:hover, .viewer__zoom-btn:active { background: var(--ink-raised-2); color: var(--brass); }
 
 .viewer__zoom-label {
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--paper);
-  min-width: 46px;
+  min-width: 40px;
   text-align: center;
+  user-select: none;
+}
+
+.viewer__page-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.viewer__page-input {
+  width: 36px;
+  height: 26px;
+  background: var(--ink-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  padding: 0 2px;
+  -moz-appearance: textfield;
+}
+
+.viewer__page-input::-webkit-outer-spin-button,
+.viewer__page-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.viewer__page-input:focus {
+  outline: none;
+  border-color: var(--brass);
+  box-shadow: 0 0 0 1px var(--brass);
+}
+
+.viewer__page-sep {
+  color: var(--paper-faint);
+  font-size: 11px;
+  user-select: none;
+}
+
+.viewer__page-total {
+  color: var(--paper-dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 14px;
+  user-select: none;
+}
+
+.viewer__toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line-strong);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.viewer__fit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewer__fit-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .viewer__pages {
@@ -1634,6 +1703,78 @@ html.fonts-ready .gate__spine {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* Floating page number badge visible on each page in the main viewer */
+.viewer__page-num {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  background: rgba(12, 12, 16, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: var(--paper-dim);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+
+/* Shimmer placeholder while distant pages are loading (replaces the blank sheet) */
+.viewer__page-shimmer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(90deg, #14141a 0%, #1c1c24 50%, #14141a 100%);
+  background-size: 200% 100%;
+  animation: viewerShimmer 1.8s ease-in-out infinite;
+  z-index: 1;
+}
+
+@keyframes viewerShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.viewer__page-shimmer-text {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--paper-faint);
+  letter-spacing: 0.5px;
+}
+
+/* ── Annotation Layer (Clickable PDF Links) ────────── */
+.viewer__annotation-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+  z-index: 3;
+  transform-origin: 0 0;
+}
+
+.viewer__annotation-layer a,
+.viewer__annotation-layer .linkAnnotation a {
+  position: absolute;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background-color 0.15s ease, outline 0.15s ease;
+  background-color: rgba(197, 168, 128, 0.04);
+}
+
+.viewer__annotation-layer a:hover,
+.viewer__annotation-layer .linkAnnotation a:hover {
+  background-color: rgba(197, 168, 128, 0.22);
+  outline: 1.5px solid var(--brass);
 }
 
 /* The instant cached-thumbnail stand-in shown the moment the viewer
@@ -1859,6 +2000,31 @@ html.fonts-ready .gate__spine {
     padding: 16px 10px 110px;
     padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
   }
+  .viewer__zoom {
+    padding: 4px 6px;
+    gap: 2px;
+    bottom: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    max-width: calc(100vw - 16px);
+  }
+  .viewer__zoom-btn {
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+  }
+  .viewer__page-input {
+    width: 32px;
+    height: 24px;
+    font-size: 11px;
+  }
+  .viewer__zoom-label {
+    min-width: 34px;
+    font-size: 11px;
+  }
+  .viewer__toolbar-sep {
+    margin: 0 2px;
+    height: 14px;
+  }
 }
 
 /* Small mobile */
@@ -1870,6 +2036,7 @@ html.fonts-ready .gate__spine {
   .gate__btn { justify-content: center; padding: 0 22px; }
 
   .viewer__btn-text { display: none; }
+  .viewer__fit-btn { display: none; }
 }
 
 /* Reduced motion */

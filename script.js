@@ -182,6 +182,12 @@
   const viewerPages = $("#viewerPages");
   const viewerThumbStrip = $("#viewerThumbStrip");
   const viewerThumbToggle = $("#viewerThumbToggle");
+  const viewerPrevPage    = $("#viewerPrevPage");
+  const viewerNextPage    = $("#viewerNextPage");
+  const viewerPageInput   = $("#viewerPageInput");
+  const viewerPageTotal   = $("#viewerPageTotal");
+  const viewerFitWidth    = $("#viewerFitWidth");
+  const viewerFitPage     = $("#viewerFitPage");
   const gatePasswordField = $("#gatePasswordField");
   const gatePasswordInput = $("#gatePasswordInput");
   const gateBtn     = $(".gate__btn");
@@ -853,12 +859,44 @@
     }
     $("#viewerZoomIn").addEventListener("click", zoomIn);
     $("#viewerZoomOut").addEventListener("click", zoomOut);
+    if (viewerPrevPage) viewerPrevPage.addEventListener("click", prevPage);
+    if (viewerNextPage) viewerNextPage.addEventListener("click", nextPage);
+    if (viewerPageInput) {
+      viewerPageInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const p = parseInt(viewerPageInput.value, 10);
+          if (!isNaN(p)) scrollToPage(p);
+          viewerPageInput.blur();
+        }
+      });
+      viewerPageInput.addEventListener("change", () => {
+        const p = parseInt(viewerPageInput.value, 10);
+        if (!isNaN(p)) scrollToPage(p);
+      });
+    }
+    if (viewerFitWidth) viewerFitWidth.addEventListener("click", fitToWidth);
+    if (viewerFitPage) viewerFitPage.addEventListener("click", fitToPage);
+    viewerPages.addEventListener("scroll", onViewerScroll, { passive: true });
     viewerPages.addEventListener("touchstart", onViewerTouchStart, { passive: true });
     viewerPages.addEventListener("touchmove", onViewerTouchMove, { passive: false });
     viewerPages.addEventListener("touchend", onViewerTouchEnd, { passive: true });
     viewerPages.addEventListener("touchcancel", onViewerTouchEnd, { passive: true });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeViewer();
+
+      // Keyboard navigation for PDF viewer (PageUp/PageDown)
+      if (!viewer.classList.contains("hidden")) {
+        if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") {
+          if (e.key === "PageDown" || (e.key === "ArrowDown" && e.altKey)) {
+            e.preventDefault();
+            nextPage();
+          } else if (e.key === "PageUp" || (e.key === "ArrowUp" && e.altKey)) {
+            e.preventDefault();
+            prevPage();
+          }
+        }
+      }
 
       // Block the obvious save/print shortcuts while a PDF is open.
       // This deters casual attempts, not determined ones — anyone
@@ -2078,6 +2116,11 @@
     task.promise.then((pdf) => {
       if (myToken !== viewerLoadToken) return;
       currentPdf = pdf;
+      if (viewerPageTotal) viewerPageTotal.textContent = String(pdf.numPages);
+      if (viewerPageInput) {
+        viewerPageInput.value = 1;
+        viewerPageInput.max = String(pdf.numPages);
+      }
       status.remove();
       viewerPages.appendChild(pagesInner);
       return renderAllPages(myToken);
@@ -2114,6 +2157,127 @@
     });
   }
 
+  function drawWatermark(ctx, canvas) {
+    const label = `${currentName || "unknown"} · ${new Date().toLocaleDateString()}`;
+    ctx.save();
+    ctx.globalAlpha = 0.09;
+    ctx.fillStyle = "#000";
+    ctx.font = `${Math.round(canvas.width / 22)}px Archivo, sans-serif`;
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(-Math.PI / 6);
+    const stepX = canvas.width * 0.6;
+    const stepY = canvas.height * 0.22;
+    for (let y = -canvas.height; y < canvas.height; y += stepY) {
+      for (let x = -canvas.width; x < canvas.width; x += stepX) {
+        ctx.fillText(label, x, y);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Renders ONE page into its already-placed, already-correctly-sized wrap div.
+  // Can be called lazily via IntersectionObserver or directly on thumbnail/link click
+  // so jumping to any page (e.g. page 45) renders immediately without a blank sheet.
+  function renderPageInto(wrap, pageNum) {
+    if (!wrap || !currentPdf) return;
+    if (wrap.dataset.rendered) return;
+    wrap.dataset.rendered = "1";
+    const myToken = viewerLoadToken;
+    const pdf = currentPdf;
+    const dpr = window.devicePixelRatio || 1;
+
+    pdf.getPage(pageNum).then((page) => {
+      if (myToken !== viewerLoadToken) return;
+      const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
+      const unscaledViewport = page.getViewport({ scale: 1 });
+      const renderScale = (displayWidth / unscaledViewport.width) * dpr;
+      const viewport = page.getViewport({ scale: renderScale });
+
+      const canvas = document.createElement("canvas");
+      canvas.className = "viewer__page";
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      const ctx = canvas.getContext("2d");
+      return page.render({ canvasContext: ctx, viewport }).promise.then(() => {
+        if (myToken !== viewerLoadToken) return;
+        drawWatermark(ctx, canvas);
+
+        // Remove loading shimmer once rendered
+        const shimmer = wrap.querySelector(".viewer__page-shimmer");
+        if (shimmer) shimmer.remove();
+
+        // Swap canvas safely: remove any existing canvas and append new one (no flash)
+        const oldCanvas = wrap.querySelector("canvas.viewer__page");
+        if (oldCanvas) oldCanvas.remove();
+        wrap.appendChild(canvas);
+
+        // Remove old annotation layer if present
+        const oldAnno = wrap.querySelector(".viewer__annotation-layer");
+        if (oldAnno) oldAnno.remove();
+
+        // ── Annotation Layer for clickable PDF links ─────────
+        try {
+          page.getAnnotations().then((annots) => {
+            if (myToken !== viewerLoadToken || !annots || !annots.length) return;
+            const annoDiv = document.createElement("div");
+            annoDiv.className = "viewer__annotation-layer";
+            annoDiv.style.width = `${displayWidth}px`;
+            annoDiv.style.height = `${(unscaledViewport.height / unscaledViewport.width) * displayWidth}px`;
+            wrap.appendChild(annoDiv);
+
+            const cssScale = displayWidth / unscaledViewport.width;
+            const annoViewport = page.getViewport({ scale: cssScale });
+
+            pdfjsLib.AnnotationLayer.render({
+              viewport: annoViewport,
+              div: annoDiv,
+              annotations: annots,
+              page: page,
+              linkService: {
+                getDestinationHash: () => "#",
+                getAnchorUrl: () => "#",
+                navigateTo: (dest) => {
+                  if (typeof dest === "string") {
+                    pdf.getDestination(dest).then((d) => {
+                      if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
+                    });
+                  } else if (Array.isArray(dest)) {
+                    pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
+                  }
+                },
+                executeNamedAction: () => {},
+                goToDestination: (dest) => {
+                  if (typeof dest === "string") {
+                    pdf.getDestination(dest).then((d) => {
+                      if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
+                    });
+                  } else if (Array.isArray(dest)) {
+                    pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
+                  }
+                }
+              },
+              downloadManager: null,
+              renderForms: false,
+              enableScripting: false
+            });
+
+            // External links open in a new tab safely
+            annoDiv.querySelectorAll("a[href]").forEach((a) => {
+              const href = a.getAttribute("href");
+              if (href && href !== "#" && !href.startsWith("#")) {
+                a.setAttribute("target", "_blank");
+                a.setAttribute("rel", "noopener");
+              }
+            });
+          });
+        } catch (annoErr) {
+          // Best-effort — link failures never crash the viewer
+        }
+      });
+    }).catch(() => {});
+  }
+
   function renderAllPages(token) {
     if (!pagesInner) return Promise.resolve();
     pagesInner.querySelectorAll(".viewer__page-wrap").forEach((c) => c.remove());
@@ -2123,74 +2287,16 @@
     const pdf = currentPdf;
     if (!pdf) return Promise.resolve();
 
-    const dpr = window.devicePixelRatio || 1;
-
-    function drawWatermark(ctx, canvas) {
-      const label = `${currentName || "unknown"} · ${new Date().toLocaleDateString()}`;
-      ctx.save();
-      ctx.globalAlpha = 0.09;
-      ctx.fillStyle = "#000";
-      ctx.font = `${Math.round(canvas.width / 22)}px Archivo, sans-serif`;
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate(-Math.PI / 6);
-      const stepX = canvas.width * 0.6;
-      const stepY = canvas.height * 0.22;
-      for (let y = -canvas.height; y < canvas.height; y += stepY) {
-        for (let x = -canvas.width; x < canvas.width; x += stepX) {
-          ctx.fillText(label, x, y);
-        }
-      }
-      ctx.restore();
-    }
-
-    // Actually rasterizes ONE page into its already-placed, already-
-    // correctly-sized wrap div. Called lazily (see pageObserver below),
-    // never eagerly for the whole document — this is the change that
-    // fixes both the lag on underpowered hardware (a smart board's
-    // embedded Android chip doing 2–3 renders at a time instead of 50+
-    // up front) and the "loading slowly slowly" feeling, since the
-    // page's SPACE was already there the instant the document opened;
-    // only the pixels inside it arrive a moment later.
-    function renderPageInto(wrap, pageNum) {
-      if (token !== viewerLoadToken || wrap.dataset.rendered) return;
-      wrap.dataset.rendered = "1";
-      pdf.getPage(pageNum).then((page) => {
-        if (token !== viewerLoadToken) return;
-        const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
-        const unscaledViewport = page.getViewport({ scale: 1 });
-        const renderScale = (displayWidth / unscaledViewport.width) * dpr;
-        const viewport = page.getViewport({ scale: renderScale });
-
-        const canvas = document.createElement("canvas");
-        canvas.className = "viewer__page";
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        wrap.appendChild(canvas);
-
-        const ctx = canvas.getContext("2d");
-        return page.render({ canvasContext: ctx, viewport }).promise.then(() => {
-          drawWatermark(ctx, canvas);
-        });
-      });
-    }
-
-    // rootMargin extends the "visible" zone 800px above and below the
-    // actual viewport, so the next page or two render just BEFORE
-    // they're scrolled into view rather than popping in a beat late —
-    // still nowhere near "render everything", just a small head start
-    // in both scroll directions.
+    // Generous rootMargin (2000px) ensures fast scrolling loads smoothly in advance
     pageObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
         const wrap = entry.target;
         renderPageInto(wrap, Number(wrap.dataset.pageNum));
       });
-    }, { root: viewerPages, rootMargin: "800px 0px 800px 0px" });
+    }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
 
-    // Thumbnail-strip panel — same lazy approach, its own (smaller,
-    // cheaper) observer so opening this panel on a long document never
-    // reintroduces the "render everything at once" problem for the
-    // sidebar itself.
+    // Thumbnail strip observer
     thumbObserver2 = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
@@ -2211,10 +2317,6 @@
       });
     }, { root: viewerThumbStrip, rootMargin: "400px 0px 400px 0px" });
 
-    // Getting a page's dimensions (getPage + getViewport) is cheap
-    // metadata, not a rasterize — safe to do for every page up front
-    // so every placeholder is sized correctly and the document's full,
-    // final height is known from the very first frame.
     const pageNumbers = [];
     for (let i = 1; i <= pdf.numPages; i++) pageNumbers.push(i);
 
@@ -2230,22 +2332,137 @@
         wrap.dataset.pageNum = String(pageNum);
         wrap.style.width = `${displayWidth}px`;
         wrap.style.height = `${displayHeight}px`;
+
+        // Page number label visible on each page in the main viewer
+        const pageLabel = el("span", "viewer__page-num", String(pageNum));
+        wrap.appendChild(pageLabel);
+
+        // Loading shimmer until page canvas renders
+        const shimmer = el("div", "viewer__page-shimmer");
+        shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Page ${pageNum}</span>`;
+        wrap.appendChild(shimmer);
+
         pagesInner.appendChild(wrap);
         pageObserver.observe(wrap);
 
+        // Thumbnail item
         const thumbItem = el("div", "viewer__thumb-item");
         thumbItem.dataset.pageNum = String(pageNum);
+        if (pageNum === 1) thumbItem.classList.add("viewer__thumb-item--current");
         const thumbCanvas = document.createElement("canvas");
         thumbCanvas.style.aspectRatio = `${unscaledViewport.width} / ${unscaledViewport.height}`;
         const thumbLabel = el("span", "viewer__thumb-item-num", String(pageNum));
         thumbItem.append(thumbCanvas, thumbLabel);
+
+        // Clicking a thumbnail jumps directly to that page AND keeps thumbnail strip open
         thumbItem.addEventListener("click", () => {
-          wrap.scrollIntoView({ block: "start" });
-          viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
+          scrollToPage(pageNum);
         });
+
         viewerThumbStrip.appendChild(thumbItem);
         thumbObserver2.observe(thumbItem);
       });
+    });
+  }
+
+  // ── Jump to Page / Scroll to Page ──────────────────────────
+  // Instantly renders the target page and adjacent pages so distant jumps (e.g. page 45)
+  // never sit on a blank screen.
+  function scrollToPage(pageNum) {
+    if (!currentPdf || !pagesInner) return;
+    pageNum = Math.max(1, Math.min(currentPdf.numPages, pageNum));
+    const wrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum}"]`);
+    if (!wrap) return;
+
+    wrap.scrollIntoView({ block: "start", behavior: "smooth" });
+    updateCurrentPageDisplay(pageNum);
+    highlightThumbnail(pageNum);
+
+    // Render target page immediately — do NOT wait on IntersectionObserver
+    renderPageInto(wrap, pageNum);
+
+    // Pre-render adjacent pages for instantaneous responsiveness
+    if (pageNum > 1) {
+      const prevWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum - 1}"]`);
+      if (prevWrap) renderPageInto(prevWrap, pageNum - 1);
+    }
+    if (pageNum < currentPdf.numPages) {
+      const nextWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum + 1}"]`);
+      if (nextWrap) renderPageInto(nextWrap, pageNum + 1);
+    }
+  }
+
+  function updateCurrentPageDisplay(pageNum) {
+    if (viewerPageInput && document.activeElement !== viewerPageInput) {
+      viewerPageInput.value = pageNum;
+    }
+  }
+
+  function highlightThumbnail(pageNum) {
+    if (!viewerThumbStrip) return;
+    viewerThumbStrip.querySelectorAll(".viewer__thumb-item").forEach((t) => {
+      const isCurrent = Number(t.dataset.pageNum) === pageNum;
+      t.classList.toggle("viewer__thumb-item--current", isCurrent);
+      if (isCurrent && viewerThumbStrip.classList.contains("viewer__thumb-strip--open")) {
+        t.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    });
+  }
+
+  let viewerScrollDebounce = null;
+  function onViewerScroll() {
+    if (!currentPdf || !pagesInner) return;
+    if (viewerScrollDebounce) return;
+    viewerScrollDebounce = setTimeout(() => {
+      viewerScrollDebounce = null;
+      if (!pagesInner || !viewerPages) return;
+      const wraps = pagesInner.querySelectorAll(".viewer__page-wrap");
+      const targetMid = viewerPages.scrollTop + viewerPages.clientHeight / 3;
+      let closestPage = 1;
+      let minDiff = Infinity;
+      wraps.forEach((w) => {
+        const top = w.offsetTop;
+        const diff = Math.abs(top - targetMid);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestPage = Number(w.dataset.pageNum);
+        }
+      });
+      updateCurrentPageDisplay(closestPage);
+      highlightThumbnail(closestPage);
+    }, 80);
+  }
+
+  function prevPage() {
+    const cur = parseInt(viewerPageInput ? viewerPageInput.value : "1", 10) || 1;
+    if (cur > 1) scrollToPage(cur - 1);
+  }
+
+  function nextPage() {
+    if (!currentPdf) return;
+    const cur = parseInt(viewerPageInput ? viewerPageInput.value : "1", 10) || 1;
+    if (cur < currentPdf.numPages) scrollToPage(cur + 1);
+  }
+
+  function fitToWidth() {
+    if (!currentPdf) return;
+    currentPdf.getPage(1).then((page) => {
+      const unscaledViewport = page.getViewport({ scale: 1 });
+      const availableWidth = viewerPages.clientWidth - 48;
+      const targetZoom = availableWidth / unscaledViewport.width;
+      setZoom(targetZoom);
+    });
+  }
+
+  function fitToPage() {
+    if (!currentPdf) return;
+    currentPdf.getPage(1).then((page) => {
+      const unscaledViewport = page.getViewport({ scale: 1 });
+      const availableWidth = viewerPages.clientWidth - 48;
+      const availableHeight = viewerPages.clientHeight - 80;
+      const zoomW = availableWidth / unscaledViewport.width;
+      const zoomH = availableHeight / unscaledViewport.height;
+      setZoom(Math.min(zoomW, zoomH));
     });
   }
 
@@ -2258,27 +2475,26 @@
     return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   }
 
+  // ── Flicker-Free Zoom ────────────────────────────────────
+  // Resizes page containers instantly with CSS, keeps existing canvases
+  // as smooth previews, and swaps in high-resolution renders per-page
+  // without any blank screen or flickering.
   function setZoom(next, pinchAnchor) {
     next = Math.round(clampZoom(next) * 100) / 100;
     if (!currentPdf || next === viewerZoom) {
-      if (pagesInner) pagesInner.style.transform = ""; // clear a lingering live-pinch transform even if the zoom level didn't actually change (e.g. already at max/min)
+      if (pagesInner) pagesInner.style.transform = "";
       return;
     }
     const prevZoom = viewerZoom;
     viewerZoom = next;
     updateZoomLabel();
-    const myToken = ++viewerLoadToken; // supersedes any render still in flight from a prior zoom click
+    viewerLoadToken++;
+
+    const pdf = currentPdf;
+    const allWraps = pagesInner ? Array.from(pagesInner.querySelectorAll(".viewer__page-wrap")) : [];
 
     let restoreScroll;
     if (pinchAnchor) {
-      // Precise version, used for pinch: pinchAnchor.contentX/Y is the
-      // exact content-space point (unscaled) that was under the
-      // fingers, captured in onViewerTouchStart. Every page's on-
-      // screen size scales by the same zoom factor from that same
-      // top-left origin, so that point's new position is just the old
-      // one scaled by (next / prevZoom) — placing it back at the exact
-      // same viewport pixel is what actually keeps the spot you were
-      // pinching under your fingers, instead of "same % down the page."
       const scaleRatio = next / prevZoom;
       const targetContentX = pinchAnchor.contentX * scaleRatio;
       const targetContentY = pinchAnchor.contentY * scaleRatio;
@@ -2287,14 +2503,6 @@
         viewerPages.scrollTop = targetContentY - pinchAnchor.viewportOffsetY;
       };
     } else {
-      // Coarser version, used for the +/- toolbar buttons: renderAllPages
-      // wipes every page canvas before redrawing them at the new size —
-      // and the instant they're removed, the container's scroll position
-      // collapses to 0. Left alone, that meant zooming while reading
-      // (say) page 6 always dumped you back on page 1. Capture how far
-      // down you were as a fraction of the scrollable height *before*
-      // the wipe, then re-apply that same fraction once the new
-      // (differently-sized) pages are back in.
       const maxScrollBefore = viewerPages.scrollHeight - viewerPages.clientHeight;
       const scrollRatio = maxScrollBefore > 0 ? viewerPages.scrollTop / maxScrollBefore : 0;
       restoreScroll = () => {
@@ -2303,17 +2511,39 @@
       };
     }
 
-    renderAllPages(myToken).then(() => {
-      if (myToken !== viewerLoadToken) return;
+    // Step 1: Instantly resize all page wraps (no blank flash)
+    allWraps.forEach((wrap) => {
+      const pageNum = Number(wrap.dataset.pageNum);
+      pdf.getPage(pageNum).then((page) => {
+        const displayWidth = Math.min(viewerPages.clientWidth - 32, 900) * viewerZoom;
+        const unscaledViewport = page.getViewport({ scale: 1 });
+        const displayHeight = (unscaledViewport.height / unscaledViewport.width) * displayWidth;
+        wrap.style.width = `${displayWidth}px`;
+        wrap.style.height = `${displayHeight}px`;
+        const annoLayer = wrap.querySelector(".viewer__annotation-layer");
+        if (annoLayer) {
+          annoLayer.style.width = `${displayWidth}px`;
+          annoLayer.style.height = `${displayHeight}px`;
+        }
+      });
+      delete wrap.dataset.rendered;
+    });
+
+    if (pagesInner) pagesInner.style.transform = "";
+
+    // Step 2: Restore scroll position and re-observe visible pages
+    requestAnimationFrame(() => {
       restoreScroll();
-      // Only NOW clear the live-pinch CSS transform — clearing it the
-      // instant fingers lifted (before the real re-render and scroll
-      // fix landed) used to cause a visible snap-back-then-jump-forward:
-      // content would pop to its pre-pinch size for a frame, then jump
-      // again once the real render finished. Keeping the transform in
-      // place until this exact moment means the size change and the
-      // scroll correction land in the same tick.
-      if (pagesInner) pagesInner.style.transform = "";
+      if (pageObserver) pageObserver.disconnect();
+      pageObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const wrap = entry.target;
+          renderPageInto(wrap, Number(wrap.dataset.pageNum));
+        });
+      }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
+
+      allWraps.forEach((wrap) => pageObserver.observe(wrap));
     });
   }
 
