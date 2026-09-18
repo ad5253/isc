@@ -1084,6 +1084,10 @@
   // brand-new deployment before the first scan-and-confirm ever
   // runs, or a network hiccup), that subject's hardcoded config.js
   // list is left untouched as a safety net rather than wiped to empty.
+  // Called from showApp() without being awaited — see the comment
+  // there — so this runs in the background after the home screen is
+  // already visible, and showApp() just calls render() again once
+  // this settles, to pick up anything new.
   async function fetchAndApplyCatalog() {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
@@ -1112,8 +1116,20 @@
     logEvent("session_start", name, "");
     startHeartbeat();
     ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
-    await fetchAndApplyCatalog(); // awaited so the very first render already reflects the live file list, not a stale-then-updated flash
+    // Render immediately from config.js's own static subject list —
+    // that's already everything needed for the home screen, zero
+    // network calls. fetchAndApplyCatalog() used to be awaited RIGHT
+    // HERE, meaning the entire home screen (every subject icon) sat
+    // blank until a Google Apps Script round-trip finished — that
+    // round-trip is genuinely a few seconds on Apps Script's own cold
+    // start, which is exactly the "5-7 seconds before icons appear"
+    // delay. The catalog only ever ADDS newly-scanned files on top of
+    // the static list (see fetchAndApplyCatalog's own comment) — it's
+    // an enhancement, not something the first paint should ever wait
+    // on. Now it runs in the background and just redraws whatever's
+    // currently on screen if it actually changed anything.
     nav("home");
+    fetchAndApplyCatalog().then(() => render());
   }
 
   // ── Heartbeat ("who's on the site right now") ───────────
@@ -2074,14 +2090,27 @@
       // would be actively wrong for someone who's actually been
       // blocked: retrying will never work for them, and telling them
       // to "try again" reads as a glitch rather than a real decision.
+      let canRetry = true;
       if (reason === "suspended") {
         statusText.textContent = (SITE_CONFIG.suspended && SITE_CONFIG.suspended.message) || "You've lost access to this content.";
+        canRetry = false;
       } else if (reason === "unauthorized") {
         statusText.textContent = "You're not authorized to view this file.";
+        canRetry = false;
       } else {
-        statusText.textContent = "Couldn't load this PDF. Please try again.";
+        statusText.textContent = "Couldn't load this PDF.";
       }
       track.remove();
+      // A dead-looking status line with no way forward is exactly what
+      // read as "just stays blank" — this makes the next step obvious
+      // and actually clickable, instead of requiring someone to work
+      // out that closing and reopening the viewer would retry it.
+      if (canRetry) {
+        const retryBtn = el("button", "viewer__btn viewer__retry-btn", "Tap to retry");
+        retryBtn.type = "button";
+        retryBtn.addEventListener("click", () => openViewer(path, name));
+        status.appendChild(retryBtn);
+      }
     });
   }
 
