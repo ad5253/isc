@@ -874,7 +874,26 @@
         const p = parseInt(viewerPageInput.value, 10);
         if (!isNaN(p)) scrollToPage(p);
       });
+      viewerPageInput.addEventListener("blur", () => {
+        const p = parseInt(viewerPageInput.value, 10);
+        if (isNaN(p) || (currentPdf && (p < 1 || p > currentPdf.numPages))) {
+          if (pagesInner) {
+            const wraps = pagesInner.querySelectorAll(".viewer__page-wrap");
+            const targetMid = viewerPages.scrollTop + viewerPages.clientHeight / 3;
+            let closest = 1;
+            let minDiff = Infinity;
+            wraps.forEach((w) => {
+              const diff = Math.abs(w.offsetTop - targetMid);
+              if (diff < minDiff) { minDiff = diff; closest = Number(w.dataset.pageNum); }
+            });
+            viewerPageInput.value = closest;
+          }
+        }
+      });
     }
+    window.addEventListener("resize", () => {
+      if (!viewer.classList.contains("hidden")) syncViewerViewport();
+    });
     if (viewerFitWidth) viewerFitWidth.addEventListener("click", fitToWidth);
     if (viewerFitPage) viewerFitPage.addEventListener("click", fitToPage);
     viewerPages.addEventListener("scroll", onViewerScroll, { passive: true });
@@ -2237,14 +2256,15 @@
         try {
           page.getAnnotations({ intent: "display" }).then((annots) => {
             if (myToken !== viewerLoadToken || !annots || !annots.length) return;
+            const cssScale = displayWidth / unscaledViewport.width;
+            const annoViewport = page.getViewport({ scale: cssScale });
+
             const annoDiv = document.createElement("div");
             annoDiv.className = "annotationLayer";
             annoDiv.style.width = `${displayWidth}px`;
             annoDiv.style.height = `${displayHeight}px`;
+            annoDiv.style.setProperty("--scale-factor", String(cssScale));
             wrap.appendChild(annoDiv);
-
-            const cssScale = displayWidth / unscaledViewport.width;
-            const annoViewport = page.getViewport({ scale: cssScale });
 
             const linkService = {
               getDestinationHash: () => "#",
@@ -2426,6 +2446,8 @@
     if (viewerPageInput && document.activeElement !== viewerPageInput) {
       viewerPageInput.value = pageNum;
     }
+    if (viewerPrevPage) viewerPrevPage.disabled = (pageNum <= 1);
+    if (viewerNextPage) viewerNextPage.disabled = (currentPdf && pageNum >= currentPdf.numPages);
   }
 
   function highlightThumbnail(pageNum) {
@@ -2496,6 +2518,10 @@
   function updateZoomLabel() {
     const label = $("#viewerZoomLabel");
     if (label) label.textContent = `${Math.round(viewerZoom * 100)}%`;
+    const inBtn = $("#viewerZoomIn");
+    const outBtn = $("#viewerZoomOut");
+    if (inBtn) inBtn.disabled = (viewerZoom >= ZOOM_MAX);
+    if (outBtn) outBtn.disabled = (viewerZoom <= ZOOM_MIN);
   }
 
   function clampZoom(z) {

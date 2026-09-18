@@ -1502,6 +1502,11 @@ html.fonts-ready .gate__spine {
 }
 
 .viewer__zoom-btn:hover, .viewer__zoom-btn:active { background: var(--ink-raised-2); color: var(--brass); }
+.viewer__zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 .viewer__zoom-label {
   font-family: var(--sans);
@@ -1759,15 +1764,23 @@ html.fonts-ready .gate__spine {
   left: 0;
   right: 0;
   bottom: 0;
-  pointer-events: auto !important;
+  pointer-events: none;
   z-index: 3;
+  transform-origin: 0 0;
+  --scale-factor: 1;
+}
+
+.annotationLayer section {
+  position: absolute;
+  pointer-events: auto !important;
+  box-sizing: border-box;
   transform-origin: 0 0;
 }
 
 .annotationLayer .linkAnnotation {
   position: absolute;
   z-index: 3;
-  pointer-events: auto !important;
+  outline: none;
 }
 
 .annotationLayer .linkAnnotation > a {
