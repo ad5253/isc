@@ -21,6 +21,26 @@
   // rendered reuses the same in-flight/completed load instead of
   // starting over. Session-scoped only — closing the tab clears it,
   // same as browser memory generally.
+  // Wraps any promise with a hard deadline — pdf.js doesn't always turn
+  // a stalled/blocked request into a clean rejection, it sometimes just
+  // hangs forever, and a hung promise anywhere in this file was the
+  // actual cause behind three different-looking symptoms: a folder's
+  // thumbnails crawling (one stuck request permanently occupying a
+  // concurrency slot), a PDF opening to a totally blank screen with no
+  // error (nothing downstream of the hung call ever got a chance to
+  // run), and jumping to a page that then never loads (its "currently
+  // rendering" flag never got cleared, so every retry silently no-oped
+  // forever). Every render path below is now wrapped with this.
+  function withTimeout(promise, ms, message) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message || "Timed out")), ms);
+      promise.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); }
+      );
+    });
+  }
+
   const pdfLoadingTasks = new Map();
   function getPdfLoadingTask(path) {
     if (!pdfLoadingTasks.has(path)) {
@@ -1917,29 +1937,33 @@
     };
 
     return loading.promise.then((pdf) => {
-      return pdf.getPage(1);
-    }).then((page) => {
-      const desiredWidth = 400;
-      const unscaledViewport = page.getViewport({ scale: 1 });
-      const scale = desiredWidth / unscaledViewport.width;
-      const viewport = page.getViewport({ scale });
+      return withTimeout(
+        pdf.getPage(1).then((page) => {
+          const desiredWidth = 400;
+          const unscaledViewport = page.getViewport({ scale: 1 });
+          const scale = desiredWidth / unscaledViewport.width;
+          const viewport = page.getViewport({ scale });
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
 
-      const ctx = canvas.getContext("2d");
-      return page.render({ canvasContext: ctx, viewport: viewport }).promise.then(() => {
-        skeleton.style.display = "none";
-        canvas.style.display = "block";
-        try {
-          // Low quality is fine — this is only ever shown briefly,
-          // scaled up, as a stand-in for the real page.
-          thumbnailImageCache.set(path, canvas.toDataURL("image/jpeg", 0.7));
-        } catch {
-          // toDataURL can throw in odd browser/security configs —
-          // just skip the placeholder for this file, not fatal.
-        }
-      });
+          const ctx = canvas.getContext("2d");
+          return page.render({ canvasContext: ctx, viewport: viewport }).promise.then(() => {
+            skeleton.style.display = "none";
+            canvas.style.display = "block";
+            try {
+              // Low quality is fine — this is only ever shown briefly,
+              // scaled up, as a stand-in for the real page.
+              thumbnailImageCache.set(path, canvas.toDataURL("image/jpeg", 0.7));
+            } catch {
+              // toDataURL can throw in odd browser/security configs —
+              // just skip the placeholder for this file, not fatal.
+            }
+          });
+        }),
+        15000,
+        "Thumbnail render timed out"
+      );
     }).catch(() => {
       textEl.textContent = "PDF";
       skeleton.style.animation = "none";
@@ -2205,7 +2229,7 @@
     const pdf = currentPdf;
     const dpr = window.devicePixelRatio || 1;
 
-    pdf.getPage(pageNum).then((page) => {
+    withTimeout(pdf.getPage(pageNum), 15000, "Page load timed out").then((page) => {
       if (myToken !== viewerLoadToken) {
         delete wrap.dataset.rendering;
         return;
@@ -2229,7 +2253,11 @@
       canvas.height = viewport.height;
 
       const ctx = canvas.getContext("2d");
-      return page.render({ canvasContext: ctx, viewport }).promise.then(() => {
+      return withTimeout(
+        page.render({ canvasContext: ctx, viewport }).promise,
+        15000,
+        "Page render timed out"
+      ).then(() => {
         if (myToken !== viewerLoadToken) {
           delete wrap.dataset.rendering;
           return;
@@ -2313,7 +2341,24 @@
         }
       });
     }).catch(() => {
+      // Was previously a silent dead end: dataset.rendering never got
+      // cleared on a hang (there was nothing to time it out), so this
+      // page could never be retried by anything — not a re-scroll, not
+      // an explicit jump. Now a failure/timeout clears both flags and
+      // turns the shimmer itself into a retry button, so the page can
+      // actually recover instead of staying blank forever.
       delete wrap.dataset.rendering;
+      delete wrap.dataset.rendered;
+      const shimmer = wrap.querySelector(".viewer__page-shimmer");
+      if (shimmer) {
+        shimmer.classList.add("viewer__page-shimmer--failed");
+        shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Couldn't load page ${pageNum} — tap to retry</span>`;
+        shimmer.onclick = () => {
+          shimmer.classList.remove("viewer__page-shimmer--failed");
+          shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Page ${pageNum}</span>`;
+          renderPageInto(wrap, pageNum);
+        };
+      }
     });
   }
 
@@ -2358,7 +2403,13 @@
 
     // Fetch ONLY Page 1 to obtain initial aspect ratio (Page 1 is already cached from thumbnail!)
     // Generating placeholders for all pages takes <1ms with zero extra network requests!
-    return pdf.getPage(1).then((firstPage) => {
+    // Wrapped in withTimeout: this used to be the single point of
+    // failure for the entire document — if this one call hung, NOTHING
+    // downstream of it ever ran, so not one page-wrap, shimmer, or
+    // error message ever appeared. That's what a truly blank viewer
+    // with no loading indicator at all (not even the per-page shimmer,
+    // since nothing had been created yet to show one) actually was.
+    return withTimeout(pdf.getPage(1), 15000, "Couldn't load page 1").then((firstPage) => {
       if (token !== viewerLoadToken) return;
       const unscaledFirst = firstPage.getViewport({ scale: 1 });
       const defaultAspect = unscaledFirst.height / unscaledFirst.width;
@@ -2406,6 +2457,20 @@
       // Render Page 1 immediately
       const firstWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="1"]`);
       if (firstWrap) renderPageInto(firstWrap, 1);
+    }).catch((err) => {
+      if (token !== viewerLoadToken) return;
+      // Nothing got created above — show a real, visible retry state
+      // in the empty viewer instead of leaving it blank.
+      const status = el("div", "viewer__status");
+      status.append(el("p", "viewer__status-text", "Couldn't load this PDF."));
+      const retryBtn = el("button", "viewer__btn viewer__retry-btn", "Tap to retry");
+      retryBtn.type = "button";
+      retryBtn.addEventListener("click", () => {
+        status.remove();
+        renderAllPages(token);
+      });
+      status.appendChild(retryBtn);
+      viewerPages.appendChild(status);
     });
   }
 

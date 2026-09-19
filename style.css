@@ -1757,6 +1757,27 @@ html.fonts-ready .gate__spine {
   letter-spacing: 0.5px;
 }
 
+/* Shown after a page's render times out — the shimmer itself becomes
+   the retry control instead of animating forever with no way out. */
+.viewer__page-shimmer--failed {
+  animation: none;
+  background: #1a1414;
+  cursor: pointer;
+}
+.viewer__page-shimmer--failed .viewer__page-shimmer-text {
+  color: var(--chemistry);
+  text-align: center;
+  padding: 0 16px;
+}
+
+.viewer__retry-btn {
+  margin-top: 16px;
+  background: var(--brass);
+  color: var(--ink);
+  padding: 8px 20px;
+}
+.viewer__retry-btn:hover { opacity: 0.85; }
+
 /* ── Annotation Layer (Clickable PDF Links) ────────── */
 .annotationLayer {
   position: absolute;
