@@ -1988,6 +1988,22 @@
   let pagesInner = null; // scaled independently of the scrolling outer container, so a live pinch can transform it without fighting scroll
   let pageObserver = null;   // lazy-renders the main page canvases as they scroll near-view
   let thumbObserver2 = null; // lazy-renders the thumbnail-strip canvases (separate from the folder-grid one above)
+  // Tracks each page-wrap's in-flight pdf.js RenderTask (if any). Needed
+  // wherever code is about to force a page to re-render despite one
+  // already being underway (currently: a zoom change) — pdf.js does not
+  // tolerate two concurrent render() calls sharing the same page
+  // object, and can leave that page permanently unable to render again
+  // for the rest of the session if it happens. Cancelling the old task
+  // first (see cancelActiveRender below) avoids that outright instead
+  // of hoping it never occurs.
+  const activeRenderTasks = new Map(); // wrap -> RenderTask
+  function cancelActiveRender(wrap) {
+    const task = activeRenderTasks.get(wrap);
+    if (task) {
+      try { task.cancel(); } catch (e) { /* already finished/cancelled */ }
+      activeRenderTasks.delete(wrap);
+    }
+  }
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 3;
   const ZOOM_INCREMENT = 0.25;
@@ -2253,11 +2269,14 @@
       canvas.height = viewport.height;
 
       const ctx = canvas.getContext("2d");
+      const renderTask = page.render({ canvasContext: ctx, viewport });
+      activeRenderTasks.set(wrap, renderTask);
       return withTimeout(
-        page.render({ canvasContext: ctx, viewport }).promise,
+        renderTask.promise,
         15000,
         "Page render timed out"
       ).then(() => {
+        if (activeRenderTasks.get(wrap) === renderTask) activeRenderTasks.delete(wrap);
         if (myToken !== viewerLoadToken) {
           delete wrap.dataset.rendering;
           return;
@@ -2340,15 +2359,21 @@
           // Best-effort — link failures never crash the viewer
         }
       });
-    }).catch(() => {
+    }).catch((err) => {
       // Was previously a silent dead end: dataset.rendering never got
       // cleared on a hang (there was nothing to time it out), so this
       // page could never be retried by anything — not a re-scroll, not
       // an explicit jump. Now a failure/timeout clears both flags and
       // turns the shimmer itself into a retry button, so the page can
       // actually recover instead of staying blank forever.
+      activeRenderTasks.delete(wrap);
       delete wrap.dataset.rendering;
       delete wrap.dataset.rendered;
+      // A cancellation (from cancelActiveRender, e.g. a zoom change
+      // superseding this render) isn't a failure — a fresh render for
+      // this same page is already on its way in, so don't flash an
+      // error state for it.
+      if (err && err.name === "RenderingCancelledException") return;
       const shimmer = wrap.querySelector(".viewer__page-shimmer");
       if (shimmer) {
         shimmer.classList.add("viewer__page-shimmer--failed");
@@ -2364,7 +2389,7 @@
 
   function renderAllPages(token) {
     if (!pagesInner) return Promise.resolve();
-    pagesInner.querySelectorAll(".viewer__page-wrap").forEach((c) => c.remove());
+    pagesInner.querySelectorAll(".viewer__page-wrap").forEach((c) => { cancelActiveRender(c); c.remove(); });
     viewerThumbStrip.innerHTML = "";
     if (pageObserver) pageObserver.disconnect();
     if (thumbObserver2) thumbObserver2.disconnect();
@@ -2487,13 +2512,28 @@
     updateCurrentPageDisplay(pageNum);
     highlightThumbnail(pageNum);
 
-    // If stuck or previously failed, clear state to force instant render
+    // Only recover a page that's genuinely stuck — flagged "rendered"
+    // with no canvas ever appended (a leftover from an older bug).
+    // Deliberately NOT touching dataset.rendering here: this function
+    // runs on every jump (a link click, a thumbnail tap, typing a page
+    // number), including jumps to a page that's already mid-render
+    // right now — e.g. one just prefetched a moment ago as the
+    // "next page" of a previous jump. Clearing that flag would let
+    // THIS call start a second, concurrent render of the very same
+    // PDF page on top of the one already running. pdf.js does not
+    // tolerate that: the two render tasks fight over the same shared
+    // page object, and it's left unable to ever render again for the
+    // rest of the session — that page then reads as permanently blank
+    // no matter how many times you click the link or scroll to it,
+    // which matches exactly what was being reported: works once,
+    // then never again, for that specific page.
     if (wrap.dataset.rendered && !wrap.querySelector("canvas.viewer__page")) {
       delete wrap.dataset.rendered;
     }
-    delete wrap.dataset.rendering;
 
-    // Render target page immediately — do NOT wait on IntersectionObserver
+    // Render target page immediately — do NOT wait on IntersectionObserver.
+    // Safe to call even if a render is already in progress or done —
+    // renderPageInto's own guard just no-ops in that case.
     renderPageInto(wrap, pageNum);
 
     // Pre-render adjacent pages for instantaneous responsiveness
@@ -2644,6 +2684,7 @@
 
       delete wrap.dataset.rendered;
       delete wrap.dataset.rendering;
+      cancelActiveRender(wrap); // a render for this page may genuinely still be running from before the zoom — cancel it explicitly rather than just abandoning it, since pdf.js can't safely run two render() calls on the same page at once
     });
 
     if (pagesInner) pagesInner.style.transform = "";
@@ -2752,6 +2793,8 @@
     pagesInner = null;
     if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
     if (thumbObserver2) { thumbObserver2.disconnect(); thumbObserver2 = null; }
+    activeRenderTasks.forEach((task) => { try { task.cancel(); } catch (e) {} });
+    activeRenderTasks.clear();
     viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
     viewerThumbStrip.innerHTML = "";
     viewerPages.innerHTML = "";
