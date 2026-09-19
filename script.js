@@ -843,7 +843,18 @@
     });
     homeBtn.addEventListener("click", () => nav("home"));
     if (progressBtn) progressBtn.addEventListener("click", () => nav("progress"));
-    logoutBtn.addEventListener("click", () => performLogout("logout"));
+    logoutBtn.addEventListener("click", () => {
+      // No confirmation here at all was the actual bug behind "logs
+      // out suddenly if something is clicked" — this button sits
+      // packed in a row with five other small icons (WhatsApp, email,
+      // progress, search), and a mis-tap on it ended the session
+      // instantly with zero warning. checkCommands' forceLogout path
+      // was the other suspect, but that one's already correctly
+      // gated (exact session match, consumed the instant it's read,
+      // requires an explicit tap to confirm) — this button genuinely
+      // had none of that.
+      if (confirm("Sign out of Class 12?")) performLogout("logout");
+    });
     if (searchInput) searchInput.addEventListener("input", () => render());
     document.addEventListener("visibilitychange", () => {
       if (!currentViewId) return;
