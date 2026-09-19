@@ -1706,8 +1706,20 @@
       const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
       if (endpoint && endpoint.indexOf("PASTE_YOUR") !== 0) {
         try {
+          // mode: "no-cors" + this exact Content-Type is required for
+          // ANY POST to an Apps Script web app to actually work — this
+          // was the real bug behind "reviews aren't getting submitted":
+          // without it, the request fails silently (Apps Script
+          // redirects through googleusercontent.com, which a plain
+          // CORS-mode request doesn't survive), and the try/catch below
+          // swallowed that failure completely, showing "Thanks!"
+          // regardless of whether anything was ever actually saved.
+          // logEvent elsewhere in this file already does this correctly
+          // — this just brings feedback submission in line with it.
           await fetch(endpoint, {
             method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
             body: JSON.stringify({
               type: "feedback",
               name: currentName,
@@ -2477,17 +2489,15 @@
               executeNamedAction: () => {}
             };
 
-            const layer = new pdfjsLib.AnnotationLayer({
-              div: annoDiv,
-              page: page,
-              viewport: annoViewport
-            });
-
+            const layer = pdfjsLib.AnnotationLayer;
             layer.render({
+              viewport: annoViewport.clone({ dontFlip: true }),
+              div: annoDiv,
               annotations: annots,
+              page: page,
               linkService: linkService,
-              renderForms: false,
-              enableScripting: false
+              renderInteractiveForms: false,
+              downloadManager: null
             });
           });
         } catch (annoErr) {
@@ -2804,7 +2814,26 @@
       };
     }
 
-    // Step 1: Instantly and synchronously resize all wraps in 1 millisecond
+    // Step 1: Instantly and synchronously resize every wrap (cheap —
+    // just CSS, no network or pdf.js call needed for this part, since
+    // dimensions are already known from the cached aspect ratio).
+    //
+    // This used to ALSO unconditionally clear every wrap's "rendered"
+    // flag here, and Step 2 rebuilt the observer and re-observed
+    // everything with a generous 2000px lookahead — meaning EVERY
+    // page within that margin (often 5-8+ pages, not just the 1-2
+    // actually on screen) fired a full re-fetch-and-re-render all at
+    // once, on every single zoom step. That simultaneous burst of
+    // work was the actual cause of the pinch/zoom flicker and the
+    // 2-3 second lag: nothing was broken, it was doing far more work
+    // than a zoom change needs. Now only pages that are BOTH already
+    // rendered AND actually visible right now refresh immediately; a
+    // previously-rendered page currently off-screen just gets marked
+    // stale and quietly re-renders next time it naturally scrolls
+    // into view — the observer below (left running throughout,
+    // watching the same wraps) already does that on its own.
+    const viewportRect = viewerPages.getBoundingClientRect();
+    const toRefreshNow = [];
     allWraps.forEach((wrap) => {
       const aspect = Number(wrap.dataset.aspect) || 1.414;
       const newHeight = Math.round(newWidth * aspect);
@@ -2817,26 +2846,29 @@
         annoLayer.style.height = `${newHeight}px`;
       }
 
+      cancelActiveRender(wrap); // a render for this page may genuinely still be running from before the zoom — cancel it explicitly rather than abandoning it, since pdf.js can't safely run two render() calls on the same page at once
+
+      if (!wrap.dataset.rendered) return; // never rendered — nothing to refresh, the observer renders it normally whenever it's actually scrolled to
       delete wrap.dataset.rendered;
       delete wrap.dataset.rendering;
-      cancelActiveRender(wrap); // a render for this page may genuinely still be running from before the zoom — cancel it explicitly rather than just abandoning it, since pdf.js can't safely run two render() calls on the same page at once
+
+      const wrapRect = wrap.getBoundingClientRect();
+      const isVisibleNow = wrapRect.bottom > viewportRect.top && wrapRect.top < viewportRect.bottom;
+      if (isVisibleNow) toRefreshNow.push(wrap);
     });
 
     if (pagesInner) pagesInner.style.transform = "";
 
     restoreScroll();
 
-    // Step 2: Re-observe visible pages with IntersectionObserver so visible pages get re-rendered at new high-res scale
-    if (pageObserver) pageObserver.disconnect();
-    pageObserver = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        const wrap = entry.target;
-        renderPageInto(wrap, Number(wrap.dataset.pageNum));
-      });
-    }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
-
-    allWraps.forEach((wrap) => pageObserver.observe(wrap));
+    // The existing observer is left connected throughout — no need to
+    // disconnect/rebuild/re-observe it here, since it's still watching
+    // the exact same wrap elements (none were removed from the DOM),
+    // and every wrap's aspect/size is already correct from Step 1
+    // above. Only the handful of pages actually on screen right now
+    // refresh immediately; everything else stays lazy, exactly like a
+    // first-time render does.
+    toRefreshNow.forEach((wrap) => renderPageInto(wrap, Number(wrap.dataset.pageNum)));
   }
 
   function zoomIn() {
@@ -3337,17 +3369,25 @@
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint) return;
     try {
-      const res = await fetch(endpoint, {
+      // Same fix as the feedback form's submission — mode: "no-cors"
+      // is required for any POST to an Apps Script web app to actually
+      // go through (see the feedback submit handler's own comment for
+      // why). The trade-off: a "no-cors" response is opaque — there is
+      // no way to read res.json() or even check res.ok from it, which
+      // is exactly what the old code tried to do here, so it could
+      // never have shown an accurate "Added N files" or "failed"
+      // outcome either way. Instead of reporting a number this can't
+      // actually see, this re-runs the scan a moment later: the newly
+      // added files no longer show up as "new," which is real,
+      // visible proof it worked — not a guess.
+      await fetch(endpoint, {
         method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({ type: "confirmCatalogAdditions", key: adminApiToken, items })
       });
-      const data = await res.json();
-      if (data && data.ok) {
-        showToast(`Added ${data.added} file${data.added === 1 ? "" : "s"} to the catalog.`);
-        adminScanResults.innerHTML = "";
-      } else {
-        showToast("Couldn't save — check the admin key and try again.", true);
-      }
+      showToast(`Submitted ${items.length} file${items.length === 1 ? "" : "s"} — refreshing to confirm…`);
+      setTimeout(() => onScanBackblaze(), 1500);
     } catch {
       showToast("Couldn't reach the sheet — check your connection and try again.", true);
     }
