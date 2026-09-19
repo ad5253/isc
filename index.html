@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=18">
+    <link rel="stylesheet" href="style.css?v=19">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -149,8 +149,33 @@
                         Email
                     </a>
                 </div>
+                <div class="contact-line">
+                    <span>Find this useful?</span>
+                    <button type="button" id="supportBtn" class="foot__support-btn">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78Z"/></svg>
+                        Support us via UPI
+                    </button>
+                </div>
             </div>
         </footer>
+    </div>
+
+    <!-- ═══ SUPPORT / UPI MODAL ═══ -->
+    <div id="supportModal" class="admin-notice hidden">
+        <div class="admin-notice__overlay" id="supportModalOverlay"></div>
+        <div class="admin-notice__panel support-panel">
+            <p class="admin-notice__text">
+                If this has helped you, you're welcome to send whatever
+                you'd like via UPI — completely optional, no pressure.
+            </p>
+            <a id="supportUpiLink" class="viewer__btn support-panel__pay-btn" href="#" target="_blank" rel="noopener">
+                Pay via UPI app
+            </a>
+            <p class="support-panel__or">or scan with any UPI app</p>
+            <img id="supportQr" class="support-panel__qr" alt="UPI QR code — scan with any UPI app to pay" width="180" height="180">
+            <p class="support-panel__vpa">7405806352@fam</p>
+            <button type="button" class="admin-notice__btn" id="supportModalClose">Close</button>
+        </div>
     </div>
 
     <!-- ═══ PDF VIEWER ═══ -->
@@ -345,6 +370,6 @@
     </div>
 
     <script src="config.js?v=5"></script>
-    <script src="script.js?v=15"></script>
+    <script src="script.js?v=16"></script>
 </body>
 </html>
