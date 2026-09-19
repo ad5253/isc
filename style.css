@@ -68,6 +68,16 @@
 
 html { scroll-behavior: smooth; }
 
+/* Blocks native pinch/double-tap zoom on the page itself, site-wide —
+   this is the actual fix, more reliable than the viewport meta tag's
+   user-scalable=no above (iOS Safari ignores that one specifically
+   for pinch-zoom, for accessibility reasons, but still honors
+   touch-action). Without this, a pinch gesture over the PDF viewer
+   could occasionally get captured by the browser as a whole-page zoom
+   instead of reaching the custom in-PDF pinch-zoom handler — pan-x
+   pan-y still allows normal scrolling everywhere, just not zooming. */
+html, body { touch-action: pan-x pan-y; }
+
 body {
   font-family: var(--sans);
   background: var(--ink);
