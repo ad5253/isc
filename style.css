@@ -411,6 +411,43 @@ html.fonts-ready .gate__spine {
 
 .gate__field.shake { animation: shakeField 0.4s var(--ease-soft); }
 
+/* The explicit "send for approval" action — deliberately separate
+   from .gate__error, which shows on every failed attempt automatically.
+   This block only ever appears after showGateApprovalOption() is
+   called for the specific "unauthorized" outcome, and only becomes
+   visible to the admin side (the approval queue) once someone
+   actually taps the button inside it. */
+.gate__request {
+  margin-top: 14px;
+  animation: fadeUp 0.3s var(--ease-soft) both;
+}
+.gate__request-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 42px;
+  padding: 0 20px;
+  background: transparent;
+  border: 1px solid var(--brass-dim);
+  border-radius: var(--r-pill);
+  color: var(--brass);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s var(--ease-soft), transform 0.2s var(--ease-spring), opacity 0.2s var(--ease-soft);
+}
+.gate__request-btn:hover { background: rgba(201, 161, 90, 0.1); }
+.gate__request-btn:active { transform: scale(0.96); }
+.gate__request-btn.is-busy { opacity: 0.6; cursor: default; pointer-events: none; }
+.gate__request-btn.hidden { display: none; }
+
+.gate__request-sent {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--maths); /* the site's one muted-green tone — reused here instead of introducing a new bright "success" color */
+}
+
 @keyframes shakeField {
   0%, 100% { transform: translateX(0); }
   20%      { transform: translateX(-6px); }

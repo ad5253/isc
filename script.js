@@ -213,6 +213,9 @@
   const gateBtn     = $(".gate__btn");
   const gateError   = $("#gateError");
   const gateField   = $(".gate__field");
+  const gateRequestApproval = $("#gateRequestApproval");
+  const gateRequestBtn      = $("#gateRequestBtn");
+  const gateRequestSent     = $("#gateRequestSent");
 
   // ── Admin dashboard refs ─────────────────────────────────
   const adminApp           = $("#adminApp");
@@ -810,6 +813,23 @@
 
     nameForm.addEventListener("submit", onNameSubmit);
     nameInput.addEventListener("input", hideGateError);
+    if (gateRequestBtn) {
+      gateRequestBtn.addEventListener("click", () => {
+        if (!pendingApprovalName || gateRequestBtn.disabled) return;
+        gateRequestBtn.disabled = true;
+        gateRequestBtn.classList.add("is-busy");
+        gateRequestBtn.textContent = "Sending…";
+        // Tagged distinctly from the plain "unauthorized" attempts
+        // logged automatically on every failed try — the backend's
+        // approval queue reads from THIS tag only, not from every
+        // login attempt. See getUnauthorizedQueue in the Apps Script.
+        logEvent("login", pendingApprovalName, "approval_requested", pendingApprovalTrace);
+        gateRequestBtn.classList.add("hidden");
+        if (gateRequestSent) gateRequestSent.classList.remove("hidden");
+        pendingApprovalName = null;
+        pendingApprovalTrace = null;
+      });
+    }
     // Safety net for mobile keyboards: some virtual keyboards' Enter/Go
     // key doesn't reliably fire a native form submit inside in-app
     // browsers. Preventing the default here and calling requestSubmit()
@@ -1095,10 +1115,12 @@
         // Framed as "not yet approved" rather than a flat rejection —
         // this used to read like a locked door ("you're not
         // authorized"), which doesn't fit a free, word-of-mouth
-        // resource where you WANT people to ask for access. Points
-        // at the WhatsApp/Email links already sitting right below the
-        // form instead of duplicating contact info here.
-        showGateError("You're not on the approved list yet — tap WhatsApp or Email below to request access.");
+        // resource where you WANT people to ask for access. The
+        // in-form button below is now the actual way to request it —
+        // WhatsApp/Email further down the page still work too, for
+        // anyone who'd rather message directly.
+        showGateError("You're not authorized to view this page yet.");
+        showGateApprovalOption(name, trace);
         return;
       }
 
@@ -1151,6 +1173,44 @@
 
   function hideGateError() {
     gateError.classList.add("hidden");
+    hideGateApprovalOption(); // the two are always shown/cleared together — see showGateApprovalOption's comment
+  }
+
+  // Holds whatever name+trace the "Send my name for approval" button
+  // should submit if tapped right now — set only when the unauthorized
+  // branch below actually shows the button, so a click can never fire
+  // for a stale name from an earlier attempt.
+  let pendingApprovalName = null;
+  let pendingApprovalTrace = null;
+
+  // Reveals the explicit "Send my name for approval" button — this is
+  // the ONLY path that adds someone to the admin's approval queue.
+  // Previously, the backend's pending-queue was built from every
+  // single "unauthorized" login attempt automatically — meaning a
+  // mistyped name, a curious stranger, or someone just poking at the
+  // login screen all cluttered the admin dashboard identically to a
+  // genuine request. Logging "unauthorized" (a couple of lines above
+  // each call site below) still happens every time, for the audit-log
+  // attempt counts — this button is the one thing that actually
+  // surfaces a person to the admin, and only once they've deliberately
+  // asked to be.
+  function showGateApprovalOption(name, trace) {
+    if (!gateRequestApproval) return;
+    pendingApprovalName = name;
+    pendingApprovalTrace = trace;
+    gateRequestApproval.classList.remove("hidden");
+    if (gateRequestBtn) {
+      gateRequestBtn.classList.remove("hidden", "is-busy");
+      gateRequestBtn.disabled = false;
+      gateRequestBtn.textContent = "Send my name for approval";
+    }
+    if (gateRequestSent) gateRequestSent.classList.add("hidden");
+  }
+
+  function hideGateApprovalOption() {
+    pendingApprovalName = null;
+    pendingApprovalTrace = null;
+    if (gateRequestApproval) gateRequestApproval.classList.add("hidden");
   }
 
   // Fetches the live file catalog and slots it into

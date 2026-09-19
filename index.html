@@ -68,6 +68,15 @@
             </form>
             <p id="gateError" class="gate__error hidden"></p>
 
+            <!-- Shown only after an explicit tap on "Send my name for
+                 approval" below — never automatically on a failed
+                 attempt, so the admin's approval queue only ever fills
+                 up with people who actually asked to be let in. -->
+            <div id="gateRequestApproval" class="gate__request hidden">
+                <button type="button" id="gateRequestBtn" class="gate__request-btn">Send my name for approval</button>
+                <p id="gateRequestSent" class="gate__request-sent hidden">Request sent — you'll be added once it's approved.</p>
+            </div>
+
             <div class="gate__contact">
                 <span class="gate__contact-label">Trouble logging in?</span>
                 <div class="contact-line">
