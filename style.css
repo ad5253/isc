@@ -526,6 +526,15 @@ html.fonts-ready .gate__spine {
 .nav__contact:hover { border-color: var(--brass-dim); color: var(--brass); }
 .nav__contact:active { transform: scale(0.9); }
 
+/* Tinted brass by default (not just on hover, like the other nav
+   icons) — this is the one meant to catch the eye rather than blend
+   in, since the whole point of moving it up here was visibility. */
+.nav__contact--support {
+  color: var(--brass);
+  border-color: var(--brass-dim);
+}
+.nav__contact--support:hover { background: var(--brass); color: var(--ink); }
+
 .nav__greeting {
   font-family: var(--sans);
   font-size: 13px;
@@ -2074,13 +2083,25 @@ html.fonts-ready .gate__spine {
 /* Mobile */
 @media (max-width: 640px) {
   .shell { padding: 0 20px; }
-  .nav__inner { padding: 0 20px; }
-  .nav__right { gap: 8px; }
+  .nav__inner { padding: 0 16px; }
+  .nav__right { gap: 6px; }
   .nav__contact { width: 26px; height: 26px; }
-  .nav__greeting { max-width: 22vw; }
+  /* Missing before — logout stayed at its 36px desktop size while
+     every icon around it shrank to 26px for mobile, which alone
+     accounted for a real chunk of why the bar didn't fit: an
+     inconsistently-sized button plus 10px of unaccounted width. */
+  .nav__user { width: 26px; height: 26px; }
+  .nav__greeting { max-width: 15vw; }
   .nav__studytime { display: none; }
-  .nav__search-input { width: 90px; }
-  .nav__search-input:focus { width: 130px; }
+  /* WhatsApp/Email are duplicated in the footer's own contact line
+     (see .foot__contact) — on a phone-width screen they were pure
+     overflow, contributing two full icons' worth of width (plus
+     their gaps) toward a nav bar that didn't fit to begin with.
+     Freed the room for the new Support icon instead. Both still
+     show on wider screens, where there was never a space problem. */
+  .nav__contact--wa, .nav__contact--email { display: none; }
+  .nav__search-input { width: 64px; }
+  .nav__search-input:focus { width: 118px; }
   .foot { padding: 24px 20px; }
 
   .subjects { grid-template-columns: 1fr; }
@@ -2144,6 +2165,14 @@ html.fonts-ready .gate__spine {
   .crumbs { padding: 20px 0 4px; }
   .gate__form { flex-direction: column; align-items: stretch; }
   .gate__btn { justify-content: center; padding: 0 22px; }
+
+  /* Greeting ("Hi, Rahul") is a nice-to-have, not something anyone
+     taps — first thing to give up the last bit of room on a genuinely
+     small phone, rather than let the search box or logout get any
+     tighter than they already are. */
+  .nav__greeting { display: none; }
+  .nav__search-input { width: 50px; }
+  .nav__search-input:focus { width: 100px; }
 
   .viewer__btn-text { display: none; }
   .viewer__fit-btn { display: none; }

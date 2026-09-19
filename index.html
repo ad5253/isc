@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=19">
+    <link rel="stylesheet" href="style.css?v=20">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -104,16 +104,19 @@
                     <span>Class 12</span>
                 </button>
                 <div class="nav__right">
-                    <a class="nav__contact" href="https://wa.me/917405806352" target="_blank" rel="noopener" aria-label="Contact on WhatsApp" title="WhatsApp">
+                    <a class="nav__contact nav__contact--wa" href="https://wa.me/917405806352" target="_blank" rel="noopener" aria-label="Contact on WhatsApp" title="WhatsApp">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2c-5.46 0-9.9 4.44-9.9 9.9 0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.9-4.44 9.9-9.9 0-2.64-1.03-5.13-2.9-6.99A9.82 9.82 0 0 0 12.04 2zm5.8 14.15c-.24.68-1.4 1.3-1.93 1.38-.5.08-1.12.11-1.8-.11a16.5 16.5 0 0 1-1.6-.6c-2.83-1.22-4.68-4.06-4.82-4.25-.14-.19-1.15-1.53-1.15-2.92s.72-2.07.98-2.35c.25-.28.55-.35.73-.35.19 0 .37 0 .53.01.17.01.4-.06.62.48.24.57.8 1.98.87 2.12.07.14.12.31.02.5-.1.19-.15.31-.29.48-.15.17-.31.38-.44.51-.15.14-.3.3-.13.58.17.28.76 1.26 1.63 2.04 1.12 1 2.06 1.31 2.34 1.46.28.14.44.12.6-.07.17-.19.71-.83.9-1.11.19-.28.38-.24.63-.14.26.09 1.65.78 1.93.92.28.14.47.21.53.33.07.12.07.68-.17 1.36z"/></svg>
                     </a>
-                    <a class="nav__contact" href="mailto:merchantadnan052@gmail.com" aria-label="Contact by email" title="Email">
+                    <a class="nav__contact nav__contact--email" href="mailto:merchantadnan052@gmail.com" aria-label="Contact by email" title="Email">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5 12 13l8-6.5" /><rect x="3.2" y="5" width="17.6" height="14" rx="1.6"/></svg>
                     </a>
                     <span class="nav__greeting" id="greeting"></span>
                     <span class="nav__studytime" id="studyTime" title="Time studied today"></span>
                     <button class="nav__contact" id="progressBtn" aria-label="My Progress" title="My Progress">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>
+                    </button>
+                    <button class="nav__contact nav__contact--support" id="supportBtnTop" aria-label="Support us via UPI" title="Support us via UPI">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78Z"/></svg>
                     </button>
                     <div class="nav__search">
                         <input type="text" id="searchInput" class="nav__search-input" placeholder="Search files…" autocomplete="off">
@@ -370,6 +373,6 @@
     </div>
 
     <script src="config.js?v=5"></script>
-    <script src="script.js?v=16"></script>
+    <script src="script.js?v=17"></script>
 </body>
 </html>

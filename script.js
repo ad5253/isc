@@ -875,8 +875,9 @@
     // dependency here; everything else about the site stays
     // self-contained.
     const supportBtn = $("#supportBtn");
+    const supportBtnTop = $("#supportBtnTop");
     const supportModal = $("#supportModal");
-    if (supportBtn && supportModal) {
+    if ((supportBtn || supportBtnTop) && supportModal) {
       const upiUri = "upi://pay?pa=7405806352@fam&pn=Adnan&cu=INR";
       const upiLink = $("#supportUpiLink");
       const qrImg = $("#supportQr");
@@ -888,7 +889,8 @@
         supportModal.classList.remove("hidden");
       };
       const closeSupportModal = () => supportModal.classList.add("hidden");
-      supportBtn.addEventListener("click", openSupportModal);
+      if (supportBtn) supportBtn.addEventListener("click", openSupportModal);
+      if (supportBtnTop) supportBtnTop.addEventListener("click", openSupportModal);
       $("#supportModalClose").addEventListener("click", closeSupportModal);
       $("#supportModalOverlay").addEventListener("click", closeSupportModal);
     }
