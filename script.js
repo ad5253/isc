@@ -2447,9 +2447,19 @@
         if (oldAnno) oldAnno.remove();
 
         // ── Annotation Layer for clickable PDF links (TOC, Index, External) ──
-        try {
-          page.getAnnotations({ intent: "display" }).then((annots) => {
-            if (myToken !== viewerLoadToken || !annots || !annots.length) return;
+        // The try/catch used to sit around the call to .then(...) —
+        // which only guards the SYNCHRONOUS act of registering that
+        // callback, never anything that actually happens inside it.
+        // Since getAnnotations() and AnnotationLayer.render() both run
+        // later, asynchronously, any failure in either of them was
+        // completely unprotected and failed silently — exactly the
+        // same class of bug as the AnnotationLayer API-shape issue
+        // fixed earlier, just one layer deeper. The try/catch now
+        // lives INSIDE the callback, actually wrapping the code that
+        // can fail.
+        page.getAnnotations({ intent: "display" }).then((annots) => {
+          if (myToken !== viewerLoadToken || !annots || !annots.length) return;
+          try {
             const cssScale = displayWidth / unscaledViewport.width;
             const annoViewport = page.getViewport({ scale: cssScale });
 
@@ -2486,11 +2496,11 @@
                   pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
                 }
               },
-              executeNamedAction: () => {}
+              executeNamedAction: () => {},
+              isPageVisible: () => true
             };
 
-            const layer = pdfjsLib.AnnotationLayer;
-            layer.render({
+            pdfjsLib.AnnotationLayer.render({
               viewport: annoViewport.clone({ dontFlip: true }),
               div: annoDiv,
               annotations: annots,
@@ -2499,10 +2509,12 @@
               renderInteractiveForms: false,
               downloadManager: null
             });
-          });
-        } catch (annoErr) {
-          // Best-effort — link failures never crash the viewer
-        }
+          } catch (annoErr) {
+            console.error("Link annotation layer failed:", annoErr);
+          }
+        }).catch((annoErr) => {
+          console.error("Couldn't read this page's annotations:", annoErr);
+        });
       });
     }).catch((err) => {
       // Was previously a silent dead end: dataset.rendering never got
