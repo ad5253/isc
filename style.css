@@ -1877,6 +1877,19 @@ html.fonts-ready .gate__spine {
   outline: none;
 }
 
+/* This used to only target ".linkAnnotation > a" — a wrapper class
+   name from a much older pdf.js version. Current pdf.js (3.x) doesn't
+   wrap links that way; it sets the class directly on the <a> itself
+   (e.g. "internalLink" for a jump-within-document link), which never
+   matched the old selector at all. The practical effect: the outer
+   <section> was correctly positioned and sized, but the actual <a>
+   inside it never got width/height, so it collapsed to zero size —
+   the link looked exactly right and did nothing when tapped. Targeting
+   any anchor directly inside an annotation section, rather than
+   guessing pdf.js's internal class name, is what actually fixes this
+   — and won't quietly break again if a different pdf.js version
+   renames that class yet again. */
+.annotationLayer section > a,
 .annotationLayer .linkAnnotation > a {
   position: absolute;
   top: 0;
@@ -1891,6 +1904,7 @@ html.fonts-ready .gate__spine {
   transition: background-color 0.15s ease, outline 0.15s ease;
 }
 
+.annotationLayer section > a:hover,
 .annotationLayer .linkAnnotation > a:hover {
   background-color: rgba(197, 168, 128, 0.22) !important;
   outline: 2px solid var(--brass, #c5a880) !important;
