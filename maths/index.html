@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ISC Class 12 Mathematics Notes, Formulas & Solutions</title>
+<meta name="description" content="Chapter notes, formula sheets, and fully worked solutions covering the complete ISC Class 12 Mathematics syllabus.">
+<meta name="author" content="Adnan Merchant">
+<link rel="canonical" href="https://ad5253.github.io/isc/maths/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="ISC Class 12 Mathematics Notes, Formulas & Solutions">
+<meta property="og:description" content="Chapter notes, formula sheets, and fully worked solutions covering the complete ISC Class 12 Mathematics syllabus.">
+<meta property="og:url" content="https://ad5253.github.io/isc/maths/">
+<meta property="og:image" content="https://ad5253.github.io/isc/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../subject-page.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "LearningResource",
+  "name": "ISC Class 12 Mathematics Notes, Formulas & Solutions",
+  "description": "Chapter notes, formula sheets, and fully worked solutions covering the complete ISC Class 12 Mathematics syllabus.",
+  "educationalLevel": "Class 12 / Grade 12",
+  "author": { "@type": "Person", "name": "Adnan Merchant" },
+  "url": "https://ad5253.github.io/isc/maths/",
+  "isPartOf": { "@type": "WebSite", "name": "ISC Class 12 Study Portal", "url": "https://ad5253.github.io/isc/" }
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+  <a class="back-link" href="../">&larr; ISC Class 12 Study Portal</a>
+  <p class="eyebrow" style="--accent-color: #8fa07b">ISC &middot; Class XII &middot; Mathematics</p>
+  <h1><span class="icon">📐</span> Mathematics</h1>
+  <p class="lede">Chapter notes, formula sheets, and fully worked solutions covering the complete ISC Class 12 Mathematics syllabus. Also useful as reference material for CBSE Class 12 Mathematics students covering the same topics.</p>
+  <a class="cta" style="--accent-color: #8fa07b" href="../?subject=maths">Log in to view Mathematics material &rarr;</a>
+
+  <h2>Chapters covered</h2>
+  <ul class="chapter-list">
+    <li><b>1.</b> Relations and Functions</li>
+    <li><b>2.</b> Inverse Trigonometric Functions</li>
+    <li><b>3.</b> Matrices</li>
+    <li><b>4.</b> Determinants</li>
+    <li><b>5.</b> Differentiability & Continuity</li>
+    <li><b>6.</b> Applications of Derivatives</li>
+    <li><b>7.</b> Integrals</li>
+    <li><b>8.</b> Applications of Integrals</li>
+    <li><b>9.</b> Differential Equations</li>
+    <li><b>10.</b> Vector Algebra</li>
+    <li><b>11.</b> Three Dimensional Geometry</li>
+    <li><b>12.</b> Linear Programming</li>
+    <li><b>13.</b> Probability</li>
+  </ul>
+  <!-- This count starts from a known-good baseline and is corrected
+       live from the same catalog endpoint the main app reads from —
+       see the script at the bottom. New files confirmed later through
+       admin > Scan Backblaze show up here with zero manual edits. -->
+  <p class="also-covers" id="materialsCount">37+ PDFs available &mdash; notes, formula sheets, and worked solutions.</p>
+
+  <footer>
+    Built by Adnan Merchant for Vapi Public School Class 12 students &mdash; open to any Class 12
+    (ISC or CBSE) student by request.
+    <br>
+    <a href="https://wa.me/917405806352">WhatsApp</a> &middot;
+    <a href="mailto:merchantadnan052@gmail.com">Email</a>
+  </footer>
+</div>
+<script>
+  // Keeps the file count above honest without ever needing this page
+  // edited by hand again. Same public, no-key "catalog" endpoint the
+  // main app itself reads from (see script.js's fetchAndApplyCatalog)
+  // — mirrors its exact rule: once the Catalog sheet has entries for
+  // this subject, that's the real, current count; if the fetch fails
+  // or nothing's been scanned in for this subject yet, the static
+  // baseline above just stays as-is. Never blocks or slows the page.
+  (function () {
+    var el = document.getElementById("materialsCount");
+    if (!el) return;
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 6000);
+    fetch("https://script.google.com/macros/s/AKfycbyDtxYLc_dwqKdermC8caK79OG9K4lkIsHA7_XNoFVQDxLX7dmKDp-tCJxOcLOwTJ_7/exec?action=catalog", { signal: controller.signal })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        clearTimeout(timeout);
+        if (!data || !data.ok || !data.catalog || !data.catalog["maths"]) return;
+        var folders = data.catalog["maths"];
+        if (!folders.length) return;
+        var count = 0;
+        folders.forEach(function (f) { count += (f.files || []).length; });
+        if (count > 0) {
+          el.textContent = count + " PDFs available — notes, formula sheets, and worked solutions.";
+        }
+      })
+      .catch(function () { /* static baseline stands as-is */ });
+  })();
+</script>
+</body>
+</html>
