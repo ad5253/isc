@@ -144,6 +144,36 @@
     }
   }
 
+  // Same throttling for the main viewer's own page rendering — this
+  // never had any limit at all, unlike the thumbnail grid above. With
+  // a generous 2000px lookahead margin, simply opening a document (or
+  // scrolling quickly) could mark 8-10+ pages as "intersecting" all at
+  // once, and every single one fired off its own render immediately,
+  // all competing for the same connections to the same Worker
+  // simultaneously. That's the real cause of "the first ~10 pages
+  // load fine, then it just stops" — nothing was actually broken,
+  // there just wasn't a queue, so a page requested 11th had to wait
+  // behind an unbounded pile of concurrent work instead of a short one.
+  const PAGE_RENDER_CONCURRENCY = 3;
+  let activePageRenders = 0;
+  const pageRenderQueue = [];
+
+  function queuePageRender(task) {
+    pageRenderQueue.push(task);
+    drainPageRenderQueue();
+  }
+
+  function drainPageRenderQueue() {
+    while (activePageRenders < PAGE_RENDER_CONCURRENCY && pageRenderQueue.length) {
+      const task = pageRenderQueue.shift();
+      activePageRenders++;
+      task().finally(() => {
+        activePageRenders--;
+        drainPageRenderQueue();
+      });
+    }
+  }
+
   let thumbObserver = null;
   function observeThumbnail(target, path, canvas, skeleton) {
     if (!("IntersectionObserver" in window)) {
@@ -2385,14 +2415,17 @@
   // Can be called lazily via IntersectionObserver or directly on thumbnail/link click
   // so jumping to any page (e.g. page 45) renders immediately without a blank sheet.
   function renderPageInto(wrap, pageNum) {
-    if (!wrap || !currentPdf) return;
-    if (wrap.dataset.rendered || wrap.dataset.rendering) return;
+    if (!wrap || !currentPdf) return Promise.resolve();
+    if (wrap.dataset.rendered || wrap.dataset.rendering) return Promise.resolve();
     wrap.dataset.rendering = "1";
     const myToken = viewerLoadToken;
     const pdf = currentPdf;
     const dpr = window.devicePixelRatio || 1;
 
-    withTimeout(pdf.getPage(pageNum), 15000, "Page load timed out").then((page) => {
+    // Returned (not fire-and-forget) so the concurrency queue this is
+    // now called through — see queuePageRender — actually knows when
+    // this page is done and can start the next queued one.
+    return withTimeout(pdf.getPage(pageNum), 15000, "Page load timed out").then((page) => {
       if (myToken !== viewerLoadToken) {
         delete wrap.dataset.rendering;
         return;
@@ -2446,17 +2479,23 @@
         const oldAnno = wrap.querySelector(".annotationLayer");
         if (oldAnno) oldAnno.remove();
 
-        // ── Annotation Layer for clickable PDF links (TOC, Index, External) ──
-        // The try/catch used to sit around the call to .then(...) —
-        // which only guards the SYNCHRONOUS act of registering that
-        // callback, never anything that actually happens inside it.
-        // Since getAnnotations() and AnnotationLayer.render() both run
-        // later, asynchronously, any failure in either of them was
-        // completely unprotected and failed silently — exactly the
-        // same class of bug as the AnnotationLayer API-shape issue
-        // fixed earlier, just one layer deeper. The try/catch now
-        // lives INSIDE the callback, actually wrapping the code that
-        // can fail.
+        // ── Clickable PDF links (TOC, Index, External) ──
+        // No longer uses pdf.js's own AnnotationLayer class at all.
+        // That path has now been fixed twice — once for calling it the
+        // wrong way, once for the try/catch not actually covering it —
+        // and links still didn't work even on pages that had fully
+        // rendered. That leaves real doubt about whether
+        // pdfjsLib.AnnotationLayer is even present as a working export
+        // in this specific CDN build, or whether its internal DOM
+        // structure matches what the CSS expects — either way, that's
+        // two classes of uncertainty this project has no real way to
+        // pin down further from outside a live browser. So instead of
+        // depending on pdf.js's own annotation machinery at all, this
+        // computes each link's on-page position directly from its raw
+        // PDF coordinates and builds a plain <a> tag by hand, styled
+        // with inline styles set right here — nothing left that
+        // depends on an external class matching, or on a pdf.js
+        // feature this build may or may not actually expose.
         page.getAnnotations({ intent: "display" }).then((annots) => {
           if (myToken !== viewerLoadToken || !annots || !annots.length) return;
           try {
@@ -2465,50 +2504,57 @@
 
             const annoDiv = document.createElement("div");
             annoDiv.className = "annotationLayer";
+            annoDiv.style.position = "absolute";
+            annoDiv.style.top = "0";
+            annoDiv.style.left = "0";
             annoDiv.style.width = `${displayWidth}px`;
             annoDiv.style.height = `${displayHeight}px`;
-            annoDiv.style.setProperty("--scale-factor", String(cssScale));
+            annoDiv.style.pointerEvents = "none"; // the div itself is just a positioning frame — only the individual links inside re-enable pointer events, so nothing here can block clicks meant for something else on the page
             wrap.appendChild(annoDiv);
 
-            const linkService = {
-              getDestinationHash: () => "#",
-              getAnchorUrl: () => "#",
-              addLinkAttributes: (element, url) => {
-                element.href = url;
-                element.target = "_blank";
-                element.rel = "noopener noreferrer nofollow";
-              },
-              goToDestination: (dest) => {
-                if (typeof dest === "string") {
-                  pdf.getDestination(dest).then((d) => {
-                    if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
-                  });
-                } else if (Array.isArray(dest)) {
-                  pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
-                }
-              },
-              navigateTo: (dest) => {
-                if (typeof dest === "string") {
-                  pdf.getDestination(dest).then((d) => {
-                    if (d) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
-                  });
-                } else if (Array.isArray(dest)) {
-                  pdf.getPageIndex(dest[0]).then((idx) => scrollToPage(idx + 1));
-                }
-              },
-              executeNamedAction: () => {},
-              isPageVisible: () => true
-            };
+            let builtAny = false;
+            annots.forEach((ann) => {
+              if (ann.subtype !== "Link" || !ann.rect) return;
+              const [rx1, ry1, rx2, ry2] = annoViewport.convertToViewportRectangle(ann.rect);
+              const left = Math.min(rx1, rx2);
+              const top = Math.min(ry1, ry2);
+              const width = Math.abs(rx2 - rx1);
+              const height = Math.abs(ry2 - ry1);
+              if (!width || !height) return;
 
-            pdfjsLib.AnnotationLayer.render({
-              viewport: annoViewport.clone({ dontFlip: true }),
-              div: annoDiv,
-              annotations: annots,
-              page: page,
-              linkService: linkService,
-              renderInteractiveForms: false,
-              downloadManager: null
+              const link = document.createElement("a");
+              link.className = "viewer__page-link";
+              link.style.position = "absolute";
+              link.style.left = `${left}px`;
+              link.style.top = `${top}px`;
+              link.style.width = `${width}px`;
+              link.style.height = `${height}px`;
+              link.style.display = "block";
+              link.style.cursor = "pointer";
+              link.style.pointerEvents = "auto";
+
+              if (ann.url) {
+                link.href = ann.url;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer nofollow";
+              } else if (ann.dest) {
+                link.href = "#";
+                link.addEventListener("click", (e) => {
+                  e.preventDefault();
+                  const destValue = ann.dest;
+                  const resolved = typeof destValue === "string" ? pdf.getDestination(destValue) : Promise.resolve(destValue);
+                  resolved.then((d) => {
+                    if (d && d[0]) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
+                  }).catch((e2) => console.error("Couldn't resolve link destination:", e2));
+                });
+              } else {
+                return; // an annotation with neither a URL nor a destination isn't a navigable link
+              }
+              annoDiv.appendChild(link);
+              builtAny = true;
             });
+
+            if (!builtAny) annoDiv.remove(); // nothing actually clickable on this page — don't leave an empty frame sitting in the DOM
           } catch (annoErr) {
             console.error("Link annotation layer failed:", annoErr);
           }
@@ -2558,7 +2604,8 @@
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
         const wrap = entry.target;
-        renderPageInto(wrap, Number(wrap.dataset.pageNum));
+        const pageNum = Number(wrap.dataset.pageNum);
+        queuePageRender(() => renderPageInto(wrap, pageNum));
       });
     }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
 
@@ -2968,12 +3015,27 @@
     viewer.style.top = "";
     viewer.style.height = "";
     viewerLoadToken++; // invalidate any render still in flight
-    currentPdf = null;
-    pagesInner = null;
     if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
     if (thumbObserver2) { thumbObserver2.disconnect(); thumbObserver2 = null; }
     activeRenderTasks.forEach((task) => { try { task.cancel(); } catch (e) {} });
     activeRenderTasks.clear();
+    // This is the real fix for "close a PDF, open another, nothing
+    // loads at all" (and, after enough of these pile up in one
+    // session, "pages stop loading partway through even in the SAME
+    // document"): setting currentPdf to null only drops this code's
+    // own reference to it — it does NOT tell pdf.js the document is
+    // done. Without calling .destroy() first, that document's
+    // dedicated worker thread and any still-open network connections
+    // keep running in the background forever, invisibly. Every PDF
+    // you'd ever opened in that browser tab was silently still alive,
+    // each one holding onto its own thread and connections — until
+    // the browser's hard cap on how many of either it allows kicked
+    // in, at which point NOTHING new could load anymore, in any PDF.
+    if (currentPdf) {
+      try { currentPdf.destroy(); } catch (e) { /* already gone */ }
+    }
+    currentPdf = null;
+    pagesInner = null;
     viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
     viewerThumbStrip.innerHTML = "";
     viewerPages.innerHTML = "";

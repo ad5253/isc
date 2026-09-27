@@ -1889,23 +1889,23 @@ html.fonts-ready .gate__spine {
    guessing pdf.js's internal class name, is what actually fixes this
    — and won't quietly break again if a different pdf.js version
    renames that class yet again. */
-.annotationLayer section > a,
-.annotationLayer .linkAnnotation > a {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
+/* Position and size are no longer set here — each link now carries its
+   own individually-computed inline position/size (see script.js),
+   since a single page can have several separate links, each in its
+   own real spot on the page, not one link filling its whole container.
+   Forcing width/height: 100% here the way this used to would override
+   those correct per-link values right back to the wrong ones. This
+   only handles the cosmetic parts. */
+.annotationLayer a {
   cursor: pointer !important;
   pointer-events: auto !important;
+  z-index: 5; /* above .viewer__page-num's badge (z-index: 4), so a link sitting under that top-right corner badge is still reachable */
   border-radius: 2px;
   background-color: transparent;
   transition: background-color 0.15s ease, outline 0.15s ease;
 }
 
-.annotationLayer section > a:hover,
-.annotationLayer .linkAnnotation > a:hover {
+.annotationLayer a:hover {
   background-color: rgba(197, 168, 128, 0.22) !important;
   outline: 2px solid var(--brass, #c5a880) !important;
 }
