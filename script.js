@@ -41,6 +41,31 @@
     });
   }
 
+  // Same idea as withTimeout, but for a pdf.js RenderTask specifically.
+  // withTimeout alone only gives up on WAITING for the promise — it
+  // never told the actual render to stop, so a stalled render kept
+  // running in the background forever even after we'd moved on. pdf.js
+  // refuses to run a second render() on the same page while an old one
+  // is still alive, so that page would then silently break for the
+  // rest of the session: every future attempt to open it — a scroll, a
+  // retry tap, a link jump — would just no-op forever, exactly like a
+  // page that "works once, then never again." Calling renderTask.cancel()
+  // the moment we give up is what actually frees that page back up.
+  function withRenderTimeout(renderTask, ms, message) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        try { renderTask.cancel(); } catch (e) { /* already done */ }
+        reject(new Error(message || "Timed out"));
+      }, ms);
+      renderTask.promise.then(
+        (v) => { if (!settled) { clearTimeout(timer); settled = true; resolve(v); } },
+        (e) => { if (!settled) { clearTimeout(timer); settled = true; reject(e); } }
+      );
+    });
+  }
+
   const pdfLoadingTasks = new Map();
   function getPdfLoadingTask(path) {
     if (!pdfLoadingTasks.has(path)) {
@@ -156,18 +181,38 @@
   // behind an unbounded pile of concurrent work instead of a short one.
   const PAGE_RENDER_CONCURRENCY = 3;
   let activePageRenders = 0;
-  const pageRenderQueue = [];
+  // Every page-render request — whether from the lazy-scroll observer
+  // or from jumping straight to a page — now goes through this ONE
+  // queue, tagged with the page number it's for. Previously, jumping to
+  // a page (scrollToPage) rendered its target + neighbors directly,
+  // completely bypassing this cap — so a deep jump could run 3 queued
+  // renders AND 3 direct ones at once, doubling the real concurrent
+  // load on pdf.js/the Worker at exactly the moment that load is
+  // riskiest (a long jump). Nothing bypasses the cap now.
+  let pageRenderQueue = []; // { run, pageNum }
 
-  function queuePageRender(task) {
-    pageRenderQueue.push(task);
+  function queuePageRender(run, pageNum, opts) {
+    const entry = { run, pageNum };
+    if (opts && opts.priority) pageRenderQueue.unshift(entry);
+    else pageRenderQueue.push(entry);
     drainPageRenderQueue();
+  }
+
+  // A long smooth-scroll jump (page 1 -> page 60) sweeps every page in
+  // between through the IntersectionObserver, queuing dozens of renders
+  // for pages the person never actually stopped on. Once we land on the
+  // real target, anything still waiting in the queue for a page far
+  // from it is just wasted work sitting ahead of what the person is
+  // actually looking at — drop it.
+  function focusPageRenderQueue(aroundPage, radius) {
+    pageRenderQueue = pageRenderQueue.filter((e) => Math.abs(e.pageNum - aroundPage) <= radius);
   }
 
   function drainPageRenderQueue() {
     while (activePageRenders < PAGE_RENDER_CONCURRENCY && pageRenderQueue.length) {
-      const task = pageRenderQueue.shift();
+      const entry = pageRenderQueue.shift();
       activePageRenders++;
-      task().finally(() => {
+      entry.run().finally(() => {
         activePageRenders--;
         drainPageRenderQueue();
       });
@@ -2285,8 +2330,54 @@
     }
   }
 
+  // ── Stuck-page watchdog ──────────────────────────────────
+  // Belt-and-braces on top of the timeout fixes above: every 5s, sweep
+  // for any page that's claimed to be "rendering" for more than 20s and
+  // force it back into a clean, retryable state. Whatever the actual
+  // cause of a hang — a slow connection, a server-side stall, anything
+  // this file didn't anticipate — this guarantees a page can never sit
+  // there indefinitely with no way for the person to do anything about
+  // it. It should rarely ever fire once the timeout/cancel fixes above
+  // are doing their job; it's here purely as a last-resort safety net.
+  let stuckPageWatchdog = null;
+  function resetStuckWrap(wrap) {
+    cancelActiveRender(wrap);
+    delete wrap.dataset.rendering;
+    delete wrap.dataset.rendered;
+    delete wrap.dataset.renderStartedAt;
+    const pageNum = Number(wrap.dataset.pageNum);
+    const shimmer = wrap.querySelector(".viewer__page-shimmer");
+    if (shimmer) {
+      shimmer.classList.add("viewer__page-shimmer--failed");
+      shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Couldn't load page ${pageNum} — tap to retry</span>`;
+      shimmer.onclick = () => {
+        shimmer.classList.remove("viewer__page-shimmer--failed");
+        shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Page ${pageNum}</span>`;
+        renderPageInto(wrap, pageNum);
+      };
+    }
+  }
+  function startStuckPageWatchdog() {
+    stopStuckPageWatchdog();
+    stuckPageWatchdog = setInterval(() => {
+      if (!pagesInner) return;
+      const now = Date.now();
+      pagesInner.querySelectorAll('.viewer__page-wrap[data-rendering="1"]').forEach((wrap) => {
+        const started = Number(wrap.dataset.renderStartedAt) || 0;
+        if (now - started > 8000) resetStuckWrap(wrap);
+      });
+    }, 1500);
+  }
+  function stopStuckPageWatchdog() {
+    if (stuckPageWatchdog) { clearInterval(stuckPageWatchdog); stuckPageWatchdog = null; }
+  }
+
+  let currentPdfPath = null; // tracks which file's loading task to evict from cache once this document is destroyed
+
   function openViewer(path, name) {
     endCurrentView(); // in case a different PDF was already open — close out its timer first
+    currentPdfPath = path;
+    startStuckPageWatchdog();
     viewerName.textContent = name;
     viewer.classList.remove("hidden");
     document.body.style.overflow = "hidden";
@@ -2418,6 +2509,7 @@
     if (!wrap || !currentPdf) return Promise.resolve();
     if (wrap.dataset.rendered || wrap.dataset.rendering) return Promise.resolve();
     wrap.dataset.rendering = "1";
+    wrap.dataset.renderStartedAt = String(Date.now()); // lets the stuck-page watchdog below spot a render that never finished
     const myToken = viewerLoadToken;
     const pdf = currentPdf;
     const dpr = window.devicePixelRatio || 1;
@@ -2425,7 +2517,7 @@
     // Returned (not fire-and-forget) so the concurrency queue this is
     // now called through — see queuePageRender — actually knows when
     // this page is done and can start the next queued one.
-    return withTimeout(pdf.getPage(pageNum), 15000, "Page load timed out").then((page) => {
+    return withTimeout(pdf.getPage(pageNum), 8000, "Page load timed out").then((page) => {
       if (myToken !== viewerLoadToken) {
         delete wrap.dataset.rendering;
         return;
@@ -2451,9 +2543,9 @@
       const ctx = canvas.getContext("2d");
       const renderTask = page.render({ canvasContext: ctx, viewport });
       activeRenderTasks.set(wrap, renderTask);
-      return withTimeout(
-        renderTask.promise,
-        15000,
+      return withRenderTimeout(
+        renderTask,
+        8000,
         "Page render timed out"
       ).then(() => {
         if (activeRenderTasks.get(wrap) === renderTask) activeRenderTasks.delete(wrap);
@@ -2572,6 +2664,7 @@
       activeRenderTasks.delete(wrap);
       delete wrap.dataset.rendering;
       delete wrap.dataset.rendered;
+      delete wrap.dataset.renderStartedAt;
       // A cancellation (from cancelActiveRender, e.g. a zoom change
       // superseding this render) isn't a failure — a fresh render for
       // this same page is already on its way in, so don't flash an
@@ -2605,7 +2698,7 @@
         if (!entry.isIntersecting) return;
         const wrap = entry.target;
         const pageNum = Number(wrap.dataset.pageNum);
-        queuePageRender(() => renderPageInto(wrap, pageNum));
+        queuePageRender(() => renderPageInto(wrap, pageNum), pageNum);
       });
     }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
 
@@ -2735,19 +2828,24 @@
       delete wrap.dataset.rendered;
     }
 
-    // Render target page immediately — do NOT wait on IntersectionObserver.
-    // Safe to call even if a render is already in progress or done —
-    // renderPageInto's own guard just no-ops in that case.
-    renderPageInto(wrap, pageNum);
+    // Drop any renders still queued from scrolling PAST pages on the
+    // way here (see focusPageRenderQueue) — they're not relevant anymore.
+    focusPageRenderQueue(pageNum, 6);
+
+    // Render target page with top priority — jumps straight to the front
+    // of the queue instead of waiting behind whatever the scroll observer
+    // already queued, but still counts against the same concurrency cap
+    // as everything else (see queuePageRender above).
+    queuePageRender(() => renderPageInto(wrap, pageNum), pageNum, { priority: true });
 
     // Pre-render adjacent pages for instantaneous responsiveness
     if (pageNum > 1) {
       const prevWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum - 1}"]`);
-      if (prevWrap) renderPageInto(prevWrap, pageNum - 1);
+      if (prevWrap) queuePageRender(() => renderPageInto(prevWrap, pageNum - 1), pageNum - 1, { priority: true });
     }
     if (pageNum < currentPdf.numPages) {
       const nextWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum + 1}"]`);
-      if (nextWrap) renderPageInto(nextWrap, pageNum + 1);
+      if (nextWrap) queuePageRender(() => renderPageInto(nextWrap, pageNum + 1), pageNum + 1, { priority: true });
     }
   }
 
@@ -2927,7 +3025,10 @@
     // above. Only the handful of pages actually on screen right now
     // refresh immediately; everything else stays lazy, exactly like a
     // first-time render does.
-    toRefreshNow.forEach((wrap) => renderPageInto(wrap, Number(wrap.dataset.pageNum)));
+    toRefreshNow.forEach((wrap) => {
+      const pageNum = Number(wrap.dataset.pageNum);
+      queuePageRender(() => renderPageInto(wrap, pageNum), pageNum, { priority: true });
+    });
   }
 
   function zoomIn() {
@@ -3011,10 +3112,12 @@
 
   function closeViewer() {
     endCurrentView();
+    stopStuckPageWatchdog();
     viewer.classList.add("hidden");
     viewer.style.top = "";
     viewer.style.height = "";
     viewerLoadToken++; // invalidate any render still in flight
+    pageRenderQueue = []; // drop anything still queued for the document we're about to destroy
     if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
     if (thumbObserver2) { thumbObserver2.disconnect(); thumbObserver2 = null; }
     activeRenderTasks.forEach((task) => { try { task.cancel(); } catch (e) {} });
@@ -3034,6 +3137,16 @@
     if (currentPdf) {
       try { currentPdf.destroy(); } catch (e) { /* already gone */ }
     }
+    // The loading-task cache (getPdfLoadingTask) only ever evicted itself
+    // on a FAILED load — a successful one stayed cached for the rest of
+    // the session pointing at the pdf.js document object we just handed
+    // .destroy() above. Reopen that same file later (recently-viewed,
+    // bookmarks, or just clicking it again) and it would resolve
+    // instantly to that now-destroyed document — every getPage()/render()
+    // call on it fails immediately, which reads as "this PDF just
+    // won't open" with no obvious reason why. Evict it here too.
+    if (currentPdfPath) pdfLoadingTasks.delete(currentPdfPath);
+    currentPdfPath = null;
     currentPdf = null;
     pagesInner = null;
     viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
