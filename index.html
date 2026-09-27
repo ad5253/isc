@@ -27,7 +27,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=23">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -135,6 +135,19 @@
                 and Chemistry in one place. Made mainly for Vapi Public School classmates, but
                 open to any Class 12 student — ISC or CBSE — by requesting access above.
             </p>
+
+            <!-- Real links to the three subject pages — without these, a
+                 visitor (and Google, crawling this page) had no way to
+                 actually reach /physics/, /chemistry/, /maths/ from here;
+                 those pages only linked back TO this one, never the
+                 reverse. -->
+            <div class="gate__subject-links">
+                <a href="physics/">Physics</a>
+                <span class="gate__subject-links-sep">·</span>
+                <a href="chemistry/">Chemistry</a>
+                <span class="gate__subject-links-sep">·</span>
+                <a href="maths/">Maths</a>
+            </div>
         </div>
     </div>
 
@@ -417,6 +430,6 @@
     </div>
 
     <script src="config.js?v=6"></script>
-    <script src="script.js?v=19"></script>
+    <script src="script.js?v=20"></script>
 </body>
 </html>

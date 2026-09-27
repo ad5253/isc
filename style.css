@@ -2101,6 +2101,19 @@ html.fonts-ready .gate__spine {
 }
 .gate__about strong { color: var(--paper-dim); }
 
+.gate__subject-links {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+}
+.gate__subject-links a {
+  color: var(--paper-dim);
+  text-decoration: none;
+  font-weight: 600;
+}
+.gate__subject-links a:hover { color: var(--brass); }
+.gate__subject-links-sep { color: var(--paper-faint); margin: 0 8px; }
+
 .foot__contact {
   width: 100%;
   order: 3;
