@@ -68,6 +68,19 @@
 
 html { scroll-behavior: smooth; }
 
+/* Stops Android Chrome's native "pull down to refresh"/"swipe to
+   navigate back" gestures from firing. This is almost certainly the
+   real cause behind "pinch-zooming logs me out": a two-finger pinch is
+   rarely perfectly symmetric — if either finger drags down even
+   slightly while the page is scrolled to the very top, Android reads
+   that as a pull-to-refresh and reloads the whole tab. Nothing was
+   actually logging anyone out (the saved session is untouched by a
+   reload) — it just looked exactly like it, since a full reload means
+   sitting through the whole gate → app flow again. overscroll-behavior
+   only blocks that rubber-band/refresh/back gesture; normal scrolling
+   and the custom pinch-to-zoom handler below are unaffected. */
+html, body { overscroll-behavior-y: contain; }
+
 /* Blocks native pinch/double-tap zoom on the page itself, site-wide —
    this is the actual fix, more reliable than the viewport meta tag's
    user-scalable=no above (iOS Safari ignores that one specifically
@@ -421,6 +434,21 @@ html.fonts-ready .gate__spine {
   margin-top: 14px;
   animation: fadeUp 0.3s var(--ease-soft) both;
 }
+
+.gate__field--approval-email {
+  margin-bottom: 8px;
+  max-width: 280px;
+}
+
+.gate__input--small { height: 40px; font-size: 14px; padding: 0 14px; }
+
+.gate__request-hint {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--chemistry);
+  margin: 0 0 10px;
+}
+
 .gate__request-btn {
   display: inline-flex;
   align-items: center;
@@ -439,7 +467,8 @@ html.fonts-ready .gate__spine {
 }
 .gate__request-btn:hover { background: rgba(201, 161, 90, 0.1); }
 .gate__request-btn:active { transform: scale(0.96); }
-.gate__request-btn.is-busy { opacity: 0.6; cursor: default; pointer-events: none; }
+.gate__request-btn.is-busy,
+.gate__request-btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
 .gate__request-btn.hidden { display: none; }
 
 .gate__request-sent {
@@ -1380,6 +1409,16 @@ html.fonts-ready .gate__spine {
   z-index: 2000;
   display: flex;
   flex-direction: column;
+  /* Turns .viewer into the "containing block" for any position:fixed
+     element inside it (like .viewer__zoom below) — without this, a
+     fixed child positions itself against the raw browser window, which
+     on Android can be taller than what's actually visible whenever the
+     address bar / gesture bar is on screen, pinning that element below
+     the visible fold. With this, fixed children instead follow
+     .viewer's own box, which syncViewerViewport() below already keeps
+     matched to the real visible area via visualViewport. Purely a
+     positioning change — no visual difference on its own. */
+  transform: translateZ(0);
 }
 
 /* Only the dim backdrop fades — the bar and page content (in
@@ -1656,6 +1695,7 @@ html.fonts-ready .gate__spine {
      then triggers one real higher-resolution re-render once the
      gesture ends. Single-finger pan/scroll still works natively. */
   touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   -webkit-user-select: none;
   user-select: none;
@@ -2045,6 +2085,21 @@ html.fonts-ready .gate__spine {
   color: var(--paper-faint);
   margin-bottom: 8px;
 }
+
+.gate__about {
+  margin: 18px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--paper-faint);
+  text-align: center;
+  max-width: 40ch;
+  margin-left: auto;
+  margin-right: auto;
+}
+.gate__about strong { color: var(--paper-dim); }
 
 .foot__contact {
   width: 100%;

@@ -1,20 +1,50 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-IN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Class 12 — Study Index</title>
+    <title>ISC Class 12 Study Portal — Notes, Formulas & Solutions</title>
+    <meta name="description" content="Free ISC (CISCE) Class 12 study material — chapter notes, formula sheets, and fully worked solutions for Maths, Physics and Chemistry. Built for Vapi Public School students; useful for CBSE Class 12 too.">
     <meta name="theme-color" content="#121218">
+    <meta name="author" content="Adnan Merchant">
+
+    <!-- Canonical + social preview. -->
+    <link rel="canonical" href="https://ad5253.github.io/isc/">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="ISC Class 12 Study Portal — Notes, Formulas & Solutions">
+    <meta property="og:description" content="Free ISC (CISCE) Class 12 study material — chapter notes, formula sheets, and fully worked solutions for Maths, Physics and Chemistry. Built for Vapi Public School students; useful for CBSE Class 12 too.">
+    <meta property="og:url" content="https://ad5253.github.io/isc/">
+    <meta property="og:locale" content="en_IN">
+    <meta property="og:image" content="https://ad5253.github.io/isc/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="ISC Class 12 Study Portal — Notes, Formulas & Solutions">
+    <meta name="twitter:description" content="Free ISC (CISCE) Class 12 study material — chapter notes, formula sheets, and fully worked solutions for Maths, Physics and Chemistry. Built for Vapi Public School students; useful for CBSE Class 12 too.">
+    <meta name="twitter:image" content="https://ad5253.github.io/isc/og-image.png">
+
+    <link rel="manifest" href="manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20">
+    <link rel="stylesheet" href="style.css?v=22">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "ISC Class 12 Study Portal",
+      "description": "Free ISC (CISCE) Class 12 study material — chapter notes, formula sheets, and fully worked solutions for Maths, Physics and Chemistry.",
+      "url": "https://ad5253.github.io/isc/",
+      "author": { "@type": "Person", "name": "Adnan Merchant" },
+      "inLanguage": "en-IN"
+    }
+    </script>
 </head>
 <body>
 
@@ -73,8 +103,12 @@
                  attempt, so the admin's approval queue only ever fills
                  up with people who actually asked to be let in. -->
             <div id="gateRequestApproval" class="gate__request hidden">
-                <button type="button" id="gateRequestBtn" class="gate__request-btn">Send my name for approval</button>
-                <p id="gateRequestSent" class="gate__request-sent hidden">Request sent — you'll be added once it's approved.</p>
+                <div class="gate__field gate__field--approval-email">
+                    <input type="email" id="gateRequestEmail" class="gate__input gate__input--small" placeholder="Your email — so we can tell you once you're approved" autocomplete="email" inputmode="email" required>
+                </div>
+                <p id="gateRequestEmailHint" class="gate__request-hint hidden"></p>
+                <button type="button" id="gateRequestBtn" class="gate__request-btn" disabled>Send my name for approval</button>
+                <p id="gateRequestSent" class="gate__request-sent hidden">Request sent — you'll get an email once it's approved.</p>
             </div>
 
             <div class="gate__contact">
@@ -91,6 +125,16 @@
                     </a>
                 </div>
             </div>
+
+            <!-- Visible About/Contact text — partly for anyone landing here
+                 from search, partly because search engines weigh visible
+                 page text more than meta tags alone. -->
+            <p class="gate__about">
+                Built by <strong>Adnan Merchant</strong>, a Vapi Public School Class 12 (ISC) student, to
+                organize chapter notes, formula sheets, and worked solutions for Maths, Physics
+                and Chemistry in one place. Made mainly for Vapi Public School classmates, but
+                open to any Class 12 student — ISC or CBSE — by requesting access above.
+            </p>
         </div>
     </div>
 
@@ -372,7 +416,7 @@
         </div>
     </div>
 
-    <script src="config.js?v=5"></script>
-    <script src="script.js?v=17"></script>
+    <script src="config.js?v=6"></script>
+    <script src="script.js?v=19"></script>
 </body>
 </html>

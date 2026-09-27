@@ -9,6 +9,10 @@ const SITE_CONFIG = {
   title: "Class 12 Study Portal",
   subtitle: "Complete study material — Notes, Formulas & Solutions",
 
+  // Shown faintly on every PDF page as the watermark (see drawWatermark
+  // in script.js) instead of the viewer's name + date.
+  siteUrl: "ad5253.github.io/isc",
+
   // ── Session ──────────────────────────────────────────────────
   //  After logging in, a name is remembered in the browser (so a
   //  reload doesn't ask again) but only for this many minutes — after

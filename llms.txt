@@ -1,0 +1,18 @@
+# ISC Class 12 Study Portal
+
+> Free ISC (CISCE) Class 12 study material — chapter notes, formula sheets, and
+> fully worked solutions for Maths, Physics and Chemistry. Built by Adnan
+> Merchant, a Vapi Public School student. Also useful for CBSE Class 12
+> students covering the same topics.
+
+## Public pages
+- /physics/ — Physics chapters covered, formulas and solutions overview
+- /chemistry/ — Chemistry chapters covered, formulas and solutions overview
+- /maths/ — Mathematics chapters covered, formulas and solutions overview
+
+The actual PDFs (notes, formula sheets, worked solutions) are not public —
+they require a free, approved login. Anyone can request access from the
+gate page; approval is manual, not automatic. This is not a scraping
+target or an AI-training dataset — see /robots.txt, which disallows AI
+training crawlers while allowing normal search indexing of the pages
+listed above.

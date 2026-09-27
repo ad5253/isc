@@ -315,6 +315,8 @@
   const gateRequestApproval = $("#gateRequestApproval");
   const gateRequestBtn      = $("#gateRequestBtn");
   const gateRequestSent     = $("#gateRequestSent");
+  const gateRequestEmail     = $("#gateRequestEmail");
+  const gateRequestEmailHint = $("#gateRequestEmailHint");
 
   // ── Admin dashboard refs ─────────────────────────────────
   const adminApp           = $("#adminApp");
@@ -919,9 +921,27 @@
 
     nameForm.addEventListener("submit", onNameSubmit);
     nameInput.addEventListener("input", hideGateError);
+    // Mandatory so an approval can actually be followed up on — the
+    // approval queue used to have no way to tell someone their request
+    // was accepted short of you personally remembering their name and
+    // messaging them back. Live-validated the same way the feedback
+    // form's email field is, and re-checked again on click below
+    // (belt and braces, same reasoning as the feedback form).
+    if (gateRequestEmail) {
+      gateRequestEmail.addEventListener("input", () => {
+        const valid = isValidEmail(gateRequestEmail.value);
+        if (gateRequestBtn) gateRequestBtn.disabled = !valid;
+        if (gateRequestEmailHint) {
+          gateRequestEmailHint.classList.toggle("hidden", gateRequestEmail.value.length === 0 || valid);
+          gateRequestEmailHint.textContent = "Enter a real email address (e.g. name@gmail.com)";
+        }
+      });
+    }
     if (gateRequestBtn) {
       gateRequestBtn.addEventListener("click", () => {
         if (!pendingApprovalName || gateRequestBtn.disabled) return;
+        const email = gateRequestEmail ? gateRequestEmail.value.trim() : "";
+        if (!isValidEmail(email)) return; // re-checked here too, not just trusting the disabled state
         gateRequestBtn.disabled = true;
         gateRequestBtn.classList.add("is-busy");
         gateRequestBtn.textContent = "Sending…";
@@ -929,7 +949,11 @@
         // logged automatically on every failed try — the backend's
         // approval queue reads from THIS tag only, not from every
         // login attempt. See getUnauthorizedQueue in the Apps Script.
-        logEvent("login", pendingApprovalName, "approval_requested", pendingApprovalTrace);
+        // The email is appended to the trace string using the same
+        // "key:value || key:value" shape the trace already uses for
+        // device/ip/label — extractField() on the backend reads it out
+        // with zero changes needed to that function.
+        logEvent("login", pendingApprovalName, "approval_requested", `${pendingApprovalTrace} || email:${email}`);
         gateRequestBtn.classList.add("hidden");
         if (gateRequestSent) gateRequestSent.classList.remove("hidden");
         pendingApprovalName = null;
@@ -1348,9 +1372,11 @@
     pendingApprovalName = name;
     pendingApprovalTrace = trace;
     gateRequestApproval.classList.remove("hidden");
+    if (gateRequestEmail) gateRequestEmail.value = "";
+    if (gateRequestEmailHint) gateRequestEmailHint.classList.add("hidden");
     if (gateRequestBtn) {
       gateRequestBtn.classList.remove("hidden", "is-busy");
-      gateRequestBtn.disabled = false;
+      gateRequestBtn.disabled = true; // stays disabled until a valid email is entered
       gateRequestBtn.textContent = "Send my name for approval";
     }
     if (gateRequestSent) gateRequestSent.classList.add("hidden");
@@ -1415,7 +1441,20 @@
     // an enhancement, not something the first paint should ever wait
     // on. Now it runs in the background and just redraws whatever's
     // currently on screen if it actually changed anything.
-    nav("home");
+    // Landed here from one of the public /physics /chemistry /maths
+    // preview pages (via ?subject=xxx) — drop them straight into that
+    // subject instead of the home grid, so the click that brought them
+    // here from search actually goes somewhere relevant. Only consumed
+    // once: replaceState strips it from the URL immediately after, so
+    // a later reload or manual "Home" tap behaves completely normally.
+    const requestedSubject = new URLSearchParams(location.search).get("subject");
+    const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
+    if (subjectMatch) {
+      history.replaceState(null, "", location.pathname);
+      nav("subject", subjectMatch.id);
+    } else {
+      nav("home");
+    }
     fetchAndApplyCatalog().then(() => render());
   }
 
@@ -2509,7 +2548,7 @@
   }
 
   function drawWatermark(ctx, canvas) {
-    const label = `${currentName || "unknown"} · ${new Date().toLocaleDateString()}`;
+    const label = SITE_CONFIG.siteUrl || "unknown";
     ctx.save();
     ctx.globalAlpha = 0.09;
     ctx.fillStyle = "#000";
@@ -3629,7 +3668,7 @@
         <input type="checkbox" class="admin__roster-checkbox" data-queue-check>
         <div class="admin__presence-info">
           <span class="admin__presence-name">${q.name}</span>
-          <span class="admin__presence-meta">${q.count} attempt${q.count === 1 ? "" : "s"} · last ${when}</span>
+          <span class="admin__presence-meta">${q.count} attempt${q.count === 1 ? "" : "s"} · last ${when}${q.email ? ` · ${q.email}` : ""}</span>
         </div>
         <div class="admin__presence-actions">
           <button type="button" class="admin__presence-btn" data-action="approve">Approve</button>
