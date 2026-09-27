@@ -111,7 +111,31 @@
     let timedOut = false;
 
     const realLoadPromise = ensurePdfToken().then((token) => {
-      realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
+      // disableRange: pdf.js's default behaviour is to fetch a PDF in
+      // small pieces (byte-range requests) — an initial chunk to open
+      // it fast, then more small requests later for whatever page you
+      // jump to, potentially dozens of them for a big scanned file.
+      // Every single one of those has to go through the Apps
+      // Script/Cloudflare Worker/Backblaze chain, with its own token
+      // check and rate limit, all over again — see the comment above
+      // about the Worker's per-minute limit. That's the real reason a
+      // page deep in a document (60, 63, 64...) could hang: it wasn't
+      // the on-screen rendering, it was a fresh network round-trip
+      // through that whole chain, triggered by scrolling, that
+      // sometimes never came back.
+      // With disableRange set, pdf.js instead fetches the ENTIRE file
+      // as one single request, start to finish (still streamed, so the
+      // existing progress bar keeps working). Once that one request
+      // finishes, the whole document is sitting in memory and every
+      // page after that — page 1 or page 300 — is drawn from what's
+      // already there. No further requests to the Worker, ever, for
+      // that file. Slightly more upfront wait for very large files;
+      // zero chance of a mid-document network stall afterwards.
+      realTask = pdfjsLib.getDocument({
+        url: pdfWorkerUrl(path, token),
+        disableRange: true,
+        disableAutoFetch: true,
+      });
       realTask.onProgress = (p) => { if (task.onProgress) task.onProgress(p); };
       return realTask.promise;
     });
@@ -121,7 +145,7 @@
         timedOut = true;
         if (realTask) realTask.destroy();
         reject(new Error("PDF load timed out"));
-      }, 25000);
+      }, 45000); // was 25s — now the WHOLE file downloads in this one step (see disableRange above), so a big scanned file genuinely needs more room here than before
     });
 
     task.promise = Promise.race([realLoadPromise, timeoutPromise]).catch((err) => {
