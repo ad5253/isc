@@ -74,6 +74,86 @@
     return pdfLoadingTasks.get(path);
   }
 
+  // ── Dedicated "open a specific PDF" loading path ────────────
+  // Separate on purpose from the thumbnail cache above. Thumbnails
+  // only ever need a sliver of each file (page 1) via range requests
+  // — browsing a folder of 14 PDFs should never trigger 14 full
+  // downloads. This path is only used when someone actually taps to
+  // open ONE of them: it downloads that single file in full before
+  // showing it, so once it's open, jumping to any page — including
+  // the very last one — never has to talk to the network again.
+  //
+  // This depends on the Cloudflare Worker tolerating a plain,
+  // non-Range GET request, which isn't guaranteed — some Workers are
+  // built specifically around serving byte-ranges and reject or
+  // silently hang on anything else. So this LEARNS, once per browser
+  // session: the first file opened tries the full-download approach;
+  // if the Worker doesn't answer within 9 seconds, that attempt is
+  // abandoned and it falls back to the same proven range-based
+  // loading thumbnails already use — and every file after that just
+  // uses the fallback directly, with no wasted wait. Worst case, this
+  // behaves exactly as it did before this feature existed.
+  let fullDownloadUnsupported = false;
+  const pdfViewLoadingTasks = new Map();
+  function getPdfViewLoadingTask(path) {
+    // Already learned the Worker can't do this — just use the shared,
+    // proven range-based task directly, exactly as opening a PDF
+    // worked before this feature existed. No attempt, no wait.
+    if (fullDownloadUnsupported) return getPdfLoadingTask(path);
+    if (!pdfViewLoadingTasks.has(path)) {
+      pdfViewLoadingTasks.set(path, makeFullPdfLoadingTask(path));
+    }
+    return pdfViewLoadingTasks.get(path);
+  }
+
+  function makeFullPdfLoadingTask(path) {
+    const task = { onProgress: null };
+    let realTask = null;
+    let fellBack = false;
+
+    const fullAttempt = ensurePdfToken().then((token) => {
+      realTask = pdfjsLib.getDocument({ url: pdfWorkerUrl(path, token), disableRange: true });
+      realTask.onProgress = (p) => { if (!fellBack && task.onProgress) task.onProgress(p); };
+      return realTask.promise;
+    });
+
+    const giveUpAfterDelay = new Promise((resolve) => { setTimeout(() => resolve(null), 9000); });
+
+    task.promise = Promise.race([fullAttempt.then((pdf) => ({ pdf })), giveUpAfterDelay])
+      .catch((err) => {
+        // Access decisions (suspended / not authorized) are real answers,
+        // not evidence the Worker can't serve a full download — pass
+        // those straight through instead of masking them as a fallback.
+        if (err && (err.message === "suspended" || err.message === "unauthorized")) throw err;
+        return null; // anything else (hang, network hiccup, Worker rejecting a non-Range GET) falls through to the fallback below
+      })
+      .then((result) => {
+        if (result && result.pdf) {
+          task.resolvedPdf = result.pdf;
+          return result.pdf;
+        }
+        fellBack = true;
+        fullDownloadUnsupported = true; // learned for the rest of this session — see above
+        // So a LATER open of this same file goes straight through the
+        // fast "already learned" path above instead of finding this
+        // now-stale wrapper still sitting in the cache.
+        if (pdfViewLoadingTasks.get(path) === task) pdfViewLoadingTasks.delete(path);
+        if (realTask) { try { realTask.destroy(); } catch (e) { /* already gone */ } }
+        const fallbackTask = getPdfLoadingTask(path);
+        fallbackTask.onProgress = task.onProgress;
+        return fallbackTask.promise.then((pdf) => { task.resolvedPdf = pdf; return pdf; });
+      });
+
+    // If the full attempt actually succeeds AFTER we've already given
+    // up and switched to the fallback, don't leave it sitting in
+    // memory unused — nothing holds a reference to it once fellBack
+    // is true.
+    fullAttempt.then((pdf) => { if (fellBack) { try { pdf.destroy(); } catch (e) {} } }).catch(() => {});
+
+    return task;
+  }
+
+
   // Building the request URL now needs an async token fetch first
   // (see ensurePdfToken above), but existing callers set `.onProgress`
   // synchronously right after calling getPdfLoadingTask and then read
@@ -124,7 +204,15 @@
       }, 25000);
     });
 
-    task.promise = Promise.race([realLoadPromise, timeoutPromise]).catch((err) => {
+    task.promise = Promise.race([realLoadPromise, timeoutPromise]).then((pdf) => {
+      // Remembered so the viewer can tell, after the fact, whether the
+      // document it ended up with is THIS shared one (thumbnails use it
+      // too — must never be destroyed just because one viewer closed)
+      // or its own separate, dedicated full-download copy. See
+      // getPdfViewLoadingTask / closeViewer.
+      task.resolvedPdf = pdf;
+      return pdf;
+    }).catch((err) => {
       if (pdfLoadingTasks.get(path) === task) pdfLoadingTasks.delete(path);
       throw err;
     });
@@ -868,6 +956,7 @@
   // open PDF view, log the session as ended, stop the heartbeat, wipe
   // the saved name, then reload back to the gate.
   function performLogout(reason) {
+    try { history.replaceState(null, "", APP_BASE); } catch (e) {}
     endCurrentView();
     if (sessionId) {
       const seconds = sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : "";
@@ -946,6 +1035,16 @@
       e.preventDefault();
       if (nameForm.requestSubmit) nameForm.requestSubmit();
       else onNameSubmit(e);
+    });
+    // Back/Forward: the URL already changed, so re-render to match it
+    // without pushing anything new. Only once signed in (nav needs the
+    // app up). Falls back to home for any URL that isn't a subject.
+    window.addEventListener("popstate", (e) => {
+      if (!sessionId) return;
+      const st = e.state;
+      if (st && st.view) { nav(st.view, st.subjectId, st.folderId, "none"); return; }
+      const m = location.pathname.match(/(physics|chemistry|maths)\/?$/);
+      if (m) nav("subject", m[1], null, "none"); else nav("home", null, null, "none");
     });
     homeBtn.addEventListener("click", () => nav("home"));
     if (progressBtn) progressBtn.addEventListener("click", () => nav("progress"));
@@ -1426,10 +1525,9 @@
     const requestedSubject = new URLSearchParams(location.search).get("subject");
     const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
     if (subjectMatch) {
-      history.replaceState(null, "", location.pathname);
-      nav("subject", subjectMatch.id);
+      nav("subject", subjectMatch.id, null, "replace"); // also rewrites ?subject=x into /x/
     } else {
-      nav("home");
+      nav("home", null, null, "replace");
     }
     fetchAndApplyCatalog().then(() => render());
   }
@@ -1640,12 +1738,41 @@
   }
 
   // ── Navigation ─────────────────────────────────────────
-  function nav(view, subjectId, folderId) {
+  // ── Real URLs for subjects ──────────────────────────────────
+  // Home is <base>/ ; a subject is <base>/physics/, <base>/maths/,
+  // <base>/chemistry/. Folders inside a subject stay on the subject's
+  // URL. APP_BASE is captured once at load, BEFORE any pushState, so
+  // it always means "the folder index.html lives in" (e.g. /isc/).
+  // Those subject URLs are also real static pages (the public preview
+  // pages) — a reload of one while signed in bounces straight back
+  // into the app at that subject (see the redirect in those pages).
+  const APP_BASE = location.pathname.replace(/index\.html$/, "").replace(/(?:physics|chemistry|maths)\/?$/, "").replace(/\/?$/, "/");
+
+  function urlForView(view, subject) {
+    return (view === "home" || !subject) ? APP_BASE : APP_BASE + subject.id + "/";
+  }
+
+  // mode: "push" (normal click), "replace" (initial landing / deep
+  // link — shouldn't add a Back-button stop), "none" (already handled
+  // by the browser, e.g. Back/Forward — don't touch history at all).
+  function nav(view, subjectId, folderId, historyMode) {
     curView = view;
     curSubject = subjectId ? SITE_CONFIG.subjects.find((s) => s.id === subjectId) : null;
     curFolder = folderId && curSubject ? curSubject.subfolders.find((f) => f.id === folderId) : null;
     updateCrumbs();
     render();
+
+    if (historyMode !== "none") {
+      const target = urlForView(view, curSubject);
+      const state = { view, subjectId: subjectId || null, folderId: folderId || null };
+      const cur = history.state;
+      const sameSpot = cur && cur.view === state.view && cur.subjectId === state.subjectId &&
+        cur.folderId === state.folderId && location.pathname === target && !location.search;
+      try {
+        if (historyMode === "replace") history.replaceState(state, "", target);
+        else if (!sameSpot) history.pushState(state, "", target); // folders share their subject's URL but still get their own Back step
+      } catch (e) { /* history API unavailable — the app works fine without URL updates */ }
+    }
 
     if (sessionId) {
       const where = curFolder ? `folder:${curFolder.name}` : curSubject ? `subject:${curSubject.name}` : "home";
@@ -2411,6 +2538,7 @@
     if (stuckPageWatchdog) { clearInterval(stuckPageWatchdog); stuckPageWatchdog = null; }
   }
 
+  let currentPdfIsDedicated = false; // true only when currentPdf is its own full-download copy, not the shared thumbnail document
   let currentPdfPath = null; // tracks which file's loading task to evict from cache once this document is destroyed
 
   function openViewer(path, name) {
@@ -2464,11 +2592,12 @@
       return;
     }
 
-    // Reuses the same loading task the folder thumbnail already
-    // started (see getPdfLoadingTask) — for a large scanned PDF whose
-    // thumbnail has already rendered, this resolves instantly instead
-    // of re-fetching the whole file a second time.
-    const task = getPdfLoadingTask(path);
+    // Downloads THIS file in full before showing it (see
+    // getPdfViewLoadingTask) so jumping to any page, including the
+    // last, never has to hit the network again. Only ever runs for the
+    // one PDF actually tapped — folder thumbnails keep using the
+    // light, page-1-only path and never trigger a full download.
+    const task = getPdfViewLoadingTask(path);
     task.onProgress = (p) => {
       if (myToken !== viewerLoadToken) return;
       if (p.total) {
@@ -2480,8 +2609,25 @@
     };
 
     task.promise.then((pdf) => {
-      if (myToken !== viewerLoadToken) return;
+      if (myToken !== viewerLoadToken) {
+        // Closed (or another PDF opened) while this was still
+        // downloading — if this finished document is our own
+        // dedicated copy, nothing will ever use or destroy it now.
+        const shared = pdfLoadingTasks.get(path);
+        if (!(shared && shared.resolvedPdf === pdf)) {
+          try { pdf.destroy(); } catch (e) { /* already gone */ }
+          if (pdfViewLoadingTasks.get(path) === task) pdfViewLoadingTasks.delete(path);
+        }
+        return;
+      }
       currentPdf = pdf;
+      // If this is the exact same document object the shared thumbnail
+      // cache holds (i.e. the full-download attempt fell back to it),
+      // closing the viewer must NOT destroy it — thumbnails and the
+      // next open still need it. Only a genuinely separate, dedicated
+      // full-download copy is ours to destroy.
+      const sharedTask = pdfLoadingTasks.get(path);
+      currentPdfIsDedicated = !(sharedTask && sharedTask.resolvedPdf === pdf);
       if (viewerPageTotal) viewerPageTotal.textContent = String(pdf.numPages);
       if (viewerPageInput) {
         viewerPageInput.value = 1;
@@ -3173,19 +3319,24 @@
     // each one holding onto its own thread and connections — until
     // the browser's hard cap on how many of either it allows kicked
     // in, at which point NOTHING new could load anymore, in any PDF.
-    if (currentPdf) {
+    // Only destroy the document if it's this viewer's OWN dedicated
+    // full-download copy. If it turned out to be the shared one the
+    // folder thumbnails also use (the full-download attempt fell back
+    // to it), it stays alive — thumbnails and the next open still
+    // need it, and it was never this viewer's to throw away.
+    if (currentPdf && currentPdfIsDedicated) {
       try { currentPdf.destroy(); } catch (e) { /* already gone */ }
     }
-    // The loading-task cache (getPdfLoadingTask) only ever evicted itself
-    // on a FAILED load — a successful one stayed cached for the rest of
-    // the session pointing at the pdf.js document object we just handed
-    // .destroy() above. Reopen that same file later (recently-viewed,
-    // bookmarks, or just clicking it again) and it would resolve
-    // instantly to that now-destroyed document — every getPage()/render()
-    // call on it fails immediately, which reads as "this PDF just
-    // won't open" with no obvious reason why. Evict it here too.
-    if (currentPdfPath) pdfLoadingTasks.delete(currentPdfPath);
+    // Same stale-cache reasoning as before, now aimed at the right
+    // cache: the dedicated view-task cache would otherwise keep
+    // handing back this now-destroyed document the next time the
+    // same file is opened, which reads as "this PDF just won't
+    // open." The shared thumbnail cache (pdfLoadingTasks) is
+    // deliberately left alone — its document is either a separate
+    // still-alive object, or the very one we just declined to destroy.
+    if (currentPdfPath && currentPdfIsDedicated) pdfViewLoadingTasks.delete(currentPdfPath);
     currentPdfPath = null;
+    currentPdfIsDedicated = false;
     currentPdf = null;
     pagesInner = null;
     viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
