@@ -31,7 +31,7 @@ const SITE_CONFIG = {
   //  script to paste into script.google.com, deploy as a Web App,
   //  then paste the /exec URL below.
   logging: {
-    endpoint: "https://script.google.com/macros/s/AKfycbyDtxYLc_dwqKdermC8caK79OG9K4lkIsHA7_XNoFVQDxLX7dmKDp-tCJxOcLOwTJ_7/exec",
+    endpoint: "https://script.google.com/macros/s/AKfycbyC9V40ZEU64kMae9n4zjLiWQdBYPSpG2NdkdIKwIit3vfekSROSXORBaNsQPV47MpP6w/exec",
   },
 
   // ── PDF Delivery (Cloudflare Worker → Backblaze B2) ──────────
