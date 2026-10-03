@@ -1489,7 +1489,17 @@
       if (!data || !data.ok || !data.catalog) return;
       SITE_CONFIG.subjects.forEach((s) => {
         const liveSubfolders = data.catalog[s.id];
-        if (liveSubfolders && liveSubfolders.length) s.subfolders = liveSubfolders;
+        if (liveSubfolders && liveSubfolders.length) {
+          s.subfolders = liveSubfolders.map((f) => {
+            const existing = (s.subfolders || []).find((oldF) => oldF.name.toLowerCase() === f.name.toLowerCase() || (oldF.id && f.id && oldF.id === f.id));
+            const id = f.id || (existing && existing.id) || (s.id + "-" + f.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""));
+            return {
+              id: id,
+              name: f.name,
+              files: f.files || []
+            };
+          });
+        }
       });
     } catch {
       // network hiccup — config.js's existing hardcoded list stands in as-is, site still works
@@ -1760,7 +1770,7 @@
   function nav(view, subjectId, folderId, historyMode) {
     curView = view;
     curSubject = subjectId ? SITE_CONFIG.subjects.find((s) => s.id === subjectId) : null;
-    curFolder = folderId && curSubject ? curSubject.subfolders.find((f) => f.id === folderId) : null;
+    curFolder = folderId && curSubject ? curSubject.subfolders.find((f) => (f.id && f.id === folderId) || f.name === folderId) : null;
     updateCrumbs();
     render();
 
@@ -2213,7 +2223,7 @@
 
     curSubject.subfolders.forEach((f) => {
       const row = el("div", "subfolder fade-up");
-      row.onclick = () => nav("subfolder", curSubject.id, f.id);
+      row.onclick = () => nav("subfolder", curSubject.id, f.id || f.name);
       row.innerHTML = `
         <div class="subfolder__icon">${ICONS.folder}</div>
         <div class="subfolder__info">
