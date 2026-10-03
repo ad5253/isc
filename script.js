@@ -409,6 +409,7 @@
   const adminContentStatsList = $("#adminContentStatsList");
   const adminFeedbackAvg      = $("#adminFeedbackAvg");
   const adminFeedbackList     = $("#adminFeedbackList");
+  const adminSyncBtn          = $("#adminSyncBtn");
   const adminScanBtn          = $("#adminScanBtn");
   const adminScanProgress     = $("#adminScanProgress");
   const adminScanTimer        = $("#adminScanTimer");
@@ -1128,6 +1129,7 @@
     adminBroadcastBtn.addEventListener("click", onBroadcastMessage);
     adminExportBtn.addEventListener("click", onExportCsv);
     adminArchiveBtn.addEventListener("click", onArchiveOldLogs);
+    if (adminSyncBtn) adminSyncBtn.addEventListener("click", onSyncBackblaze);
     adminScanBtn.addEventListener("click", onScanBackblaze);
     adminTabs.addEventListener("click", (e) => {
       const btn = e.target.closest(".admin__tab");
@@ -3648,6 +3650,41 @@
   // it in front of students immediately, which is exactly why nothing
   // here is silent or automatic.
   let scanTimerInterval = null;
+
+  async function onSyncBackblaze() {
+    if (!confirm("This will refresh your entire catalog so it matches your Backblaze bucket exactly (removes duplicates, adds new files, cleans everything). Continue?")) return;
+    if (adminSyncBtn) adminSyncBtn.disabled = true;
+    adminScanBtn.disabled = true;
+    adminScanResults.innerHTML = "";
+    adminScanProgress.classList.remove("hidden");
+    const startedAt = Date.now();
+    adminScanTimer.textContent = "Syncing with Backblaze… 0.0s";
+    scanTimerInterval = setInterval(() => {
+      adminScanTimer.textContent = `Syncing with Backblaze… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    }, 100);
+
+    const data = await adminFetch("syncCatalog");
+
+    clearInterval(scanTimerInterval);
+    scanTimerInterval = null;
+    adminScanProgress.classList.add("hidden");
+    if (adminSyncBtn) adminSyncBtn.disabled = false;
+    adminScanBtn.disabled = false;
+
+    if (!data) {
+      adminScanResults.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check your connection.</p>`;
+      return;
+    }
+    if (!data.ok || data.error) {
+      adminScanResults.innerHTML = `<p class="admin__empty">Sync failed: ${data.error || "Unknown error"}</p>`;
+      showToast("Sync failed: " + (data.error || "Unknown error"), true);
+      return;
+    }
+
+    showToast(`Successfully synced ${data.synced || 0} files from Backblaze!`);
+    adminScanResults.innerHTML = `<p class="admin-scan-summary" style="color:var(--maths); font-weight:600">✓ Catalog synced! ${data.synced || 0} files are now live and duplicate-free.</p>`;
+    fetchAndApplyCatalog().then(() => render());
+  }
 
   async function onScanBackblaze() {
     adminScanBtn.disabled = true;
