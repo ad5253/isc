@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../../style.css?v=30">
-    <link rel="stylesheet" href="../../practicals/practicals.css?v=2">
+    <link rel="stylesheet" href="../../practicals/practicals.css?v=3">
     <link rel="icon" type="image/svg+xml" href="../../favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="../../favicon-32.png">
     <link rel="apple-touch-icon" href="../../apple-touch-icon.png">
@@ -53,6 +53,9 @@
                 <a class="nav__contact nav__contact--email" href="mailto:merchantadnan052@gmail.com" aria-label="Contact by email" title="Email">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5 12 13l8-6.5" /><rect x="3.2" y="5" width="17.6" height="14" rx="1.6"/></svg>
                     </a>
+                <button class="nav__contact nav__contact--support" data-support="1" aria-label="Support us via UPI" title="Support us via UPI">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78Z"/></svg>
+                    </button>
             </div>
         </div>
     </nav>
@@ -73,6 +76,23 @@
             Designed by AM
         </p>
     </footer>
+    <div id="supportModal" class="admin-notice hidden">
+        <div class="admin-notice__overlay" id="supportModalOverlay"></div>
+        <div class="admin-notice__panel support-panel">
+            <p class="admin-notice__text">
+                If this has helped you, you're welcome to send whatever
+                you'd like via UPI — completely optional, no pressure.
+            </p>
+            <a id="supportUpiLink" class="viewer__btn support-panel__pay-btn" href="#" target="_blank" rel="noopener">
+                Pay via UPI app
+            </a>
+            <p class="support-panel__or">or scan with any UPI app</p>
+            <img id="supportQr" class="support-panel__qr" alt="UPI QR code — scan with any UPI app to pay" width="180" height="180">
+            <p class="support-panel__vpa">7405806352@fam</p>
+            <button type="button" class="admin-notice__btn" id="supportModalClose">Close</button>
+        </div>
+    </div>
+
 <script src="../experiments.js"></script>
 <script>
 (function () {
@@ -94,6 +114,23 @@
   var more = document.createElement("div");
   more.className = "exp-more"; more.textContent = "More experiments are on the way.";
   list.appendChild(more);
+})();
+</script>
+<script>
+(function () {
+  var modal = document.getElementById("supportModal"); if (!modal) return;
+  var uri = "upi://pay?pa=7405806352@fam&pn=Adnan&cu=INR";
+  var link = document.getElementById("supportUpiLink"), qr = document.getElementById("supportQr");
+  function open() {
+    if (link) link.href = uri;
+    if (qr && !qr.src) qr.src = "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=" + encodeURIComponent(uri);
+    modal.classList.remove("hidden");
+  }
+  function close() { modal.classList.add("hidden"); }
+  document.querySelectorAll("[data-support]").forEach(function (b) { b.addEventListener("click", open); });
+  document.getElementById("supportModalClose").addEventListener("click", close);
+  document.getElementById("supportModalOverlay").addEventListener("click", close);
+  if (location.hash === "#support") open();
 })();
 </script>
 </body>

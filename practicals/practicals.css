@@ -60,3 +60,9 @@ a.subfolder .subfolder__icon.exp-num { background: rgba(201, 161, 90, 0.12); }
 .pill-btn:active { transform: scale(0.96); }
 .pill-btn--brass { background: rgba(201, 161, 90, 0.14); border-color: var(--brass-dim); color: var(--brass); }
 @media (prefers-reduced-motion: reduce) { .closed__flask { animation: none; } }
+
+.closed__text--help { color: var(--paper-dim); font-size: 14px; margin-top: 4px; }
+.closed__heart { color: var(--brass); font-size: 1.05em; }
+button.pill-btn { background: none; cursor: pointer; font-family: var(--sans); }
+.pill-btn--gold { background: rgba(201, 161, 90, 0.14); border-color: var(--brass); color: var(--brass); }
+.pill-btn--gold:hover { background: rgba(201, 161, 90, 0.24); }
