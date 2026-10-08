@@ -237,7 +237,7 @@
   // (single digits to ~17MB each) — enough parallelism that nothing
   // sits queued for long, while still well short of firing off every
   // file in a folder simultaneously.
-  const THUMBNAIL_CONCURRENCY = 4;
+  const THUMBNAIL_CONCURRENCY = 6;
   let activeThumbnailLoads = 0;
   const thumbnailQueue = [];
 
@@ -483,9 +483,17 @@
 
     let data;
     try {
+      // Bounded wait + one automatic retry (second try usually hits a warm backend).
       const url = `${endpoint}?action=getPdfToken&name=${encodeURIComponent(currentName)}&sessionId=${encodeURIComponent(sessionId)}`;
-      const res = await fetch(url);
-      data = await res.json();
+      const tryOnce = async (ms) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          return await res.json();
+        } finally { clearTimeout(timer); }
+      };
+      try { data = await tryOnce(10000); } catch { data = await tryOnce(12000); }
     } catch {
       throw new Error("network");
     }
@@ -658,7 +666,13 @@
   // same philosophy as everything else here: a hiccup reaching the
   // sheet should never lock out someone who's actually fine.
   let cachedLoginCheck = null;
-  async function fetchLoginCheck(name) {
+  let loginCheckInFlight = null;
+  function fetchLoginCheck(name) {
+    if (cachedLoginCheck) return Promise.resolve(cachedLoginCheck);
+    if (!loginCheckInFlight) loginCheckInFlight = fetchLoginCheckNow(name).finally(() => { loginCheckInFlight = null; });
+    return loginCheckInFlight;
+  }
+  async function fetchLoginCheckNow(name) {
     if (cachedLoginCheck) return cachedLoginCheck;
     const fallback = { blockedDeviceIds: [], accessHashes: [], suspendedHashes: [], active: false };
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
@@ -970,6 +984,11 @@
 
   // ── Init ───────────────────────────────────────────────
   async function init() {
+    // Wake the Apps Script backend as soon as the page opens (cold start is a few seconds).
+    try {
+      const ep = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (ep && ep.indexOf("PASTE_YOUR") !== 0) fetch(`${ep}?action=ping`).catch(() => {});
+    } catch (e) {}
     const saved = readSession();
     if (saved && (await isSuspended(saved))) {
       clearSession();
