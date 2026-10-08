@@ -3153,3 +3153,61 @@ html.fonts-ready .gate__spine {
 .subject--wide .subject__icon { margin-bottom: 0; flex-shrink: 0; }
 .subject--wide .subject__name { margin-bottom: 2px; font-size: 22px; }
 .subject--wide .subject__arrow { top: 50%; margin-top: -9px; right: 24px; }
+
+/* ── Practicals tile: premium gold treatment ──────────────────
+   A bright gold flare travels around the border, a soft sheen
+   sweeps across the tile, and the title is gold-gradient text. */
+@property --gold-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+
+.subject--wide {
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(135deg, #1d1b17, #16151a 60%, #1c1912) padding-box,
+    conic-gradient(from var(--gold-angle),
+      rgba(201,163,78,0.25) 0deg,
+      rgba(201,163,78,0.25) 220deg,
+      #c9a34e 280deg,
+      #fff2bd 320deg,
+      #c9a34e 345deg,
+      rgba(201,163,78,0.25) 360deg) border-box;
+  box-shadow: 0 0 0 1px rgba(201,163,78,0.06), 0 10px 34px rgba(201,163,78,0.14);
+  animation: goldOrbit 5s linear infinite;
+}
+@keyframes goldOrbit { to { --gold-angle: 360deg; } }
+
+.subject--wide::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: -40%;
+  width: 28%;
+  background: linear-gradient(100deg, transparent, rgba(255,236,170,0.16), transparent);
+  transform: skewX(-18deg);
+  animation: goldSheen 5.5s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes goldSheen {
+  0%, 55% { left: -40%; }
+  100% { left: 130%; }
+}
+
+.subject--wide .subject__name {
+  background: linear-gradient(100deg, #f4e3a6, #c9a34e 45%, #fff2bd 70%, #c9a34e);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+.subject--wide .subject__icon {
+  color: #e3c26a;
+  filter: drop-shadow(0 0 6px rgba(227,194,106,0.55));
+}
+.subject--wide .subject__meta { color: #b9a77a; }
+.subject--wide .subject__arrow { opacity: 1; transform: none; color: #e3c26a; }
+.subject--wide:hover {
+  box-shadow: 0 0 0 1px rgba(227,194,106,0.25), 0 14px 44px rgba(227,194,106,0.28);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subject--wide, .subject--wide::after { animation: none; }
+  .subject--wide::after { display: none; }
+}
