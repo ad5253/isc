@@ -1,0 +1,62 @@
+/* Extra styles for the /practicals/ pages. Builds on ../subject-page.css */
+.wrap--wide { max-width: 860px; }
+.hub-grid { display: grid; gap: 14px; margin: 8px 0 8px; grid-template-columns: 1fr; }
+@media (min-width: 640px) { .hub-grid { grid-template-columns: 1fr 1fr; } }
+.hub-card {
+  display: block; text-decoration: none; color: var(--paper);
+  background: var(--ink-raised); border: 1px solid var(--line);
+  border-radius: 16px; padding: 22px 22px 20px;
+  border-top: 3px solid var(--accent-color, var(--brass));
+  transition: transform .15s ease, border-color .15s ease;
+}
+.hub-card:hover { transform: translateY(-2px); border-color: var(--accent-color, var(--brass)); }
+.hub-card .emoji { font-size: 30px; display: block; margin-bottom: 10px; }
+.hub-card h3 { font-family: var(--serif); font-weight: 500; font-size: 22px; margin: 0 0 6px; }
+.hub-card p { margin: 0; color: var(--paper-dim); font-size: 14px; }
+.hub-card .pill {
+  display: inline-block; margin-top: 14px; font-size: 12px; font-weight: 700;
+  letter-spacing: .04em; color: var(--accent-color, var(--brass));
+}
+.exp-list { display: grid; gap: 12px; margin: 8px 0 0; padding: 0; list-style: none; }
+.exp-card {
+  display: grid; grid-template-columns: 52px 1fr; gap: 16px; align-items: start;
+  text-decoration: none; color: var(--paper);
+  background: var(--ink-raised); border: 1px solid var(--line);
+  border-radius: 14px; padding: 16px 18px;
+  transition: transform .15s ease, border-color .15s ease;
+}
+.exp-card:hover { transform: translateY(-2px); border-color: var(--accent-color, var(--brass)); }
+.exp-num {
+  width: 52px; height: 52px; border-radius: 12px; display: grid; place-items: center;
+  font-family: var(--serif); font-size: 22px; color: #14141a;
+  background: var(--accent-color, var(--brass));
+}
+.exp-card h3 { margin: 0 0 4px; font-size: 17px; font-weight: 700; }
+.exp-card p { margin: 0; font-size: 14px; color: var(--paper-dim); }
+.exp-tag {
+  display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--paper-dim);
+  vertical-align: middle;
+}
+.exp-more {
+  border: 1px dashed var(--line); border-radius: 14px; padding: 16px 18px;
+  color: var(--paper-faint); font-size: 14px; text-align: center;
+}
+.note { font-size: 13px; color: var(--paper-faint); margin: 18px 0 0; }
+
+/* Chemistry "no funding" page */
+.oops { text-align: center; padding: 24px 0 8px; }
+.oops .flask { font-size: 84px; display: inline-block; animation: wobble 2.6s ease-in-out infinite; transform-origin: 50% 90%; }
+@keyframes wobble { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+.oops h1 { justify-content: center; text-align: center; }
+.oops .lede { margin-left: auto; margin-right: auto; }
+.receipt {
+  max-width: 420px; margin: 0 auto 28px; text-align: left;
+  background: var(--ink-raised); border: 1px dashed var(--line); border-radius: 12px;
+  padding: 16px 20px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: var(--paper-dim);
+}
+.receipt div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.receipt .total { border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 8px; color: var(--paper); font-weight: 700; }
+.btn-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.cta--ghost { background: transparent; color: var(--paper); border: 1px solid var(--line); margin-bottom: 0; }
+@media (prefers-reduced-motion: reduce) { .oops .flask { animation: none; } }
