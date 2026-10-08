@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ISC Class 12 Physics Practicals: 3D Virtual Labs</title>
+<meta name="description" content="Interactive 3D virtual labs for ISC Class 12 Physics practical experiments. Build the circuit, take readings, practise for the exam.">
+<meta name="author" content="Adnan Merchant">
+<link rel="canonical" href="https://ad5253.github.io/isc/practicals/physics/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ISC Class 12 Physics Practicals: 3D Virtual Labs">
+<meta property="og:description" content="Interactive 3D virtual labs for ISC Class 12 Physics practical experiments. Build the circuit, take readings, practise for the exam.">
+<meta property="og:url" content="https://ad5253.github.io/isc/practicals/physics/">
+<meta property="og:image" content="https://ad5253.github.io/isc/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="../../favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../subject-page.css">
+<link rel="stylesheet" href="../../practicals/practicals.css">
+</head>
+<body>
+<div class="wrap wrap--wide">
+  <a class="back-link" href="../">&larr; Practicals</a>
+  <p class="eyebrow" style="--accent-color:#6f93ab">ISC &middot; Class XII &middot; Physics</p>
+  <h1><span class="icon">⚛️</span> Physics Virtual Labs</h1>
+  <p class="lede">Pick an experiment. Each one is a hands-on 3D lab: connect the wires, adjust the apparatus and take real readings.</p>
+  <ul class="exp-list" id="expList" style="--accent-color:#6f93ab"></ul>
+  <noscript><p class="note">Turn on JavaScript to see the list of experiments.</p></noscript>
+  <p class="note">Best on Chrome or Safari. Labs may take a few seconds to load the first time.</p>
+  <footer>
+    Built by Adnan Merchant for Vapi Public School Class 12 students &mdash; open to any Class 12 (ISC or CBSE) student.
+    <br>
+    <a href="https://wa.me/917405806352">WhatsApp</a> &middot;
+    <a href="mailto:merchantadnan052@gmail.com">Email</a>
+  </footer>
+</div>
+<script src="../experiments.js"></script>
+<script>
+  (function () {
+    var list = document.getElementById("expList");
+    var exps = (window.PHYSICS_EXPERIMENTS || []).slice().sort(function (a, b) { return a.num - b.num; });
+    exps.forEach(function (e) {
+      var li = document.createElement("li");
+      var a = document.createElement("a");
+      a.className = "exp-card"; a.href = e.slug + "/";
+      var n = document.createElement("div"); n.className = "exp-num"; n.textContent = e.num;
+      var body = document.createElement("div");
+      var h = document.createElement("h3"); h.textContent = e.title;
+      if (e.tag) { var t = document.createElement("span"); t.className = "exp-tag"; t.textContent = e.tag; h.appendChild(t); }
+      var p = document.createElement("p"); p.textContent = e.blurb || "";
+      body.appendChild(h); body.appendChild(p);
+      a.appendChild(n); a.appendChild(body); li.appendChild(a); list.appendChild(li);
+    });
+    var more = document.createElement("li");
+    more.className = "exp-more"; more.textContent = "More experiments are on the way. 🔬";
+    list.appendChild(more);
+  })();
+</script>
+</body>
+</html>
