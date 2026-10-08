@@ -2231,6 +2231,26 @@
       grid.appendChild(card);
     });
 
+    // Fourth tile: Practicals (virtual labs). These are separate public
+    // pages, so this one is a real link instead of an in-app view.
+    const pr = el("div", "subject subject--wide fade-up");
+    pr.style.setProperty("--subject-color", "#c9a34e");
+    pr.setAttribute("role", "link");
+    pr.tabIndex = 0;
+    const goPracticals = () => { location.href = APP_BASE + "practicals/"; };
+    pr.onclick = goPracticals;
+    pr.addEventListener("keydown", (e) => { if (e.key === "Enter") goPracticals(); });
+    pr.innerHTML = `
+      <span class="subject__icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3"/><path d="M7.5 15h9"/></svg></span>
+      <div class="subject__text">
+        <h2 class="subject__name">Practicals</h2>
+        <p class="subject__meta">3D virtual labs &middot; Physics experiments</p>
+      </div>
+      <span class="subject__arrow">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+      </span>`;
+    grid.appendChild(pr);
+
     content.append(label, grid);
   }
 

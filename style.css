@@ -723,9 +723,9 @@ html.fonts-ready .gate__spine {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 22px;
-  padding: 20px 24px;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 9px 16px;
   background: linear-gradient(135deg, rgba(201, 161, 90, 0.16), rgba(201, 161, 90, 0.05));
   border: 1px solid var(--brass-dim);
   border-radius: var(--r-md);
@@ -735,33 +735,35 @@ html.fonts-ready .gate__spine {
 }
 .progress-banner:hover {
   border-color: var(--brass);
-  transform: translateY(-2px);
-  box-shadow: 0 12px 28px rgba(201, 161, 90, 0.15);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(201, 161, 90, 0.12);
 }
 .progress-banner:active { transform: translateY(0) scale(0.99); }
 
 .progress-banner__text {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 10px;
 }
 .progress-banner__label {
   font-family: var(--serif);
-  font-size: 19px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--brass);
   letter-spacing: 0.01em;
 }
 .progress-banner__stat {
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--paper-dim);
 }
 
 .progress-banner__pct {
   flex-shrink: 0;
   font-family: var(--sans);
-  font-size: 30px;
+  font-size: 17px;
   font-weight: 800;
   color: var(--brass);
 }
@@ -3138,3 +3140,16 @@ html.fonts-ready .gate__spine {
   .admin__roster-lastseen { text-align: left; }
   .admin-detail__panel { width: 100%; }
 }
+
+
+/* Practicals tile: full-width, slim row under the three subject cards */
+.subject--wide {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 20px 26px;
+}
+.subject--wide .subject__icon { margin-bottom: 0; flex-shrink: 0; }
+.subject--wide .subject__name { margin-bottom: 2px; font-size: 22px; }
+.subject--wide .subject__arrow { top: 50%; margin-top: -9px; right: 24px; }
