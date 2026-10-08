@@ -1,62 +1,62 @@
-/* Extra styles for the /practicals/ pages. Builds on ../subject-page.css */
-.wrap--wide { max-width: 860px; }
-.hub-grid { display: grid; gap: 14px; margin: 8px 0 8px; grid-template-columns: 1fr; }
-@media (min-width: 640px) { .hub-grid { grid-template-columns: 1fr 1fr; } }
-.hub-card {
-  display: block; text-decoration: none; color: var(--paper);
-  background: var(--ink-raised); border: 1px solid var(--line);
-  border-radius: 16px; padding: 22px 22px 20px;
-  border-top: 3px solid var(--accent-color, var(--brass));
-  transition: transform .15s ease, border-color .15s ease;
-}
-.hub-card:hover { transform: translateY(-2px); border-color: var(--accent-color, var(--brass)); }
-.hub-card .emoji { font-size: 30px; display: block; margin-bottom: 10px; }
-.hub-card h3 { font-family: var(--serif); font-weight: 500; font-size: 22px; margin: 0 0 6px; }
-.hub-card p { margin: 0; color: var(--paper-dim); font-size: 14px; }
-.hub-card .pill {
-  display: inline-block; margin-top: 14px; font-size: 12px; font-weight: 700;
-  letter-spacing: .04em; color: var(--accent-color, var(--brass));
-}
-.exp-list { display: grid; gap: 12px; margin: 8px 0 0; padding: 0; list-style: none; }
-.exp-card {
-  display: grid; grid-template-columns: 52px 1fr; gap: 16px; align-items: start;
-  text-decoration: none; color: var(--paper);
-  background: var(--ink-raised); border: 1px solid var(--line);
-  border-radius: 14px; padding: 16px 18px;
-  transition: transform .15s ease, border-color .15s ease;
-}
-.exp-card:hover { transform: translateY(-2px); border-color: var(--accent-color, var(--brass)); }
-.exp-num {
-  width: 52px; height: 52px; border-radius: 12px; display: grid; place-items: center;
-  font-family: var(--serif); font-size: 22px; color: #14141a;
-  background: var(--accent-color, var(--brass));
-}
-.exp-card h3 { margin: 0 0 4px; font-size: 17px; font-weight: 700; }
-.exp-card p { margin: 0; font-size: 14px; color: var(--paper-dim); }
+/* /practicals/ pages. These use the main site's own style.css for the
+   nav, breadcrumbs, cards, rows and footer, so they match the portal
+   exactly. This file only adds the few things the portal doesn't have. */
+a.nav__logo, a.subject, a.subfolder, a.crumb { text-decoration: none; }
+a.subject, a.subfolder { color: inherit; }
+a.crumb { color: var(--paper-faint); }
+a.crumb:hover { color: var(--paper); }
+a.subject { display: block; }
+a.nav__logo { color: var(--paper); }
+span.crumb { cursor: default; }
+
+.page-lede { color: var(--paper-dim); font-size: 15px; max-width: 62ch; margin: -10px 0 28px; }
+.page-note { color: var(--paper-faint); font-size: 12.5px; margin-top: 22px; }
+
+.subjects--two { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 640px) { .subjects--two { grid-template-columns: 1fr; } }
+.subject--dim .subject__name { color: var(--paper-dim); }
+
+.exp-num { font-family: var(--serif); font-size: 18px; font-weight: 500; color: var(--brass); }
+a.subfolder .subfolder__icon.exp-num { background: rgba(201, 161, 90, 0.12); }
 .exp-tag {
-  display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 700;
-  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--paper-dim);
-  vertical-align: middle;
+  display: inline-block; margin-left: 10px; font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.06em; padding: 2px 8px; border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong); color: var(--paper-dim); vertical-align: middle;
 }
 .exp-more {
-  border: 1px dashed var(--line); border-radius: 14px; padding: 16px 18px;
-  color: var(--paper-faint); font-size: 14px; text-align: center;
+  margin-top: 4px; padding: 16px 18px; text-align: center; font-size: 13px;
+  color: var(--paper-faint); border: 1px dashed var(--line); border-radius: var(--r-md);
 }
-.note { font-size: 13px; color: var(--paper-faint); margin: 18px 0 0; }
 
-/* Chemistry "no funding" page */
-.oops { text-align: center; padding: 24px 0 8px; }
-.oops .flask { font-size: 84px; display: inline-block; animation: wobble 2.6s ease-in-out infinite; transform-origin: 50% 90%; }
-@keyframes wobble { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
-.oops h1 { justify-content: center; text-align: center; }
-.oops .lede { margin-left: auto; margin-right: auto; }
-.receipt {
-  max-width: 420px; margin: 0 auto 28px; text-align: left;
-  background: var(--ink-raised); border: 1px dashed var(--line); border-radius: 12px;
-  padding: 16px 20px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: var(--paper-dim);
+/* Chemistry "closed" card */
+.closed {
+  max-width: 560px; margin: 8px auto 0; text-align: center;
+  background: var(--ink-raised); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 40px 32px 34px;
 }
-.receipt div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
-.receipt .total { border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 8px; color: var(--paper); font-weight: 700; }
-.btn-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-.cta--ghost { background: transparent; color: var(--paper); border: 1px solid var(--line); margin-bottom: 0; }
-@media (prefers-reduced-motion: reduce) { .oops .flask { animation: none; } }
+.closed__flask { display: inline-flex; color: var(--chemistry); margin-bottom: 14px; transform-origin: 50% 90%; animation: flaskWobble 3s ease-in-out infinite; }
+.closed__flask svg { width: 56px; height: 56px; }
+@keyframes flaskWobble { 0%, 100% { transform: rotate(-7deg); } 50% { transform: rotate(7deg); } }
+.closed__title { font-family: var(--serif); font-style: italic; font-weight: 500; font-size: 30px; letter-spacing: -0.3px; margin-bottom: 12px; }
+.closed__text { color: var(--paper-dim); font-size: 15px; max-width: 44ch; margin: 0 auto 22px; }
+.closed__text strong { color: var(--paper); font-weight: 600; }
+.closed__text--dim { font-size: 13.5px; color: var(--paper-faint); margin-top: 22px; }
+.closed__receipt {
+  max-width: 360px; margin: 0 auto; text-align: left;
+  background: var(--ink-raised-2); border: 1px dashed var(--line-strong); border-radius: var(--r-md);
+  padding: 14px 18px; font-size: 13px; color: var(--paper-dim);
+}
+.closed__receipt div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.closed__receipt div span:last-child { color: var(--paper-faint); }
+.closed__receipt .closed__bad { color: var(--chemistry); font-weight: 600; }
+.closed__actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.pill-btn {
+  display: inline-flex; align-items: center; height: 40px; padding: 0 18px;
+  border-radius: var(--r-pill); border: 1px solid var(--line-strong);
+  color: var(--paper-dim); font-size: 13.5px; font-weight: 600; text-decoration: none;
+  transition: border-color 0.2s var(--ease-soft), color 0.2s var(--ease-soft), transform 0.15s var(--ease-spring);
+}
+.pill-btn:hover { border-color: var(--brass-dim); color: var(--brass); }
+.pill-btn:active { transform: scale(0.96); }
+.pill-btn--brass { background: rgba(201, 161, 90, 0.14); border-color: var(--brass-dim); color: var(--brass); }
+@media (prefers-reduced-motion: reduce) { .closed__flask { animation: none; } }
