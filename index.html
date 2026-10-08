@@ -27,7 +27,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=30">
+    <link rel="stylesheet" href="style.css?v=31">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -307,12 +307,14 @@
 
         <div class="admin__tabs" id="adminTabs">
             <button type="button" class="admin__tab admin__tab--active" data-tab="overview">Overview</button>
+            <button type="button" class="admin__tab" data-tab="approvals">Approvals<span class="admin__tab-badge hidden" id="adminApprovalBadge">0</span></button>
             <button type="button" class="admin__tab" data-tab="people">People</button>
             <button type="button" class="admin__tab" data-tab="security">Security</button>
             <button type="button" class="admin__tab" data-tab="content">Content</button>
         </div>
 
         <div class="admin__shell">
+            <div id="adminBanner" class="admin__banner hidden"></div>
 
             <div class="admin__tab-panel admin__tab-panel--active" data-panel="overview">
                 <div class="admin__summary-strip" id="adminSummaryStrip"></div>
@@ -331,16 +333,24 @@
                 </section>
             </div>
 
-            <div class="admin__tab-panel" data-panel="people">
+            <div class="admin__tab-panel" data-panel="approvals">
                 <section class="admin__section">
-                    <h2 class="admin__section-title">Pending approval</h2>
+                    <h2 class="admin__section-title">Pending requests</h2>
+                    <p class="admin__hint">People who asked for access from the login screen. Approving adds them to the access list and emails them (if they gave an email).</p>
+                    <div id="adminApprovalResult" class="admin__result hidden"></div>
                     <div class="admin__toolbar">
-                        <input type="text" id="adminAddNameInput" class="admin__toolbar-input" placeholder="Add a name directly…">
-                        <button type="button" id="adminAddNameBtn" class="admin__nav-btn">Add</button>
                         <button type="button" id="adminApproveSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Approve selected (0)</button>
                         <button type="button" id="adminRejectSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Reject selected (0)</button>
                     </div>
-                    <div id="adminApprovalList" class="admin__presence-list"></div>
+                    <div id="adminApprovalList" class="admin-req-list"></div>
+                </section>
+
+                <section class="admin__section">
+                    <h2 class="admin__section-title">Add a name directly</h2>
+                    <div class="admin__toolbar">
+                        <input type="text" id="adminAddNameInput" class="admin__toolbar-input" placeholder="Type a name to approve…">
+                        <button type="button" id="adminAddNameBtn" class="admin__nav-btn">Add</button>
+                    </div>
                 </section>
 
                 <section class="admin__section">
@@ -348,6 +358,16 @@
                     <div id="adminRejectedList" class="admin__presence-list"></div>
                 </section>
 
+                <section class="admin__section">
+                    <h2 class="admin__section-title">Email check</h2>
+                    <p class="admin__hint">Not sure emails are going out? Send yourself a test. It tells you exactly why if it fails.</p>
+                    <div class="admin__toolbar">
+                        <button type="button" id="adminTestEmailBtn" class="admin__nav-btn admin__nav-btn--ghost">Send a test email</button>
+                    </div>
+                </section>
+            </div>
+
+            <div class="admin__tab-panel" data-panel="people">
                 <section class="admin__section">
                     <h2 class="admin__section-title">Everyone</h2>
                     <div class="admin__toolbar">
@@ -430,6 +450,6 @@
     </div>
 
     <script src="config.js?v=6"></script>
-    <script src="script.js?v=30"></script>
+    <script src="script.js?v=31"></script>
 </body>
 </html>

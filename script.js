@@ -1139,6 +1139,8 @@
     adminBackBtn.addEventListener("click", exitAdmin);
     adminRefreshBtn.addEventListener("click", refreshAdmin);
     adminAddNameBtn.addEventListener("click", onAdminAddName);
+    const adminTestEmailBtn = $("#adminTestEmailBtn");
+    if (adminTestEmailBtn) adminTestEmailBtn.addEventListener("click", onTestEmail);
     adminAddNameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") onAdminAddName(); });
     adminRosterSearch.addEventListener("input", () => renderAdminRoster(true));
     adminMergeBtn.addEventListener("click", onMergeSelected);
@@ -3432,13 +3434,35 @@
     return url.toString();
   }
 
+  // Remembers WHY the last admin call failed so every screen can say the
+  // real reason, instead of always blaming the admin key.
+  let lastAdminError = "";
+  function adminErrText() { return lastAdminError || "Couldn't reach the server."; }
+
   async function adminFetch(action, params) {
+    lastAdminError = "";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45000);
     try {
-      const res = await fetch(adminEndpointUrl(action, params));
-      const data = await res.json();
-      return (data && data.ok) ? data : null;
-    } catch {
+      const res = await fetch(adminEndpointUrl(action, params), { signal: controller.signal });
+      let data = null;
+      try { data = await res.json(); } catch {
+        lastAdminError = "The server sent back something unreadable. The Apps Script may need Deploy \u2192 Manage deployments \u2192 Edit \u2192 New version.";
+        return null;
+      }
+      if (data && data.ok) return data;
+      const err = data && data.error;
+      if (err === "unauthorized") lastAdminError = "The admin key was rejected. Check that config.js admin.secretHash matches ADMIN_KEY in the Apps Script.";
+      else if (err) lastAdminError = "Server said: " + err;
+      else lastAdminError = "The server refused the request.";
       return null;
+    } catch (e) {
+      lastAdminError = (e && e.name === "AbortError")
+        ? "The server took too long to answer (over 45 seconds). Try Refresh in a moment."
+        : "Couldn't reach the server. Check your internet connection.";
+      return null;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -3563,7 +3587,7 @@
     const cards = [
       { num: online.length, label: "Online now" },
       { num: flagCount, label: "Flagged", alert: flagCount > 0 },
-      { num: queue.length, label: "Pending approval", alert: queue.length > 0 }
+      { num: queue.length, label: "Pending approval", alert: queue.length > 0, goto: "approvals" }
     ];
     if (bandwidth) {
       const usedGB = (bandwidth.usedBytes / (1024 ** 3)).toFixed(2);
@@ -3576,16 +3600,17 @@
       });
     }
     adminSummaryStrip.innerHTML = cards.map((c) => `
-      <div class="admin__summary-card${c.alert ? " admin__summary-card--alert" : ""}">
+      <div class="admin__summary-card${c.alert ? " admin__summary-card--alert" : ""}"${c.goto ? ` data-goto="${c.goto}" style="cursor:pointer"` : ""}>
         <div class="admin__summary-card__num">${c.num}</div>
         <div class="admin__summary-card__label">${c.label}</div>
       </div>`).join("");
+    adminSummaryStrip.querySelectorAll("[data-goto]").forEach((c) => { c.onclick = () => switchAdminTab(c.dataset.goto); });
   }
 
   async function renderBlockedDevices(preloaded) {
     const data = preloaded ? { ok: true, devices: preloaded } : await adminFetch("blockedDevicesFull");
     if (!data) {
-      adminBlockedDevicesList.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      adminBlockedDevicesList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
       return;
     }
     const devices = data.devices || [];
@@ -3614,36 +3639,49 @@
     });
   }
 
+  function setAdminBanner(msg) {
+    const b = $("#adminBanner");
+    if (!b) return;
+    if (!msg) { b.classList.add("hidden"); b.innerHTML = ""; return; }
+    b.classList.remove("hidden");
+    b.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="admin__nav-btn" id="adminBannerRetry">Try again</button>`;
+    const r = $("#adminBannerRetry");
+    if (r) r.addEventListener("click", () => refreshAdmin());
+  }
+
   async function refreshAdmin() {
-    // One request instead of six — the backend now reads the Log
-    // sheet once and returns everything the dashboard needs together.
-    // Falls back to the old six-separate-calls behavior automatically
-    // if adminDashboard isn't reachable for some reason (each render
-    // function still knows how to fetch its own data when called with
-    // no argument).
+    // One request for everything. The server builds each section on its
+    // own, so if one section breaks the others still load and that one
+    // says what went wrong.
+    setAdminBanner("");
     const data = await adminFetch("adminDashboard");
     if (!data) {
-      renderAdminPresence();
-      renderApprovalQueue();
-      renderRejectedQueue();
-      renderAdminRoster();
-      renderFlags();
-      renderAuditLog();
-      renderContentStats();
-      renderBlockedDevices();
-      renderFeedbackAdmin();
+      // Don't fire a dozen heavy requests at a server that just failed.
+      // Load only the approvals (the most important part) and say why.
+      setAdminBanner(`The dashboard couldn't load. ${adminErrText()}`);
+      await renderApprovalQueue();
+      await renderRejectedQueue();
       return;
     }
-    renderAdminPresence(data.online);
-    renderApprovalQueue(data.queue);
-    renderRejectedQueue(data.rejectedQueue);
-    renderAdminRoster(data.people);
-    renderFlags(data.flags);
-    renderAuditLog(data.log);
-    renderContentStats(data.stats);
-    renderBlockedDevices(data.devices);
-    renderSummaryStrip(data.online, data.flags, data.queue, data.bandwidth);
-    renderFeedbackAdmin(data.feedback);
+    const errs = data.errors || {};
+    const failedSections = [];
+    const bad = (key, listEl) => {
+      if (!errs[key]) return false;
+      failedSections.push(key);
+      if (listEl) listEl.innerHTML = `<p class="admin__empty">This section couldn't load: ${escapeHtml(errs[key])}</p>`;
+      return true;
+    };
+    if (!bad("online", adminPresenceList)) renderAdminPresence(data.online);
+    if (!bad("queue", adminApprovalList)) renderApprovalQueue(data.queue);
+    if (!bad("rejectedQueue", adminRejectedList)) renderRejectedQueue(data.rejectedQueue);
+    if (!bad("people", adminRosterList)) renderAdminRoster(data.people);
+    if (!bad("flags", adminFlagsList)) renderFlags(data.flags);
+    if (!bad("auditLog", adminAuditList)) renderAuditLog(data.log);
+    if (!bad("stats", adminContentStatsList)) renderContentStats(data.stats);
+    if (!bad("devices", adminBlockedDevicesList)) renderBlockedDevices(data.devices);
+    if (!bad("feedback", adminFeedbackList)) renderFeedbackAdmin(data.feedback);
+    renderSummaryStrip(data.online || [], data.flags || {}, data.queue || [], data.bandwidth);
+    if (failedSections.length) setAdminBanner(`Some parts couldn't load (${failedSections.join(", ")}). The rest is fine.`);
   }
 
   async function renderContentStats(preloaded) {
@@ -3753,7 +3791,7 @@
     adminScanBtn.disabled = false;
 
     if (!data) {
-      adminScanResults.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      adminScanResults.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
       return;
     }
     if (data.error) {
@@ -3858,6 +3896,32 @@
 
   let selectedQueueNames = new Set();
 
+  function setApprovalBadge(n) {
+    const b = $("#adminApprovalBadge");
+    if (!b) return;
+    b.textContent = n;
+    b.classList.toggle("hidden", !n);
+  }
+
+  // One plain-English line about what happened, including whether the
+  // email actually went out (and if not, why).
+  function describeOutcome(name, data, approved) {
+    const r = (data && data.result) || {};
+    const em = r.email || {};
+    let msg = approved ? `Approved ${name}.` : `Rejected ${name}.`;
+    if (em.sent) msg += ` Email sent to ${em.to}.`;
+    else if (em.reason) msg += ` Email NOT sent: ${em.reason}.`;
+    return { text: msg, ok: approved ? true : true, emailFailed: !em.sent && !!em.to };
+  }
+
+  function showApprovalResult(text, isError) {
+    const box = $("#adminApprovalResult");
+    if (!box) return;
+    box.textContent = text;
+    box.classList.remove("hidden");
+    box.classList.toggle("admin__result--error", !!isError);
+  }
+
   async function renderApprovalQueue(preloaded) {
     const data = preloaded ? { ok: true, queue: preloaded } : await adminFetch("unauthorizedQueue");
     const queue = (data && data.queue) || [];
@@ -3866,41 +3930,59 @@
     updateQueueBulkBtns();
 
     if (!data) {
-      adminApprovalList.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      adminApprovalList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
       return;
     }
+    setApprovalBadge(queue.length);
     if (!queue.length) {
-      adminApprovalList.innerHTML = `<p class="admin__empty">No pending attempts</p>`;
+      adminApprovalList.innerHTML = `<p class="admin__empty">No pending requests \u2014 you're all caught up.</p>`;
       return;
     }
 
     queue.forEach((q) => {
       const when = q.lastAttempt ? new Date(q.lastAttempt).toLocaleString() : "";
-      const row = el("div", "admin__presence-row");
+      const row = el("div", "admin-req");
       row.innerHTML = `
-        <input type="checkbox" class="admin__roster-checkbox" data-queue-check>
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${q.name}</span>
-          <span class="admin__presence-meta">${q.count} attempt${q.count === 1 ? "" : "s"} · last ${when}${q.email ? ` · ${q.email}` : ""}</span>
+        <label class="admin-req__check"><input type="checkbox" data-queue-check aria-label="Select ${escapeHtml(q.name)}"></label>
+        <div class="admin-req__main">
+          <div class="admin-req__name">${escapeHtml(q.name)}</div>
+          <div class="admin-req__meta">
+            <span class="admin-req__chip${q.email ? "" : " admin-req__chip--none"}">${q.email ? escapeHtml(q.email) : "No email given"}</span>
+            <span>${q.count} request${q.count === 1 ? "" : "s"}</span>
+            <span>${escapeHtml(when)}</span>
+          </div>
         </div>
-        <div class="admin__presence-actions">
-          <button type="button" class="admin__presence-btn" data-action="approve">Approve</button>
-          <button type="button" class="admin__presence-btn admin__presence-btn--danger" data-action="reject">Reject</button>
+        <div class="admin-req__actions">
+          <button type="button" class="admin-btn admin-btn--approve" data-action="approve">Approve</button>
+          <button type="button" class="admin-btn admin-btn--reject" data-action="reject">Reject</button>
         </div>`;
       row.querySelector('[data-queue-check]').addEventListener("change", (e) => {
         if (e.target.checked) selectedQueueNames.add(q.name);
         else selectedQueueNames.delete(q.name);
         updateQueueBulkBtns();
       });
-      row.querySelector('[data-action="approve"]').addEventListener("click", async () => {
-        await adminFetch("approveName", { name: q.name });
+      const btns = row.querySelectorAll(".admin-btn");
+      const act = async (approved) => {
+        btns.forEach((b) => { b.disabled = true; });
+        const clicked = row.querySelector(approved ? '[data-action="approve"]' : '[data-action="reject"]');
+        const oldLabel = clicked.textContent;
+        clicked.textContent = "Working\u2026";
+        const res = await adminFetch(approved ? "approveName" : "rejectName", { name: q.name });
+        if (!res) {
+          btns.forEach((b) => { b.disabled = false; });
+          clicked.textContent = oldLabel;
+          showToast(`Couldn't ${approved ? "approve" : "reject"} ${q.name}: ${adminErrText()}`, true);
+          showApprovalResult(`Couldn't ${approved ? "approve" : "reject"} ${q.name}: ${adminErrText()}`, true);
+          return;
+        }
+        const o = describeOutcome(q.name, res, approved);
+        showToast(o.text, o.emailFailed);
+        showApprovalResult(o.text, o.emailFailed);
         renderApprovalQueue();
-      });
-      row.querySelector('[data-action="reject"]').addEventListener("click", async () => {
-        await adminFetch("rejectName", { name: q.name });
-        renderApprovalQueue();
-        renderRejectedQueue();
-      });
+        if (!approved) renderRejectedQueue();
+      };
+      row.querySelector('[data-action="approve"]').addEventListener("click", () => act(true));
+      row.querySelector('[data-action="reject"]').addEventListener("click", () => act(false));
       adminApprovalList.appendChild(row);
     });
   }
@@ -3913,20 +3995,40 @@
     adminRejectSelectedBtn.disabled = n === 0;
   }
 
+  // One at a time (not all at once) so two approvals can never collide
+  // while writing to the sheet, and so each email result is reported.
+  async function bulkDecide(names, approved) {
+    let done = 0, failed = 0, emailed = 0, emailFailed = 0;
+    adminApproveSelectedBtn.disabled = true;
+    adminRejectSelectedBtn.disabled = true;
+    for (const name of names) {
+      const res = await adminFetch(approved ? "approveName" : "rejectName", { name });
+      if (!res) { failed++; continue; }
+      done++;
+      const em = (res.result && res.result.email) || {};
+      if (em.sent) emailed++; else if (em.to) emailFailed++;
+    }
+    let msg = `${approved ? "Approved" : "Rejected"} ${done} ${done === 1 ? "person" : "people"}.`;
+    if (emailed) msg += ` ${emailed} email${emailed === 1 ? "" : "s"} sent.`;
+    if (emailFailed) msg += ` ${emailFailed} email${emailFailed === 1 ? "" : "s"} failed.`;
+    if (failed) msg += ` ${failed} failed: ${adminErrText()}`;
+    showToast(msg, !!(failed || emailFailed));
+    showApprovalResult(msg, !!(failed || emailFailed));
+    renderApprovalQueue();
+    renderRejectedQueue();
+  }
+
   async function onApproveSelected() {
     const names = Array.from(selectedQueueNames);
     if (!names.length) return;
-    await Promise.all(names.map((name) => adminFetch("approveName", { name })));
-    renderApprovalQueue();
+    await bulkDecide(names, true);
   }
 
   async function onRejectSelected() {
     const names = Array.from(selectedQueueNames);
     if (!names.length) return;
-    if (!(await showConfirm(`Reject ${names.length} pending name${names.length === 1 ? "" : "s"}? They'll stop showing up here — this doesn't block their device or name, just clears this queue entry.`))) return;
-    await Promise.all(names.map((name) => adminFetch("rejectName", { name })));
-    renderApprovalQueue();
-    renderRejectedQueue();
+    if (!(await showConfirm(`Reject ${names.length} pending name${names.length === 1 ? "" : "s"}? They'll stop showing up here \u2014 this doesn't block their device or name, just clears this queue entry.`))) return;
+    await bulkDecide(names, false);
   }
 
   async function renderRejectedQueue(preloaded) {
@@ -3943,7 +4045,7 @@
       const row = el("div", "admin__presence-row");
       row.innerHTML = `
         <div class="admin__presence-info">
-          <span class="admin__presence-name">${q.name}</span>
+          <span class="admin__presence-name">${escapeHtml(q.name)}</span>
           <span class="admin__presence-meta">Rejected ${when}</span>
         </div>
         <div class="admin__presence-actions">
@@ -3958,11 +4060,41 @@
     });
   }
 
+  async function onTestEmail() {
+    const to = await showPrompt("Send the test email to which address? (leave empty to send it to your own admin inbox)", "");
+    if (to === null) return;
+    const btn = $("#adminTestEmailBtn");
+    if (btn) btn.disabled = true;
+    const params = to.trim() ? { to: to.trim() } : {};
+    const res = await adminFetch("testEmail", params);
+    if (btn) btn.disabled = false;
+    if (!res) {
+      showToast(`Test email failed: ${adminErrText()}`, true);
+      showApprovalResult(`Test email failed: ${adminErrText()}`, true);
+      return;
+    }
+    const r = res.result || {};
+    const msg = r.ok
+      ? `Test email sent to ${res.to} (via ${r.via === "brevo" ? "Brevo" : "Gmail"}).${r.error ? " Brevo had failed first: " + r.error : ""}`
+      : `Test email NOT sent to ${res.to}. Reason: ${r.error || "unknown"}`;
+    showToast(msg, !r.ok);
+    showApprovalResult(msg, !r.ok);
+  }
+
   async function onAdminAddName() {
     const name = adminAddNameInput.value.trim();
     if (!name) return;
-    await adminFetch("approveName", { name });
+    adminAddNameBtn.disabled = true;
+    const res = await adminFetch("approveName", { name });
+    adminAddNameBtn.disabled = false;
+    if (!res) {
+      showToast(`Couldn't add ${name}: ${adminErrText()}`, true);
+      return;
+    }
     adminAddNameInput.value = "";
+    const o = describeOutcome(name, res, true);
+    showToast(res.result && res.result.added === false ? `${name} was already approved.` : `Added ${name} to the access list.`);
+    showApprovalResult(res.result && res.result.added === false ? `${name} was already on the access list.` : `Added ${name} to the access list.`);
     renderApprovalQueue();
   }
 
@@ -4014,7 +4146,7 @@
   async function renderFlags(preloaded) {
     const data = preloaded ? { ok: true, flags: preloaded } : await adminFetch("flags");
     if (!data) {
-      adminFlagsList.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      adminFlagsList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
       return;
     }
     const { deviceCycling = [], rapidRepeat = [], bulkView = [] } = data.flags || {};
@@ -4141,7 +4273,7 @@
     adminPresenceList.innerHTML = "";
 
     if (!data) {
-      adminPresenceList.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      adminPresenceList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
       return;
     }
     if (!online.length) {
@@ -4194,7 +4326,7 @@
       adminRosterList.innerHTML = `<p class="admin__loading">Loading…</p>`;
       const data = await adminFetch("adminSummary");
       if (!data) {
-        adminRosterList.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+        adminRosterList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
         return;
       }
       lastRosterPeople = data.people || [];
@@ -4293,7 +4425,7 @@
     adminDetailBody.innerHTML = `<p class="admin__loading">Loading…</p>`;
     const data = await adminFetch("personDetail", { name });
     if (!data) {
-      adminDetailBody.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check the admin key.</p>`;
+      adminDetailBody.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
       return;
     }
     renderAdminDetail(data.events || [], data.totals || {});
@@ -4363,6 +4495,10 @@
   }
 
   // ── Utility ────────────────────────────────────────────
+  function escapeHtml(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
   function el(tag, cls, text) {
     const e = document.createElement(tag);
     if (cls) e.className = cls;

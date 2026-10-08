@@ -3211,3 +3211,81 @@ html.fonts-ready .gate__spine {
   .subject--wide, .subject--wide::after { animation: none; }
   .subject--wide::after { display: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   ADMIN TIDY-UP: clearer sections, wrapping toolbars, request cards,
+   a proper Approvals tab with a count badge, readable on phones.
+   ═══════════════════════════════════════════════════════════════ */
+.admin__tabs {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--ink);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0; padding-bottom: 0;
+}
+.admin__tab { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.admin__tab-badge {
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--r-pill);
+  background: var(--brass); color: #14141a; font-size: 11px; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+.admin__shell { padding-top: 24px; }
+.admin__section {
+  margin-bottom: 22px; padding: 20px 20px 18px;
+  background: var(--ink-raised); border: 1px solid var(--line); border-radius: var(--r-lg);
+}
+.admin__section-title { margin-bottom: 14px; color: var(--paper-dim); }
+.admin__hint { font-size: 13px; color: var(--paper-faint); margin: -4px 0 14px; max-width: 70ch; }
+.admin__toolbar { flex-wrap: wrap; align-items: center; }
+.admin__toolbar-input { min-width: 180px; padding: 9px 12px; }
+.admin__section .admin__presence-row { background: var(--ink); }
+
+.admin__banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 18px; padding: 12px 16px; font-size: 13px; color: var(--paper);
+  background: rgba(176, 99, 73, 0.14); border: 1px solid rgba(176, 99, 73, 0.5); border-radius: var(--r-md);
+}
+.admin__result {
+  margin: 0 0 14px; padding: 11px 14px; font-size: 13px; line-height: 1.45;
+  background: rgba(111, 191, 115, 0.1); border: 1px solid rgba(111, 191, 115, 0.4);
+  border-radius: var(--r-md); color: var(--paper);
+}
+.admin__result--error { background: rgba(176, 99, 73, 0.14); border-color: rgba(176, 99, 73, 0.5); }
+
+/* Pending request cards */
+.admin-req-list { display: flex; flex-direction: column; gap: 10px; }
+.admin-req {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px;
+  padding: 14px 16px; background: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.admin-req__check input { width: 18px; height: 18px; accent-color: var(--brass); cursor: pointer; }
+.admin-req__main { min-width: 0; }
+.admin-req__name { font-size: 15px; font-weight: 600; color: var(--paper); overflow-wrap: anywhere; }
+.admin-req__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 5px; font-size: 12px; color: var(--paper-faint); }
+.admin-req__chip {
+  padding: 2px 9px; border-radius: var(--r-pill); font-size: 12px; color: var(--paper-dim);
+  background: var(--ink-raised-2); border: 1px solid var(--line); overflow-wrap: anywhere;
+}
+.admin-req__chip--none { color: var(--chemistry); border-color: rgba(176, 99, 73, 0.4); }
+.admin-req__actions { display: flex; gap: 8px; }
+.admin-btn {
+  height: 38px; padding: 0 16px; border-radius: var(--r-pill); font-family: var(--sans);
+  font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--line-strong);
+  background: transparent; color: var(--paper-dim);
+  transition: transform 0.15s var(--ease-spring), border-color 0.2s, color 0.2s, background 0.2s;
+}
+.admin-btn:active:not(:disabled) { transform: scale(0.96); }
+.admin-btn:disabled { opacity: 0.5; cursor: default; }
+.admin-btn--approve { background: rgba(201, 161, 90, 0.16); border-color: var(--brass-dim); color: var(--brass); }
+.admin-btn--approve:hover:not(:disabled) { background: rgba(201, 161, 90, 0.28); }
+.admin-btn--reject:hover:not(:disabled) { border-color: rgba(176, 99, 73, 0.7); color: var(--chemistry); }
+
+@media (max-width: 640px) {
+  .admin__shell { padding: 18px 16px 48px; }
+  .admin__tabs { padding: 10px 12px 0; }
+  .admin__section { padding: 16px 14px 14px; border-radius: var(--r-md); }
+  .admin-req { grid-template-columns: auto 1fr; }
+  .admin-req__actions { grid-column: 1 / -1; }
+  .admin-req__actions .admin-btn { flex: 1; }
+  .admin__toolbar .admin__nav-btn, .admin__toolbar-input { flex: 1 1 100%; }
+}
