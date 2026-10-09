@@ -2637,7 +2637,9 @@
         currentViewLogged = true;
         logEvent("view", currentName, name, undefined, { viewId: currentViewId });
       }
-      return renderAllPages(myToken);
+      const rendered = renderAllPages(myToken);
+      resumeSavedPage(path, pdf.numPages, myToken);
+      return rendered;
     }).catch((err) => {
       if (myToken !== viewerLoadToken) return;
       const reason = err && err.message;
@@ -3036,7 +3038,42 @@
     }
   }
 
+  // ── Remember reading position per file (this device, per person) ──
+  let savePageTimer = null;
+  function readPosKey() { return "c12_pos_" + normalizeName(currentName || ""); }
+  function loadPositions() {
+    try { return JSON.parse(localStorage.getItem(readPosKey()) || "{}"); } catch (e) { return {}; }
+  }
+  function rememberPage(pageNum) {
+    if (!currentPdfPath) return;
+    const path = currentPdfPath;
+    clearTimeout(savePageTimer);
+    savePageTimer = setTimeout(() => {
+      try {
+        const all = loadPositions();
+        if (pageNum <= 1) delete all[path]; else all[path] = { p: pageNum, t: Date.now() };
+        const keys = Object.keys(all);
+        if (keys.length > 60) {
+          keys.sort((a, b) => all[a].t - all[b].t).slice(0, keys.length - 60).forEach((k) => delete all[k]);
+        }
+        localStorage.setItem(readPosKey(), JSON.stringify(all));
+      } catch (e) { /* storage unavailable — resume just won't work */ }
+    }, 600);
+  }
+  function resumeSavedPage(path, numPages, token) {
+    const saved = loadPositions()[path];
+    if (!saved || saved.p <= 1 || saved.p > numPages) return;
+    setTimeout(() => {
+      if (token !== viewerLoadToken || currentPdfPath !== path) return;
+      const wrap = pagesInner && pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${saved.p}"]`);
+      if (!wrap) return;
+      scrollToPage(saved.p);
+      showToast(`Resumed at page ${saved.p}`);
+    }, 250);
+  }
+
   function updateCurrentPageDisplay(pageNum) {
+    rememberPage(pageNum);
     if (viewerPageInput && document.activeElement !== viewerPageInput) {
       viewerPageInput.value = pageNum;
     }
