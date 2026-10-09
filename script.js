@@ -3422,6 +3422,7 @@
         return null;
       }
       if (data && data.keyMode) S.keyMode = data.keyMode;
+      if (data && data.keyFp !== undefined) S.serverKeyFp = data.keyFp;
       if (data && data.ok && data.adminApi !== 2) {
         lastAdminError = "The Apps Script is still the old version. Paste the new script and deploy a New version first.";
         return null;
@@ -3642,7 +3643,7 @@
     const b = $id("admBanner");
     const parts = [];
     if (bannerState.error) {
-      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text"><strong>Couldn't load the dashboard.</strong> ${esc(bannerState.error)}${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? " Press <em>Copy my key</em>, paste it over the old key in the Apps Script, save, then deploy a New version." : ""}</div><div class="adm-banner__actions">${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? '<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-banner="copykey">Copy my key</button>' : ""}<button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
+      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text"><strong>Couldn't load the dashboard.</strong> ${esc(bannerState.error)}${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? ` Press <em>Copy my key</em>, paste it over the old key in the Apps Script, save, then deploy a New version.<span class="adm-code">This page's key starts ${esc(adminApiKey ? adminApiKey.slice(0, 8) : "")} and ends ${esc(adminApiKey ? adminApiKey.slice(-6) : "")} \u00B7 fingerprint ${esc(S.myKeyFp || "\u2026")}<br>Key in the deployed Apps Script: fingerprint ${esc(S.serverKeyFp || "(not reported \u2014 the deployed script is an older version)")}${S.serverKeyFp && S.myKeyFp && S.serverKeyFp === S.myKeyFp ? " \u2014 same, so try again" : ""}</span>` : ""}</div><div class="adm-banner__actions">${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? '<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-banner="copykey">Copy my key</button>' : ""}<button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
     } else if (bannerState.partial) {
       parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text">${esc(bannerState.partial)}</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
     }
@@ -3665,6 +3666,14 @@
   }
 
   // ── Loading everything ──────────────────────────────────
+  // Short one-way fingerprint of the key this page sends, so a mismatch with
+  // the Apps Script can be spotted at a glance.
+  async function showKeyDiagnosis() {
+    if (!adminApiKey) return;
+    S.myKeyFp = (await sha256Hex(adminApiKey)).slice(0, 8);
+    renderBanners();
+  }
+
   async function refreshAdmin() {
     bannerState.error = ""; bannerState.partial = "";
     const btn = $id("adminRefreshBtn");
@@ -3674,6 +3683,7 @@
     if (!data) {
       bannerState.error = adminErrText();
       renderBanners();
+      if (S.keyMode === "secure" && /key was rejected/.test(bannerState.error)) showKeyDiagnosis();
       // Don't hammer a server that just failed; try the approvals alone.
       const q = await adminFetch("unauthorizedQueue");
       if (q) { S.queue = q.queue || []; renderQueue(); updateBadges(); renderStats(); }
