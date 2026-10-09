@@ -1228,8 +1228,7 @@
           // The admin API key is derived from the passphrase but is NOT
           // the public hash. The legacy key only works until the Apps
           // Script has ADMIN_API_KEY filled in.
-          adminLegacyKey = candidateHash;
-          adminApiKey = await sha256Hex("admin-api|" + ((SITE_CONFIG.admin && SITE_CONFIG.admin.salt) || "") + name.trim());
+          adminPhrase = name.trim(); // kept in memory only; sent with each admin request so the server can check it
           nameInput.value = "";
           hideGateError();
           enterAdmin();
@@ -3380,8 +3379,8 @@
   //  • Everything shown in the page is escaped with esc() first, so a
   //    name like <b>x</b> can never run as code.
 
-  let adminApiKey = null;
-  let adminLegacyKey = null;
+  let adminPhrase = null;
+  let adminApiKey = null; // no longer used
   let adminPresenceTimer = null;
   let adminClockTimer = null;
   let adminOrigTitle = "";
@@ -3413,7 +3412,7 @@
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ type: "admin", action, key: adminApiKey, legacyKey: adminLegacyKey, params: params || {} }),
+        body: JSON.stringify({ type: "admin", action, phrase: adminPhrase, params: params || {} }),
         signal: controller.signal
       });
       let data = null;
@@ -3430,9 +3429,7 @@
       if (data && data.ok) return data;
       const err = data && data.error;
       if (err === "unauthorized") {
-        lastAdminError = data.keyMode === "secure"
-          ? "The admin key was rejected. ADMIN_API_KEY in the Apps Script must be exactly the key made from this passphrase."
-          : "The admin key was rejected. Check that config.js admin.secretHash matches ADMIN_KEY in the Apps Script.";
+        lastAdminError = "The server rejected the admin passphrase. In the Apps Script, ADMIN_KEY must equal admin.secretHash and ADMIN_SALT must equal admin.salt from config.js.";
       } else if (err) lastAdminError = "Server said: " + err;
       else lastAdminError = "The server refused the request.";
       return null;
