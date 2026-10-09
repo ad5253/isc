@@ -27,7 +27,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=31">
+    <link rel="stylesheet" href="style.css?v=40">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -294,145 +294,224 @@
 
 
     <!-- ═══ ADMIN DASHBOARD ═══ -->
-    <div id="adminApp" class="admin hidden">
-        <nav class="admin__nav">
-            <div class="admin__nav-inner">
-                <span class="admin__nav-title">Admin Dashboard</span>
-                <div class="admin__nav-actions">
-                    <button id="adminRefreshBtn" class="admin__nav-btn" type="button">Refresh</button>
-                    <button id="adminBackBtn" class="admin__nav-btn admin__nav-btn--ghost" type="button">Exit</button>
+    <div id="adminApp" class="adm hidden">
+        <header class="adm-top">
+            <div class="adm-top__inner">
+                <div class="adm-brand">
+                    <span class="adm-brand__dot"></span>
+                    <span class="adm-brand__title">Admin</span>
+                </div>
+                <div class="adm-top__actions">
+                    <span id="admUpdated" class="adm-top__updated"></span>
+                    <button id="adminRefreshBtn" class="adm-btn adm-btn--ghost adm-btn--sm" type="button">Refresh</button>
+                    <button id="adminBackBtn" class="adm-btn adm-btn--ghost adm-btn--sm" type="button">Exit</button>
                 </div>
             </div>
-        </nav>
+            <nav class="adm-tabs" id="adminTabs" aria-label="Admin sections">
+                <button type="button" class="adm-tab adm-tab--active" data-tab="overview">Overview</button>
+                <button type="button" class="adm-tab" data-tab="approvals">Approvals <span id="admApprovalBadge" class="adm-badge hidden">0</span></button>
+                <button type="button" class="adm-tab" data-tab="people">People</button>
+                <button type="button" class="adm-tab" data-tab="security">Security <span id="admFlagBadge" class="adm-badge adm-badge--warn hidden">0</span></button>
+                <button type="button" class="adm-tab" data-tab="content">Content</button>
+            </nav>
+        </header>
 
-        <div class="admin__tabs" id="adminTabs">
-            <button type="button" class="admin__tab admin__tab--active" data-tab="overview">Overview</button>
-            <button type="button" class="admin__tab" data-tab="approvals">Approvals<span class="admin__tab-badge hidden" id="adminApprovalBadge">0</span></button>
-            <button type="button" class="admin__tab" data-tab="people">People</button>
-            <button type="button" class="admin__tab" data-tab="security">Security</button>
-            <button type="button" class="admin__tab" data-tab="content">Content</button>
-        </div>
+        <main class="adm-main">
+            <div id="admBanner" class="adm-banner hidden"></div>
 
-        <div class="admin__shell">
-            <div id="adminBanner" class="admin__banner hidden"></div>
-
-            <div class="admin__tab-panel admin__tab-panel--active" data-panel="overview">
-                <div class="admin__summary-strip" id="adminSummaryStrip"></div>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Online right now</h2>
-                    <div class="admin__toolbar">
-                        <button type="button" id="adminBroadcastBtn" class="admin__nav-btn admin__nav-btn--ghost">Message everyone online</button>
+            <!-- Overview -->
+            <section class="adm-panel adm-panel--active" data-panel="overview">
+                <div class="adm-stats" id="admStats"></div>
+                <div class="adm-grid">
+                    <div class="adm-card">
+                        <div class="adm-card__head">
+                            <h2 class="adm-card__title">Needs your attention</h2>
+                        </div>
+                        <div id="admAttention" class="adm-list"></div>
                     </div>
-                    <div id="adminPresenceList" class="admin__presence-list"></div>
-                </section>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Flagged</h2>
-                    <div id="adminFlagsList" class="admin__presence-list"></div>
-                </section>
-            </div>
-
-            <div class="admin__tab-panel" data-panel="approvals">
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Pending requests</h2>
-                    <p class="admin__hint">People who asked for access from the login screen. Approving adds them to the access list and emails them (if they gave an email).</p>
-                    <div id="adminApprovalResult" class="admin__result hidden"></div>
-                    <div class="admin__toolbar">
-                        <button type="button" id="adminApproveSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Approve selected (0)</button>
-                        <button type="button" id="adminRejectSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Reject selected (0)</button>
+                    <div class="adm-card">
+                        <div class="adm-card__head">
+                            <h2 class="adm-card__title">Online now</h2>
+                            <button type="button" id="adminBroadcastBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Message everyone</button>
+                        </div>
+                        <div id="admOnline" class="adm-list"></div>
                     </div>
-                    <div id="adminApprovalList" class="admin-req-list"></div>
-                </section>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Add a name directly</h2>
-                    <div class="admin__toolbar">
-                        <input type="text" id="adminAddNameInput" class="admin__toolbar-input" placeholder="Type a name to approve…">
-                        <button type="button" id="adminAddNameBtn" class="admin__nav-btn">Add</button>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Last 14 days</h2>
+                        <div class="adm-legend"><span class="adm-legend__dot adm-legend__dot--views"></span>Files opened<span class="adm-legend__dot adm-legend__dot--people"></span>People</div>
                     </div>
-                </section>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Rejected</h2>
-                    <div id="adminRejectedList" class="admin__presence-list"></div>
-                </section>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Email check</h2>
-                    <p class="admin__hint">Not sure emails are going out? Send yourself a test. It tells you exactly why if it fails.</p>
-                    <div class="admin__toolbar">
-                        <button type="button" id="adminTestEmailBtn" class="admin__nav-btn admin__nav-btn--ghost">Send a test email</button>
+                    <div id="admChart" class="adm-chart"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Recent admin actions</h2>
+                        <button type="button" class="adm-link" data-goto="security">See all</button>
                     </div>
-                </section>
-            </div>
+                    <div id="admRecent" class="adm-list"></div>
+                </div>
+            </section>
 
-            <div class="admin__tab-panel" data-panel="people">
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Everyone</h2>
-                    <div class="admin__toolbar">
-                        <input type="text" id="adminRosterSearch" class="admin__toolbar-input" placeholder="Search by name…">
-                        <button type="button" id="adminMergeBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Merge selected (0)</button>
-                        <button type="button" id="adminSuspendSelectedBtn" class="admin__nav-btn admin__nav-btn--ghost" disabled>Suspend selected (0)</button>
-                        <button type="button" id="adminExportBtn" class="admin__nav-btn admin__nav-btn--ghost">Export CSV</button>
+            <!-- Approvals -->
+            <section class="adm-panel" data-panel="approvals">
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Waiting for approval</h2>
+                        <button type="button" id="adminTestEmailBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Send a test email</button>
                     </div>
-                    <div id="adminRosterList" class="admin__roster-list"></div>
-                </section>
-            </div>
-
-            <div class="admin__tab-panel" data-panel="security">
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Blocked devices</h2>
-                    <div id="adminBlockedDevicesList" class="admin__presence-list"></div>
-                </section>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Admin action log</h2>
-                    <div class="admin__toolbar">
-                        <button type="button" id="adminArchiveBtn" class="admin__nav-btn admin__nav-btn--ghost">Archive old log rows…</button>
+                    <div class="adm-bar">
+                        <input type="text" id="adminAddNameInput" class="adm-input" placeholder="Add a name directly…" autocomplete="off">
+                        <button type="button" id="adminAddNameBtn" class="adm-btn adm-btn--sm">Add</button>
                     </div>
-                    <div id="adminAuditList" class="admin__presence-list"></div>
-                </section>
-            </div>
-
-            <div class="admin__tab-panel" data-panel="content">
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Content catalog</h2>
-                    <div class="admin__toolbar">
-                        <button type="button" id="adminSyncBtn" class="admin__nav-btn admin__nav-btn--primary">Sync all files from Backblaze</button>
-                        <button type="button" id="adminScanBtn" class="admin__nav-btn">Scan for new files</button>
+                    <div id="admApprovalResult" class="adm-result hidden"></div>
+                    <div class="adm-bar adm-bar--bulk">
+                        <label class="adm-check"><input type="checkbox" id="admQueueAll"><span>Select all</span></label>
+                        <span class="adm-bar__spacer"></span>
+                        <button type="button" id="adminApproveSelectedBtn" class="adm-btn adm-btn--good adm-btn--sm" disabled>Approve selected (0)</button>
+                        <button type="button" id="adminRejectSelectedBtn" class="adm-btn adm-btn--danger-ghost adm-btn--sm" disabled>Reject selected (0)</button>
                     </div>
-                    <div id="adminScanProgress" class="admin-scan-progress hidden">
-                        <div class="admin-scan-progress__bar"><div class="admin-scan-progress__fill"></div></div>
-                        <span id="adminScanTimer" class="admin-scan-progress__timer">Scanning… 0.0s</span>
+                    <div id="admApprovalList" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Rejected</h2>
+                    </div>
+                    <div id="admRejectedList" class="adm-list"></div>
+                </div>
+            </section>
+
+            <!-- People -->
+            <section class="adm-panel" data-panel="people">
+                <div class="adm-card">
+                    <div class="adm-bar">
+                        <input type="search" id="adminRosterSearch" class="adm-input adm-input--grow" placeholder="Search people…" autocomplete="off">
+                        <select id="admPeopleSort" class="adm-select" aria-label="Sort">
+                            <option value="recent">Latest activity</option>
+                            <option value="time">Most time</option>
+                            <option value="name">Name A–Z</option>
+                        </select>
+                        <button type="button" id="adminExportBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Export CSV</button>
+                    </div>
+                    <div class="adm-chips" id="admPeopleFilters">
+                        <button type="button" class="adm-chip adm-chip--on" data-filter="all">All</button>
+                        <button type="button" class="adm-chip" data-filter="active">Active</button>
+                        <button type="button" class="adm-chip" data-filter="today">Seen today</button>
+                        <button type="button" class="adm-chip" data-filter="suspended">Suspended</button>
+                        <button type="button" class="adm-chip" data-filter="expiring">Has expiry</button>
+                    </div>
+                    <div id="admBulkBar" class="adm-bulk hidden">
+                        <span id="admBulkCount" class="adm-bulk__count">0 selected</span>
+                        <button type="button" id="admBulkSuspend" class="adm-btn adm-btn--danger-ghost adm-btn--sm">Suspend</button>
+                        <button type="button" id="admBulkExpiry" class="adm-btn adm-btn--ghost adm-btn--sm">Set expiry</button>
+                        <button type="button" id="admBulkMessage" class="adm-btn adm-btn--ghost adm-btn--sm">Message</button>
+                        <button type="button" id="adminMergeBtn" class="adm-btn adm-btn--ghost adm-btn--sm" disabled>Merge</button>
+                        <button type="button" id="admBulkClear" class="adm-link">Clear</button>
+                    </div>
+                    <div id="admPeopleCount" class="adm-muted adm-count"></div>
+                    <div id="admPeopleList" class="adm-people"></div>
+                </div>
+            </section>
+
+            <!-- Security -->
+            <section class="adm-panel" data-panel="security">
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Flagged activity</h2>
+                        <select id="admFlagFilter" class="adm-select adm-select--sm" aria-label="Filter flags">
+                            <option value="all">All kinds</option>
+                            <option value="device">Device used many names</option>
+                            <option value="login">Rapid login attempts</option>
+                            <option value="bulk">Many files opened</option>
+                        </select>
+                    </div>
+                    <div id="admFlagsList" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Blocked devices</h2>
+                    </div>
+                    <div id="admDevicesList" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Admin log</h2>
+                    </div>
+                    <div class="adm-bar">
+                        <input type="search" id="admLogSearch" class="adm-input adm-input--grow" placeholder="Search the log…" autocomplete="off">
+                        <select id="admLogFilter" class="adm-select" aria-label="Filter actions"></select>
+                    </div>
+                    <div id="admLogList" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Housekeeping</h2>
+                    </div>
+                    <p class="adm-muted">The activity log grows with every visit and makes this page slower to load. Archiving moves old rows to a separate tab in your Google Sheet. Nothing is deleted.</p>
+                    <div id="admLogSize" class="adm-muted"></div>
+                    <div class="adm-bar">
+                        <button type="button" id="adminArchiveBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Archive old activity…</button>
+                        <button type="button" id="adminTidyBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Tidy up the Google Sheet</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Content -->
+            <section class="adm-panel" data-panel="content">
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Content library</h2>
+                    </div>
+                    <p class="adm-muted">Scan checks Backblaze for files that are not on the site yet and lets you review them. Sync makes the whole site match Backblaze exactly.</p>
+                    <div class="adm-bar">
+                        <button type="button" id="adminScanBtn" class="adm-btn adm-btn--sm">Scan for new files</button>
+                        <button type="button" id="adminSyncBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Sync all files from Backblaze</button>
+                    </div>
+                    <div id="adminScanProgress" class="adm-progress hidden">
+                        <div class="adm-progress__bar"><div class="adm-progress__fill"></div></div>
+                        <span id="adminScanTimer" class="adm-muted">Scanning… 0.0s</span>
                     </div>
                     <div id="adminScanResults"></div>
-                </section>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Most opened files</h2>
+                    </div>
+                    <div class="adm-bar">
+                        <input type="search" id="admStatsSearch" class="adm-input adm-input--grow" placeholder="Search files…" autocomplete="off">
+                    </div>
+                    <div id="admStatsList" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Feedback <span id="admFeedbackAvg" class="adm-muted"></span></h2>
+                    </div>
+                    <div class="adm-bar">
+                        <input type="search" id="admFeedbackSearch" class="adm-input adm-input--grow" placeholder="Search feedback…" autocomplete="off">
+                        <select id="admFeedbackFilter" class="adm-select" aria-label="Filter by rating">
+                            <option value="all">All ratings</option>
+                            <option value="5">5 stars</option>
+                            <option value="4">4 stars</option>
+                            <option value="3">3 stars</option>
+                            <option value="low">1–2 stars</option>
+                        </select>
+                    </div>
+                    <div id="admFeedbackList" class="adm-list"></div>
+                </div>
+            </section>
+        </main>
 
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Most-used content</h2>
-                    <div id="adminContentStatsList" class="admin__presence-list"></div>
-                </section>
-
-                <section class="admin__section">
-                    <h2 class="admin__section-title">Feedback <span id="adminFeedbackAvg" class="admin__feedback-avg"></span></h2>
-                    <div id="adminFeedbackList" class="admin__presence-list"></div>
-                </section>
-            </div>
-
-        </div>
-
-        <div id="adminDetail" class="admin-detail hidden">
-            <div id="adminDetailOverlay" class="admin-detail__overlay"></div>
-            <div class="admin-detail__panel">
-                <div class="admin-detail__bar">
-                    <span id="adminDetailName" class="admin-detail__name">Name</span>
-                    <button id="adminDetailClose" class="admin-detail__close" aria-label="Close">
+        <div id="adminDetail" class="adm-drawer hidden">
+            <div id="adminDetailOverlay" class="adm-drawer__overlay"></div>
+            <aside class="adm-drawer__panel" role="dialog" aria-label="Person details">
+                <div class="adm-drawer__bar">
+                    <span id="adminDetailName" class="adm-drawer__name">Name</span>
+                    <button id="adminDetailClose" class="adm-iconbtn" aria-label="Close" type="button">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                 </div>
-                <div id="adminDetailBody" class="admin-detail__body"></div>
-            </div>
+                <div id="adminDetailBody" class="adm-drawer__body"></div>
+            </aside>
         </div>
     </div>
 
@@ -443,13 +522,14 @@
             <p id="confirmMessage" class="confirm-box__message"></p>
             <input type="text" id="confirmInput" class="confirm-box__input hidden">
             <div class="confirm-box__actions">
-                <button type="button" id="confirmCancelBtn" class="admin__nav-btn admin__nav-btn--ghost">Cancel</button>
-                <button type="button" id="confirmOkBtn" class="admin__nav-btn">Confirm</button>
+                <button type="button" id="confirmCancelBtn" class="adm-btn adm-btn--ghost">Cancel</button>
+                <button type="button" id="confirmOkBtn" class="adm-btn">Confirm</button>
             </div>
         </div>
     </div>
 
+
     <script src="config.js?v=6"></script>
-    <script src="script.js?v=31"></script>
+    <script src="script.js?v=40"></script>
 </body>
 </html>

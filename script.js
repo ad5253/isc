@@ -382,42 +382,11 @@
   const gateRequestEmail     = $("#gateRequestEmail");
   const gateRequestEmailHint = $("#gateRequestEmailHint");
 
-  // ── Admin dashboard refs ─────────────────────────────────
+  // ── Admin dashboard refs (the rest are looked up by id inside the admin code) ──
   const adminApp           = $("#adminApp");
   const adminBackBtn       = $("#adminBackBtn");
   const adminRefreshBtn    = $("#adminRefreshBtn");
-  const adminPresenceList  = $("#adminPresenceList");
-  const adminRosterList    = $("#adminRosterList");
-  const adminDetail        = $("#adminDetail");
-  const adminDetailOverlay = $("#adminDetailOverlay");
-  const adminDetailClose   = $("#adminDetailClose");
-  const adminDetailName    = $("#adminDetailName");
-  const adminDetailBody    = $("#adminDetailBody");
-  const adminApprovalList  = $("#adminApprovalList");
-  const adminRejectedList  = $("#adminRejectedList");
-  const adminAddNameInput  = $("#adminAddNameInput");
-  const adminAddNameBtn    = $("#adminAddNameBtn");
-  const adminApproveSelectedBtn = $("#adminApproveSelectedBtn");
-  const adminRejectSelectedBtn  = $("#adminRejectSelectedBtn");
-  const adminRosterSearch  = $("#adminRosterSearch");
-  const adminMergeBtn      = $("#adminMergeBtn");
-  const adminSuspendSelectedBtn = $("#adminSuspendSelectedBtn");
-  const adminFlagsList     = $("#adminFlagsList");
-  const adminAuditList     = $("#adminAuditList");
-  const adminBroadcastBtn  = $("#adminBroadcastBtn");
-  const adminExportBtn     = $("#adminExportBtn");
-  const adminContentStatsList = $("#adminContentStatsList");
-  const adminFeedbackAvg      = $("#adminFeedbackAvg");
-  const adminFeedbackList     = $("#adminFeedbackList");
-  const adminSyncBtn          = $("#adminSyncBtn");
-  const adminScanBtn          = $("#adminScanBtn");
-  const adminScanProgress     = $("#adminScanProgress");
-  const adminScanTimer        = $("#adminScanTimer");
-  const adminScanResults      = $("#adminScanResults");
-  const adminArchiveBtn    = $("#adminArchiveBtn");
-  const adminBlockedDevicesList = $("#adminBlockedDevicesList");
-  const adminTabs = $("#adminTabs");
-  const adminSummaryStrip = $("#adminSummaryStrip");
+  const adminTabs          = $("#adminTabs");
   const toastStack = $("#toastStack");
   const confirmOverlay = $("#confirmOverlay");
   const confirmMessage = $("#confirmMessage");
@@ -430,7 +399,6 @@
   let curSubject  = null;
   let curFolder   = null;
   let currentName = "";
-  let adminApiToken = null; // set only after the passphrase gate succeeds — see hashAdminSecret usage above
 
   // ── Session / view tracking (for the activity log) ──────
   // sessionId identifies one "visit" (from the app becoming visible
@@ -443,6 +411,7 @@
   let currentViewId       = null;
   let currentViewName     = null;
   let currentViewActiveMs = 0;   // accumulated foreground time for the open PDF
+  let currentViewLogged = false; // true once the open PDF has genuinely loaded and been logged
   let currentViewResumedAt = null; // timestamp the PDF most recently became foregrounded
   let heartbeatTimer      = null;
 
@@ -1136,28 +1105,7 @@
       }
     });
 
-    adminBackBtn.addEventListener("click", exitAdmin);
-    adminRefreshBtn.addEventListener("click", refreshAdmin);
-    adminAddNameBtn.addEventListener("click", onAdminAddName);
-    const adminTestEmailBtn = $("#adminTestEmailBtn");
-    if (adminTestEmailBtn) adminTestEmailBtn.addEventListener("click", onTestEmail);
-    adminAddNameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") onAdminAddName(); });
-    adminRosterSearch.addEventListener("input", () => renderAdminRoster(true));
-    adminMergeBtn.addEventListener("click", onMergeSelected);
-    adminApproveSelectedBtn.addEventListener("click", onApproveSelected);
-    adminRejectSelectedBtn.addEventListener("click", onRejectSelected);
-    adminSuspendSelectedBtn.addEventListener("click", onSuspendSelected);
-    adminBroadcastBtn.addEventListener("click", onBroadcastMessage);
-    adminExportBtn.addEventListener("click", onExportCsv);
-    adminArchiveBtn.addEventListener("click", onArchiveOldLogs);
-    if (adminSyncBtn) adminSyncBtn.addEventListener("click", onSyncBackblaze);
-    adminScanBtn.addEventListener("click", onScanBackblaze);
-    adminTabs.addEventListener("click", (e) => {
-      const btn = e.target.closest(".admin__tab");
-      if (btn) switchAdminTab(btn.dataset.tab);
-    });
-    adminDetailClose.addEventListener("click", closeAdminDetail);
-    adminDetailOverlay.addEventListener("click", closeAdminDetail);
+    initAdminUI();
 
     viewerClose.addEventListener("click", closeViewer);
     viewerThumbToggle.addEventListener("click", () => {
@@ -1277,16 +1225,11 @@
       if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled && SITE_CONFIG.admin.secretHash) {
         const candidateHash = await hashAdminSecret(name);
         if (candidateHash === SITE_CONFIG.admin.secretHash) {
-          // The hash IS the API token from here on — nothing else is
-          // needed. This used to be a separate plaintext admin.key
-          // sitting in config.js, which is a publicly downloadable
-          // file: anyone opening dev tools could read it straight off
-          // and call every admin endpoint themselves, no passphrase
-          // needed. Reusing candidateHash instead means the only
-          // secret that ever exists is the passphrase itself, which
-          // never touches any file — exactly the same guarantee the
-          // access list and suspended list already rely on.
-          adminApiToken = candidateHash;
+          // The admin API key is derived from the passphrase but is NOT
+          // the public hash. The legacy key only works until the Apps
+          // Script has ADMIN_API_KEY filled in.
+          adminLegacyKey = candidateHash;
+          adminApiKey = await sha256Hex("admin-api|" + ((SITE_CONFIG.admin && SITE_CONFIG.admin.salt) || "") + name.trim());
           nameInput.value = "";
           hideGateError();
           enterAdmin();
@@ -1533,7 +1476,6 @@
     sessionStart = Date.now();
     app.classList.remove("hidden");
     greeting.textContent = `Hi, ${name}`;
-    logEvent("session_start", name, "");
     startHeartbeat();
     claimActiveSession(name); // fire-and-forget — see its own comment below for why this can't slow anything down
     ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
@@ -1788,6 +1730,8 @@
   // mode: "push" (normal click), "replace" (initial landing / deep
   // link — shouldn't add a Back-button stop), "none" (already handled
   // by the browser, e.g. Back/Forward — don't touch history at all).
+  let lastLoggedWhere = null;
+
   function nav(view, subjectId, folderId, historyMode) {
     curView = view;
     curSubject = subjectId ? SITE_CONFIG.subjects.find((s) => s.id === subjectId) : null;
@@ -1807,9 +1751,11 @@
       } catch (e) { /* history API unavailable — the app works fine without URL updates */ }
     }
 
-    if (sessionId) {
-      const where = curFolder ? `folder:${curFolder.name}` : curSubject ? `subject:${curSubject.name}` : "home";
-      logEvent("navigate", currentName, where);
+    // Log only the home screen and which subject someone opens (not
+    // every folder click), and never the same spot twice in a row.
+    if (sessionId && !curFolder) {
+      const where = curSubject ? `subject:${curSubject.name}` : "home";
+      if (where !== lastLoggedWhere) { lastLoggedWhere = where; logEvent("navigate", currentName, where); }
     }
   }
 
@@ -2606,7 +2552,7 @@
     currentViewName = name;
     currentViewActiveMs = 0;
     currentViewResumedAt = document.hidden ? null : Date.now();
-    logEvent("view", currentName, name, undefined, { viewId: currentViewId });
+    currentViewLogged = false; // the "view" is only logged once the PDF has really loaded
     addRecentFile(path, name);
 
     viewerPages.innerHTML = "";
@@ -2688,6 +2634,10 @@
       }
       status.remove();
       viewerPages.appendChild(pagesInner);
+      if (!currentViewLogged && currentViewId) {
+        currentViewLogged = true;
+        logEvent("view", currentName, name, undefined, { viewId: currentViewId });
+      }
       return renderAllPages(myToken);
     }).catch((err) => {
       if (myToken !== viewerLoadToken) return;
@@ -3410,50 +3360,79 @@
       currentViewResumedAt = null;
     }
     const seconds = Math.round(currentViewActiveMs / 1000);
-    logEventBeacon("view_end", currentName, currentViewName, undefined, { viewId: currentViewId, duration: seconds });
+    // Only PDFs that really opened, and stayed open at least 3 seconds.
+    if (currentViewLogged && seconds >= 3) {
+      logEventBeacon("view_end", currentName, currentViewName, undefined, { viewId: currentViewId, duration: seconds });
+    }
+    currentViewLogged = false;
     currentViewId = null;
     currentViewName = null;
     currentViewActiveMs = 0;
   }
 
   // ── Admin Dashboard ──────────────────────────────────────
-  // Everything here reads fresh from the sheet on every open — no
-  // client-side caching between visits, per your request. The only
-  // "live" piece is the online-now list, which re-polls on an
-  // interval while the dashboard is actually open.
+  // How it talks to the server:
+  //  • Every call is a POST, so the admin key never shows up in a web
+  //    address (addresses end up in browser history and server logs).
+  //  • adminApiKey is derived from the passphrase and is NOT the public
+  //    hash in config.js. adminLegacyKey is only used until the Apps
+  //    Script has ADMIN_API_KEY filled in (see the yellow banner).
+  //  • Everything shown in the page is escaped with esc() first, so a
+  //    name like <b>x</b> can never run as code.
 
+  let adminApiKey = null;
+  let adminLegacyKey = null;
   let adminPresenceTimer = null;
+  let adminClockTimer = null;
+  let adminOrigTitle = "";
   let fileSubjectMap = null;
-
-  function adminEndpointUrl(action, params) {
-    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
-    const url = new URL(endpoint);
-    url.searchParams.set("action", action);
-    url.searchParams.set("key", adminApiToken || "");
-    if (params) Object.keys(params).forEach((k) => url.searchParams.set(k, params[k]));
-    return url.toString();
-  }
-
-  // Remembers WHY the last admin call failed so every screen can say the
-  // real reason, instead of always blaming the admin key.
   let lastAdminError = "";
+
+  const esc = escapeHtml;
+  const $id = (id) => document.getElementById(id);
+
+  const S = {
+    people: [], queue: [], rejected: [], flags: {}, stats: [], log: [], online: [],
+    devices: [], feedback: { entries: [], averageRating: null, count: 0 },
+    overview: { activity: [], filesToday: 0, logRows: 0 },
+    bandwidth: null, keyMode: "", loadedAt: 0
+  };
+  const peopleUI = { filter: "all", sort: "recent", selected: new Set() };
+  const queueSel = new Set();
+  const bannerState = { error: "", partial: "", legacy: false };
+
   function adminErrText() { return lastAdminError || "Couldn't reach the server."; }
 
   async function adminFetch(action, params) {
     lastAdminError = "";
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint) { lastAdminError = "config.js has no server address (logging.endpoint)."; return null; }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 45000);
     try {
-      const res = await fetch(adminEndpointUrl(action, params), { signal: controller.signal });
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ type: "admin", action, key: adminApiKey, legacyKey: adminLegacyKey, params: params || {} }),
+        signal: controller.signal
+      });
       let data = null;
       try { data = await res.json(); } catch {
-        lastAdminError = "The server sent back something unreadable. The Apps Script may need Deploy \u2192 Manage deployments \u2192 Edit \u2192 New version.";
+        lastAdminError = "The server sent back something unreadable. In Apps Script use Deploy → Manage deployments → pencil → New version.";
+        return null;
+      }
+      if (data && data.keyMode) S.keyMode = data.keyMode;
+      if (data && data.ok && data.adminApi !== 2) {
+        lastAdminError = "The Apps Script is still the old version. Paste the new script and deploy a New version first.";
         return null;
       }
       if (data && data.ok) return data;
       const err = data && data.error;
-      if (err === "unauthorized") lastAdminError = "The admin key was rejected. Check that config.js admin.secretHash matches ADMIN_KEY in the Apps Script.";
-      else if (err) lastAdminError = "Server said: " + err;
+      if (err === "unauthorized") {
+        lastAdminError = data.keyMode === "secure"
+          ? "The admin key was rejected. ADMIN_API_KEY in the Apps Script must be exactly the key made from this passphrase."
+          : "The admin key was rejected. Check that config.js admin.secretHash matches ADMIN_KEY in the Apps Script.";
+      } else if (err) lastAdminError = "Server said: " + err;
       else lastAdminError = "The server refused the request.";
       return null;
     } catch (e) {
@@ -3466,30 +3445,102 @@
     }
   }
 
-  // Maps a file's display name (what's logged as `detail` on view
-  // events) back to which subject/folder it lives under, using the
-  // same SITE_CONFIG this page already has — no need for the backend
-  // to know anything about subjects.
+  // Runs one admin action and ALWAYS tells you if it failed.
+  async function act(action, params, okMsg, failLabel) {
+    const res = await adminFetch(action, params);
+    if (!res) { showToast(`${failLabel}: ${adminErrText()}`, true); return null; }
+    if (okMsg) showToast(okMsg);
+    return res;
+  }
+
+  // ── Small helpers ───────────────────────────────────────
+  function relTime(ts) {
+    if (!ts) return "never";
+    const t = new Date(ts).getTime();
+    if (isNaN(t)) return "";
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 0) return "soon";
+    if (s < 45) return "just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+    const d = Math.round(h / 24);
+    if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
+    return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  }
+  function fullTime(ts) { const d = new Date(ts); return isNaN(d) ? "" : d.toLocaleString(); }
+  function whenHtml(ts) { return `<span title="${esc(fullTime(ts))}">${esc(relTime(ts))}</span>`; }
+  function fmtMins(sec) {
+    const m = Math.round((sec || 0) / 60);
+    if (m < 60) return `${m}m`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  }
+  function normName(n) { return String(n || "").trim().replace(/\s+/g, " ").toLowerCase(); }
+  function isEmail(v) { return /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(String(v || "").trim()); }
+  function sameDay(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
+  function emptyMsg(text) { return `<p class="adm-empty">${esc(text)}</p>`; }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch { /* nothing more to try */ }
+      ta.remove();
+    }
+    showToast("Copied.");
+  }
+
+  const ACTION_LABELS = {
+    approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
+    unsuspendIdentity: "Unsuspended", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
+    archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
+    testEmail: "Test email", emailFailed: "Email failed"
+  };
+  const actionLabel = (a) => ACTION_LABELS[a] || a;
+
+  function subjectColor(name) {
+    const n = String(name || "").toLowerCase();
+    if (n.includes("math")) return "var(--maths)";
+    if (n.includes("phys")) return "var(--physics)";
+    if (n.includes("chem")) return "var(--chemistry)";
+    return "var(--brass)";
+  }
+
+  function subjectOfFile(detail, map) {
+    if (String(detail || "").indexOf("Practical: ") === 0) return "Practicals";
+    const m = (map || getFileSubjectMap())[detail];
+    return m ? m.subject : "Other";
+  }
+
   function getFileSubjectMap() {
     if (fileSubjectMap) return fileSubjectMap;
     fileSubjectMap = {};
     SITE_CONFIG.subjects.forEach((s) => {
       s.subfolders.forEach((f) => {
-        f.files.forEach((file) => {
-          fileSubjectMap[file.name] = { subject: s.name, folder: f.name };
-        });
+        f.files.forEach((file) => { fileSubjectMap[file.name] = { subject: s.name, folder: f.name }; });
       });
     });
     return fileSubjectMap;
   }
 
+  // ── Enter / exit / timers ───────────────────────────────
   function enterAdmin() {
     gate.classList.add("hidden");
     app.classList.add("hidden");
     adminApp.classList.remove("hidden");
+    adminOrigTitle = document.title;
+    switchAdminTab("overview");
     refreshAdmin();
     stopAdminPolling();
-    adminPresenceTimer = setInterval(renderAdminPresence, 20000);
+    // Pending requests and who's online refresh by themselves; the heavy
+    // full refresh only happens when you press Refresh or take an action.
+    adminPresenceTimer = setInterval(refreshLive, 30000);
+    adminClockTimer = setInterval(updateUpdatedLabel, 15000);
   }
 
   function exitAdmin() {
@@ -3497,35 +3548,42 @@
     closeAdminDetail();
     adminApp.classList.add("hidden");
     gate.classList.remove("hidden");
+    if (adminOrigTitle) document.title = adminOrigTitle;
   }
 
   function stopAdminPolling() {
-    if (adminPresenceTimer) {
-      clearInterval(adminPresenceTimer);
-      adminPresenceTimer = null;
-    }
+    if (adminPresenceTimer) { clearInterval(adminPresenceTimer); adminPresenceTimer = null; }
+    if (adminClockTimer) { clearInterval(adminClockTimer); adminClockTimer = null; }
   }
 
-  let lastRosterPeople = [];
-  let selectedForMerge = new Set();
+  function updateUpdatedLabel() {
+    const l = $id("admUpdated");
+    if (l) l.textContent = S.loadedAt ? `Updated ${relTime(S.loadedAt)}` : "";
+  }
 
-  // ── Toast + confirm (replaces browser alert()/confirm()) ────────
-  // Native alert()/confirm() are functional but visually jarring —
-  // they look nothing like the rest of this site and interrupt
-  // rather than fit into the page. These are drop-in equivalents:
-  // showToast for a fire-and-forget message, showConfirm returning a
-  // Promise<boolean> so call sites read almost the same as before
-  // (just add "await" and drop the negation).
+  // Light refresh: just the two things that change by the minute.
+  async function refreshLive() {
+    if (adminApp.classList.contains("hidden") || document.hidden) return;
+    const [q, o] = await Promise.all([adminFetch("unauthorizedQueue"), adminFetch("presenceLive")]);
+    if (q) { S.queue = q.queue || []; renderQueue(); }
+    if (o) { S.online = o.online || []; renderOnline(); }
+    if (q || o) { S.loadedAt = Date.now(); updateUpdatedLabel(); renderStats(); }
+  }
+
+  // ── Toast + confirm (replaces browser alert()/confirm()) ─
   function showToast(message, isError) {
-    const toast = el(`div`, `toast${isError ? " toast--error" : ""}`, message);
+    const toast = el("div", `toast${isError ? " toast--error" : ""}`, message);
     toastStack.appendChild(toast);
-    setTimeout(() => toast.remove(), 4000);
+    setTimeout(() => toast.remove(), isError ? 7000 : 4000);
   }
 
-  function showConfirm(message) {
+  function showConfirm(message, opts) {
+    opts = opts || {};
     return new Promise((resolve) => {
       confirmMessage.textContent = message;
       confirmInput.classList.add("hidden");
+      confirmOkBtn.textContent = opts.ok || "Confirm";
+      confirmOkBtn.className = "adm-btn" + (opts.danger ? " adm-btn--danger" : "");
       confirmOverlay.classList.remove("hidden");
       const cleanup = (result) => {
         confirmOverlay.classList.add("hidden");
@@ -3540,21 +3598,20 @@
     });
   }
 
-  // Same overlay as showConfirm, with the text input shown — a
-  // drop-in replacement for the browser's native prompt(), which
-  // (like alert()/confirm()) looks nothing like the rest of this
-  // site. Resolves to the typed string, or null on Cancel — same
-  // contract as prompt() itself, so call sites barely change.
-  function showPrompt(message, defaultValue) {
+  function showPrompt(message, defaultValue, inputType) {
     return new Promise((resolve) => {
       confirmMessage.textContent = message;
+      confirmInput.type = inputType || "text";
       confirmInput.value = defaultValue || "";
       confirmInput.classList.remove("hidden");
+      confirmOkBtn.textContent = "OK";
+      confirmOkBtn.className = "adm-btn";
       confirmOverlay.classList.remove("hidden");
       confirmInput.focus();
       const cleanup = (result) => {
         confirmOverlay.classList.add("hidden");
         confirmInput.classList.add("hidden");
+        confirmInput.type = "text";
         confirmOkBtn.removeEventListener("click", onOk);
         confirmCancelBtn.removeEventListener("click", onCancel);
         confirmInput.removeEventListener("keydown", onKeydown);
@@ -3572,435 +3629,301 @@
     });
   }
 
-  // ── Tabs ──────────────────────────────────────────────────────
+  // ── Tabs, banners, badges ───────────────────────────────
   function switchAdminTab(tabName) {
-    $$(".admin__tab", adminTabs).forEach((btn) => {
-      btn.classList.toggle("admin__tab--active", btn.dataset.tab === tabName);
-    });
-    $$(".admin__tab-panel").forEach((panel) => {
-      panel.classList.toggle("admin__tab-panel--active", panel.dataset.panel === tabName);
-    });
+    $$(".adm-tab", adminTabs).forEach((btn) => btn.classList.toggle("adm-tab--active", btn.dataset.tab === tabName));
+    $$(".adm-panel").forEach((p) => p.classList.toggle("adm-panel--active", p.dataset.panel === tabName));
+    if (tabName === "overview") renderChart();
+    window.scrollTo(0, 0);
+    adminApp.scrollTop = 0;
   }
 
-  function renderSummaryStrip(online, flags, queue, bandwidth) {
-    const flagCount = (flags.deviceCycling || []).length + (flags.rapidRepeat || []).length + (flags.bulkView || []).length;
-    const cards = [
-      { num: online.length, label: "Online now" },
-      { num: flagCount, label: "Flagged", alert: flagCount > 0 },
-      { num: queue.length, label: "Pending approval", alert: queue.length > 0, goto: "approvals" }
-    ];
-    if (bandwidth) {
-      const usedGB = (bandwidth.usedBytes / (1024 ** 3)).toFixed(2);
-      const limitGB = (bandwidth.limitBytes / (1024 ** 3)).toFixed(1);
-      const pct = bandwidth.limitBytes ? Math.round((bandwidth.usedBytes / bandwidth.limitBytes) * 100) : 0;
-      cards.push({
-        num: `${usedGB}/${limitGB} GB`,
-        label: "Bandwidth today",
-        alert: pct >= 80
-      });
+  function renderBanners() {
+    const b = $id("admBanner");
+    const parts = [];
+    if (bannerState.error) {
+      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text"><strong>Couldn't load the dashboard.</strong> ${esc(bannerState.error)}</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
+    } else if (bannerState.partial) {
+      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text">${esc(bannerState.partial)}</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
     }
-    adminSummaryStrip.innerHTML = cards.map((c) => `
-      <div class="admin__summary-card${c.alert ? " admin__summary-card--alert" : ""}"${c.goto ? ` data-goto="${c.goto}" style="cursor:pointer"` : ""}>
-        <div class="admin__summary-card__num">${c.num}</div>
-        <div class="admin__summary-card__label">${c.label}</div>
-      </div>`).join("");
-    adminSummaryStrip.querySelectorAll("[data-goto]").forEach((c) => { c.onclick = () => switchAdminTab(c.dataset.goto); });
-  }
-
-  async function renderBlockedDevices(preloaded) {
-    const data = preloaded ? { ok: true, devices: preloaded } : await adminFetch("blockedDevicesFull");
-    if (!data) {
-      adminBlockedDevicesList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-      return;
+    if (bannerState.legacy) {
+      parts.push(`<div class="adm-banner"><div class="adm-banner__text"><strong>One more step to lock this page down.</strong> Right now the admin key is the same as the public one in config.js, so anyone who reads the website's code could use it. To fix it: (1) press <em>Copy new key</em>; (2) in the Apps Script paste it between the quotes in <code>var ADMIN_API_KEY = ""</code>; (3) Deploy → Manage deployments → pencil → New version → Deploy. This banner disappears by itself once it's done. Use a long passphrase (3–4 random words) for best protection.</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="copykey">Copy new key</button></div></div>`);
     }
-    const devices = data.devices || [];
-    adminBlockedDevicesList.innerHTML = "";
-    if (!devices.length) {
-      adminBlockedDevicesList.innerHTML = `<p class="admin__empty">Nothing blocked</p>`;
-      return;
-    }
-    devices.forEach((d) => {
-      const when = d.firstBlockedAt ? new Date(d.firstBlockedAt).toLocaleString() : "";
-      const row = el("div", "admin__presence-row");
-      row.innerHTML = `
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${d.label || "Unknown device"}</span>
-          <span class="admin__presence-meta">${d.deviceId.slice(0, 12)}\u2026 \u00B7 blocked ${when}</span>
-        </div>
-        <div class="admin__presence-actions">
-          <button type="button" class="admin__presence-btn" data-action="unblock">Unblock</button>
-        </div>`;
-      row.querySelector('[data-action="unblock"]').addEventListener("click", async () => {
-        if (!(await showConfirm(`Unblock this device? Anyone using it will be able to log in again (under any non-suspended name).`))) return;
-        await adminFetch("unblockDevice", { deviceId: d.deviceId });
-        renderBlockedDevices();
-      });
-      adminBlockedDevicesList.appendChild(row);
-    });
+    b.innerHTML = parts.join("");
+    b.classList.toggle("hidden", !parts.length);
   }
 
-  function setAdminBanner(msg) {
-    const b = $("#adminBanner");
-    if (!b) return;
-    if (!msg) { b.classList.add("hidden"); b.innerHTML = ""; return; }
-    b.classList.remove("hidden");
-    b.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="admin__nav-btn" id="adminBannerRetry">Try again</button>`;
-    const r = $("#adminBannerRetry");
-    if (r) r.addEventListener("click", () => refreshAdmin());
+  function updateBadges() {
+    const n = S.queue.length;
+    const ab = $id("admApprovalBadge");
+    ab.textContent = n; ab.classList.toggle("hidden", !n);
+    const f = S.flags || {};
+    const fc = (f.deviceCycling || []).length + (f.rapidRepeat || []).length + (f.bulkView || []).length;
+    const fb = $id("admFlagBadge");
+    fb.textContent = fc; fb.classList.toggle("hidden", !fc);
+    document.title = (n ? `(${n}) ` : "") + "Admin";
   }
 
+  // ── Loading everything ──────────────────────────────────
   async function refreshAdmin() {
-    // One request for everything. The server builds each section on its
-    // own, so if one section breaks the others still load and that one
-    // says what went wrong.
-    setAdminBanner("");
+    bannerState.error = ""; bannerState.partial = "";
+    const btn = $id("adminRefreshBtn");
+    if (btn) btn.disabled = true;
     const data = await adminFetch("adminDashboard");
+    if (btn) btn.disabled = false;
     if (!data) {
-      // Don't fire a dozen heavy requests at a server that just failed.
-      // Load only the approvals (the most important part) and say why.
-      setAdminBanner(`The dashboard couldn't load. ${adminErrText()}`);
-      await renderApprovalQueue();
-      await renderRejectedQueue();
+      bannerState.error = adminErrText();
+      renderBanners();
+      // Don't hammer a server that just failed; try the approvals alone.
+      const q = await adminFetch("unauthorizedQueue");
+      if (q) { S.queue = q.queue || []; renderQueue(); updateBadges(); renderStats(); }
       return;
     }
     const errs = data.errors || {};
-    const failedSections = [];
-    const bad = (key, listEl) => {
-      if (!errs[key]) return false;
-      failedSections.push(key);
-      if (listEl) listEl.innerHTML = `<p class="admin__empty">This section couldn't load: ${escapeHtml(errs[key])}</p>`;
-      return true;
-    };
-    if (!bad("online", adminPresenceList)) renderAdminPresence(data.online);
-    if (!bad("queue", adminApprovalList)) renderApprovalQueue(data.queue);
-    if (!bad("rejectedQueue", adminRejectedList)) renderRejectedQueue(data.rejectedQueue);
-    if (!bad("people", adminRosterList)) renderAdminRoster(data.people);
-    if (!bad("flags", adminFlagsList)) renderFlags(data.flags);
-    if (!bad("auditLog", adminAuditList)) renderAuditLog(data.log);
-    if (!bad("stats", adminContentStatsList)) renderContentStats(data.stats);
-    if (!bad("devices", adminBlockedDevicesList)) renderBlockedDevices(data.devices);
-    if (!bad("feedback", adminFeedbackList)) renderFeedbackAdmin(data.feedback);
-    renderSummaryStrip(data.online || [], data.flags || {}, data.queue || [], data.bandwidth);
-    if (failedSections.length) setAdminBanner(`Some parts couldn't load (${failedSections.join(", ")}). The rest is fine.`);
+    const failed = Object.keys(errs);
+    const keep = (key, val, fallback) => { if (!errs[key]) return val; return fallback; };
+    S.people = keep("people", data.people || [], S.people);
+    S.queue = keep("queue", data.queue || [], S.queue);
+    S.rejected = keep("rejectedQueue", data.rejectedQueue || [], S.rejected);
+    S.flags = keep("flags", data.flags || {}, S.flags);
+    S.stats = keep("stats", data.stats || [], S.stats);
+    S.log = keep("auditLog", data.log || [], S.log);
+    S.online = keep("online", data.online || [], S.online);
+    S.devices = keep("devices", data.devices || [], S.devices);
+    S.feedback = keep("feedback", data.feedback || S.feedback, S.feedback);
+    S.overview = keep("overview", data.overview || S.overview, S.overview);
+    S.bandwidth = data.bandwidth || null;
+    S.keyMode = data.keyMode || S.keyMode;
+    S.loadedAt = Date.now();
+    bannerState.legacy = S.keyMode === "legacy";
+    if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
+    renderAll();
   }
 
-  async function renderContentStats(preloaded) {
-    const data = preloaded ? { ok: true, stats: preloaded } : await adminFetch("contentStats");
-    if (!data) return;
-    const stats = (data.stats || []).slice(0, 15);
-    adminContentStatsList.innerHTML = "";
-    if (!stats.length) {
-      adminContentStatsList.innerHTML = `<p class="admin__empty">No views logged yet</p>`;
-      return;
-    }
-    stats.forEach((s) => {
-      const mins = Math.round((s.seconds || 0) / 60);
-      const row = el("div", "admin__presence-row");
-      row.innerHTML = `
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${s.file}</span>
-          <span class="admin__presence-meta">${s.views} views · ${s.downloads} downloads · ${s.distinctViewers} people · ${mins}m total</span>
-        </div>`;
-      adminContentStatsList.appendChild(row);
-    });
+  function renderAll() {
+    renderBanners();
+    updateBadges();
+    updateUpdatedLabel();
+    renderStats();
+    renderAttention();
+    renderOnline();
+    renderChart();
+    renderRecent();
+    renderQueue();
+    renderRejected();
+    renderPeople();
+    renderFlags();
+    renderDevices();
+    renderLog();
+    renderHousekeeping();
+    renderContentStats();
+    renderFeedbackAdmin();
   }
 
-  async function renderFeedbackAdmin(preloaded) {
-    const data = preloaded ? { ok: true, ...preloaded } : await adminFetch("feedbackList");
-    if (!data) return;
-    const entries = data.entries || [];
-    adminFeedbackAvg.textContent = data.averageRating ? `${data.averageRating} / 5 average (${data.count} response${data.count === 1 ? "" : "s"})` : `No ratings yet`;
-    adminFeedbackList.innerHTML = "";
-    if (!entries.length) {
-      adminFeedbackList.innerHTML = `<p class="admin__empty">No feedback yet</p>`;
-      return;
-    }
-    entries.slice(0, 30).forEach((f) => {
-      const when = f.timestamp ? new Date(f.timestamp).toLocaleString() : "";
-      const stars = f.rating ? "★".repeat(f.rating) + "☆".repeat(5 - f.rating) : "—";
-      const row = el("div", "admin__presence-row");
-      row.innerHTML = `
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${f.name || "Anonymous"} <span class="admin__feedback-stars">${stars}</span></span>
-          <span class="admin__presence-meta">${f.email ? f.email + " · " : ""}${f.improvements ? f.improvements + " · " : ""}${when}</span>
-          ${f.suggestion ? `<p class="admin__feedback-suggestion">${f.suggestion}</p>` : ""}
-        </div>`;
-      adminFeedbackList.appendChild(row);
-    });
+  // ── Overview ────────────────────────────────────────────
+  function flagCount() {
+    const f = S.flags || {};
+    return (f.deviceCycling || []).length + (f.rapidRepeat || []).length + (f.bulkView || []).length;
   }
 
-  // ── Scan Backblaze for new files ("scan and confirm") ────────────
-  // Lists everything currently in the bucket, compares it against the
-  // Catalog sheet, and shows only what's genuinely new — nothing gets
-  // added to the live site until you review each one here and confirm.
-  // A wrong guess at which subject/folder a file belongs to would put
-  // it in front of students immediately, which is exactly why nothing
-  // here is silent or automatic.
-  let scanTimerInterval = null;
-
-  async function onSyncBackblaze() {
-    if (!confirm("This will refresh your entire catalog so it matches your Backblaze bucket exactly (removes duplicates, adds new files, cleans everything). Continue?")) return;
-    if (adminSyncBtn) adminSyncBtn.disabled = true;
-    adminScanBtn.disabled = true;
-    adminScanResults.innerHTML = "";
-    adminScanProgress.classList.remove("hidden");
-    const startedAt = Date.now();
-    adminScanTimer.textContent = "Syncing with Backblaze… 0.0s";
-    scanTimerInterval = setInterval(() => {
-      adminScanTimer.textContent = `Syncing with Backblaze… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
-    }, 100);
-
-    const data = await adminFetch("syncCatalog");
-
-    clearInterval(scanTimerInterval);
-    scanTimerInterval = null;
-    adminScanProgress.classList.add("hidden");
-    if (adminSyncBtn) adminSyncBtn.disabled = false;
-    adminScanBtn.disabled = false;
-
-    if (!data) {
-      adminScanResults.innerHTML = `<p class="admin__empty">Couldn't reach the sheet — check your connection.</p>`;
-      return;
+  function renderStats() {
+    const rows = (S.overview && S.overview.logRows) || 0;
+    const cards = [
+      { num: S.online.length, label: "Online now", live: true },
+      { num: S.queue.length, label: "Waiting for approval", cls: S.queue.length ? "adm-stat--alert" : "", goto: "approvals" },
+      { num: (S.overview && S.overview.filesToday) || 0, label: "Files opened today" },
+      { num: S.people.length, label: "People", goto: "people" },
+      { num: flagCount(), label: "Flagged", cls: flagCount() ? "adm-stat--warn" : "", goto: "security" }
+    ];
+    if (S.bandwidth && S.bandwidth.limitBytes) {
+      const used = (S.bandwidth.usedBytes / (1024 ** 3)).toFixed(2);
+      const limit = (S.bandwidth.limitBytes / (1024 ** 3)).toFixed(1);
+      const pct = Math.round((S.bandwidth.usedBytes / S.bandwidth.limitBytes) * 100);
+      cards.push({ num: `${used}`, label: "GB today", hint: `of ${limit} GB`, cls: pct >= 80 ? "adm-stat--warn" : "" });
     }
-    if (!data.ok || data.error) {
-      adminScanResults.innerHTML = `<p class="admin__empty">Sync failed: ${data.error || "Unknown error"}</p>`;
-      showToast("Sync failed: " + (data.error || "Unknown error"), true);
-      return;
-    }
-
-    showToast(`Successfully synced ${data.synced || 0} files from Backblaze!`);
-    adminScanResults.innerHTML = `<p class="admin-scan-summary" style="color:var(--maths); font-weight:600">✓ Catalog synced! ${data.synced || 0} files are now live and duplicate-free.</p>`;
-    fetchAndApplyCatalog().then(() => render());
+    cards.push({ num: rows.toLocaleString(), label: "Activity rows", hint: rows > 20000 ? "Large — consider archiving" : "", cls: rows > 20000 ? "adm-stat--alert" : "", goto: rows > 20000 ? "security" : "" });
+    $id("admStats").innerHTML = cards.map((c) => {
+      const tag = c.goto ? "button" : "div";
+      return `<${tag} ${c.goto ? `type="button" data-goto="${c.goto}"` : ""} class="adm-stat ${c.cls || ""} ${c.live ? "adm-stat--live" : ""}">
+        <span class="adm-stat__num">${esc(c.num)}</span>
+        <span class="adm-stat__label">${esc(c.label)}</span>
+        ${c.hint ? `<span class="adm-stat__hint">${esc(c.hint)}</span>` : ""}
+      </${tag}>`;
+    }).join("");
   }
 
-  async function onScanBackblaze() {
-    adminScanBtn.disabled = true;
-    adminScanResults.innerHTML = "";
-    adminScanProgress.classList.remove("hidden");
-    const startedAt = Date.now();
-    adminScanTimer.textContent = "Scanning… 0.0s";
-    scanTimerInterval = setInterval(() => {
-      adminScanTimer.textContent = `Scanning… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
-    }, 100);
-
-    const data = await adminFetch("scanBackblaze");
-
-    clearInterval(scanTimerInterval);
-    scanTimerInterval = null;
-    adminScanProgress.classList.add("hidden");
-    adminScanBtn.disabled = false;
-
-    if (!data) {
-      adminScanResults.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-      return;
-    }
-    if (data.error) {
-      adminScanResults.innerHTML = `<p class="admin__empty">Scan failed: ${data.error}</p>`;
-      return;
-    }
-    renderScanResults(data);
-  }
-
-  function renderScanResults(data) {
-    const newFiles = data.newFiles || [];
-    const unrecognized = data.unrecognized || [];
-    adminScanResults.innerHTML = "";
-
-    const summary = el("p", "admin-scan-summary",
-      `Scanned ${data.totalInBucket || 0} file${data.totalInBucket === 1 ? "" : "s"} in the bucket — ${newFiles.length} new.`);
-    adminScanResults.appendChild(summary);
-
-    if (!newFiles.length && !unrecognized.length) {
-      adminScanResults.appendChild(el("p", "admin__empty", "Nothing new — the catalog is already up to date."));
-      return;
-    }
-
-    if (newFiles.length) {
-      const list = el("div", "admin-scan-list");
-      const subjectOptions = SITE_CONFIG.subjects.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
-
-      newFiles.forEach((item, idx) => {
-        const row = el("div", "admin-scan-row");
-        row.innerHTML = `
-          <input type="checkbox" class="admin__roster-checkbox" data-scan-check checked>
-          <div class="admin-scan-row__fields">
-            <select class="admin-scan-row__subject" data-field="subjectId">${subjectOptions}</select>
-            <input type="text" class="admin-scan-row__input" data-field="folderName" value="${item.folderName}" placeholder="Folder / chapter name">
-            <input type="text" class="admin-scan-row__input" data-field="displayName" value="${item.displayName}" placeholder="Display name">
-          </div>
-          <span class="admin-scan-row__path">${item.filePath}</span>
-        `;
-        row.querySelector('[data-field="subjectId"]').value = item.subjectId;
-        list.appendChild(row);
-        row.dataset.idx = String(idx);
-      });
-      adminScanResults.appendChild(list);
-
-      const confirmBtn = el("button", "admin__nav-btn", "Confirm selected");
-      confirmBtn.type = "button";
-      confirmBtn.addEventListener("click", () => onConfirmScanResults(list, newFiles));
-      adminScanResults.appendChild(confirmBtn);
-    }
-
-    if (unrecognized.length) {
-      const uLabel = el("p", "admin__section-title", "Couldn't figure out where these belong — fix the path in Backblaze and re-scan");
-      adminScanResults.appendChild(uLabel);
-      unrecognized.forEach((u) => {
-        adminScanResults.appendChild(el("p", "admin-scan-row__path", u.path));
-      });
-    }
-  }
-
-  async function onConfirmScanResults(list, newFiles) {
+  function renderAttention() {
+    const box = $id("admAttention");
     const items = [];
-    list.querySelectorAll(".admin-scan-row").forEach((row) => {
-      if (!row.querySelector("[data-scan-check]").checked) return;
-      const idx = Number(row.dataset.idx);
-      const original = newFiles[idx];
-      items.push({
-        subjectId: row.querySelector('[data-field="subjectId"]').value,
-        folderName: row.querySelector('[data-field="folderName"]').value.trim(),
-        fileName: original.fileName,
-        filePath: original.filePath,
-        displayName: row.querySelector('[data-field="displayName"]').value.trim() || original.displayName
-      });
+    S.queue.slice(0, 5).forEach((q) => {
+      items.push(`<div class="adm-row" data-name="${esc(q.name)}">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(q.name)}</div>
+          <div class="adm-row__meta"><span>Wants access</span><span>${whenHtml(q.lastAttempt)}</span></div>
+        </div>
+        <div class="adm-row__actions">
+          <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-act="approve">Approve</button>
+          <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-act="reject">Reject</button>
+        </div></div>`);
     });
-    if (!items.length) return;
+    if (S.queue.length > 5) items.push(`<div class="adm-row"><button type="button" class="adm-link" data-goto="approvals">+ ${S.queue.length - 5} more waiting</button></div>`);
+    const fc = flagCount();
+    if (fc) items.push(`<div class="adm-row adm-row--click" data-goto="security"><div class="adm-row__main"><div class="adm-row__title">${fc} flagged ${fc === 1 ? "activity" : "activities"}</div><div class="adm-row__meta"><span>Tap to review</span></div></div><span class="adm-tag adm-tag--bad">Review</span></div>`);
+    box.innerHTML = items.length ? items.join("") : emptyMsg("All clear — nothing needs you right now.");
+  }
 
-    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
-    if (!endpoint) return;
-    try {
-      // Same fix as the feedback form's submission — mode: "no-cors"
-      // is required for any POST to an Apps Script web app to actually
-      // go through (see the feedback submit handler's own comment for
-      // why). The trade-off: a "no-cors" response is opaque — there is
-      // no way to read res.json() or even check res.ok from it, which
-      // is exactly what the old code tried to do here, so it could
-      // never have shown an accurate "Added N files" or "failed"
-      // outcome either way. Instead of reporting a number this can't
-      // actually see, this re-runs the scan a moment later: the newly
-      // added files no longer show up as "new," which is real,
-      // visible proof it worked — not a guess.
-      await fetch(endpoint, {
-        method: "POST",
-        mode: "no-cors",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ type: "confirmCatalogAdditions", key: adminApiToken, items })
-      });
-      showToast(`Submitted ${items.length} file${items.length === 1 ? "" : "s"} — refreshing to confirm…`);
-      setTimeout(() => onScanBackblaze(), 1500);
-    } catch {
-      showToast("Couldn't reach the sheet — check your connection and try again.", true);
+  function renderOnline() {
+    const box = $id("admOnline");
+    if (!S.online.length) { box.innerHTML = emptyMsg("Nobody online right now."); renderStats(); return; }
+    box.innerHTML = S.online.map((p, i) => `
+      <div class="adm-row adm-row--click" data-open="${esc(p.name)}" data-i="${i}">
+        <span class="adm-dot"></span>
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(p.name)}</div>
+          <div class="adm-row__meta"><span>here for ${esc(fmtMins((Date.now() - new Date(p.sessionStart).getTime()) / 1000))}</span><span>${esc(p.currentPage || "home")}</span></div>
+        </div>
+        <div class="adm-row__actions">
+          <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-act="message">Message</button>
+          <button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-act="logout">Log out</button>
+        </div></div>`).join("");
+  }
+
+  function renderRecent() {
+    const box = $id("admRecent");
+    const items = (S.log || []).slice(0, 5);
+    box.innerHTML = items.length ? items.map(logRowHtml).join("") : emptyMsg("No admin actions yet.");
+  }
+
+  // 14-day chart: bars = files opened, line = different people.
+  function renderChart() {
+    const host = $id("admChart");
+    if (!host) return;
+    const data = (S.overview && S.overview.activity) || [];
+    if (!data.length || data.every((d) => !d.views && !d.people)) {
+      host.innerHTML = emptyMsg("No activity in the last 14 days yet.");
+      return;
     }
+    const W = Math.max(280, host.clientWidth || 640), H = 210;
+    const padL = 30, padR = 30, padT = 12, padB = 34;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const maxV = Math.max(1, ...data.map((d) => d.views));
+    const maxP = Math.max(1, ...data.map((d) => d.people));
+    const step = iw / data.length, bw = Math.min(28, step * 0.58);
+    const every = W < 520 ? 2 : 1;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Files opened and people per day for the last 14 days">`;
+    [0, 0.5, 1].forEach((f) => {
+      const y = padT + ih - ih * f;
+      svg += `<line x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="rgba(244,241,232,0.08)"/>`;
+    });
+    svg += `<text x="${padL - 6}" y="${padT + 4}" text-anchor="end">${maxV}</text><text x="${padL - 6}" y="${padT + ih + 4}" text-anchor="end">0</text>`;
+    svg += `<text x="${W - padR + 6}" y="${padT + 4}" fill="var(--physics)" style="fill:var(--physics)">${maxP}</text>`;
+    const pts = [];
+    data.forEach((d, i) => {
+      const x = padL + step * i + step / 2;
+      const bh = ih * (d.views / maxV);
+      const dt = new Date(d.ts);
+      svg += `<rect x="${x - bw / 2}" y="${padT + ih - bh}" width="${bw}" height="${Math.max(bh, d.views ? 2 : 0)}" rx="4" fill="var(--brass)" opacity="0.85"><title>${esc(dt.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }))}: ${d.views} opened, ${d.people} people</title></rect>`;
+      const py = padT + ih - ih * (d.people / maxP);
+      pts.push([x, py]);
+      if (i % every === (data.length - 1) % every) {
+        svg += `<text x="${x}" y="${H - 16}" text-anchor="middle">${esc(dt.toLocaleDateString(undefined, { day: "numeric" }))}</text>`;
+        svg += `<text x="${x}" y="${H - 3}" text-anchor="middle" style="font-size:9px">${esc(dt.toLocaleDateString(undefined, { weekday: "narrow" }))}</text>`;
+      }
+    });
+    svg += `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="var(--physics)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach((p) => { svg += `<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="var(--ink-raised)" stroke="var(--physics)" stroke-width="2"/>`; });
+    svg += `</svg>`;
+    host.innerHTML = svg;
   }
 
-  let selectedQueueNames = new Set();
-
-  function setApprovalBadge(n) {
-    const b = $("#adminApprovalBadge");
-    if (!b) return;
-    b.textContent = n;
-    b.classList.toggle("hidden", !n);
+  // ── Approvals ───────────────────────────────────────────
+  function setApprovalResult(text, isError) {
+    const box = $id("admApprovalResult");
+    box.textContent = text;
+    box.classList.remove("hidden");
+    box.classList.toggle("adm-result--error", !!isError);
   }
 
-  // One plain-English line about what happened, including whether the
-  // email actually went out (and if not, why).
   function describeOutcome(name, data, approved) {
-    const r = (data && data.result) || {};
-    const em = r.email || {};
+    const em = ((data && data.result) || {}).email || {};
     let msg = approved ? `Approved ${name}.` : `Rejected ${name}.`;
     if (em.sent) msg += ` Email sent to ${em.to}.`;
     else if (em.reason) msg += ` Email NOT sent: ${em.reason}.`;
-    return { text: msg, ok: approved ? true : true, emailFailed: !em.sent && !!em.to };
+    return { text: msg, emailFailed: !em.sent && !!em.to };
   }
 
-  function showApprovalResult(text, isError) {
-    const box = $("#adminApprovalResult");
-    if (!box) return;
-    box.textContent = text;
-    box.classList.remove("hidden");
-    box.classList.toggle("admin__result--error", !!isError);
-  }
-
-  async function renderApprovalQueue(preloaded) {
-    const data = preloaded ? { ok: true, queue: preloaded } : await adminFetch("unauthorizedQueue");
-    const queue = (data && data.queue) || [];
-    adminApprovalList.innerHTML = "";
-    selectedQueueNames.clear();
-    updateQueueBulkBtns();
-
-    if (!data) {
-      adminApprovalList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-      return;
-    }
-    setApprovalBadge(queue.length);
-    if (!queue.length) {
-      adminApprovalList.innerHTML = `<p class="admin__empty">No pending requests \u2014 you're all caught up.</p>`;
-      return;
-    }
-
-    queue.forEach((q) => {
-      const when = q.lastAttempt ? new Date(q.lastAttempt).toLocaleString() : "";
-      const row = el("div", "admin-req");
-      row.innerHTML = `
-        <label class="admin-req__check"><input type="checkbox" data-queue-check aria-label="Select ${escapeHtml(q.name)}"></label>
-        <div class="admin-req__main">
-          <div class="admin-req__name">${escapeHtml(q.name)}</div>
-          <div class="admin-req__meta">
-            <span class="admin-req__chip${q.email ? "" : " admin-req__chip--none"}">${q.email ? escapeHtml(q.email) : "No email given"}</span>
-            <span>${q.count} request${q.count === 1 ? "" : "s"}</span>
-            <span>${escapeHtml(when)}</span>
+  function renderQueue() {
+    const list = $id("admApprovalList");
+    // Keep only selections that still exist in the queue.
+    const names = new Set(S.queue.map((q) => q.name));
+    Array.from(queueSel).forEach((n) => { if (!names.has(n)) queueSel.delete(n); });
+    if (!S.queue.length) {
+      list.innerHTML = emptyMsg("No pending requests — you're all caught up.");
+    } else {
+      list.innerHTML = S.queue.map((q) => {
+        const mail = isEmail(q.email)
+          ? `<a class="adm-mini" href="mailto:${esc(q.email)}?subject=${encodeURIComponent("Your Class 12 Portal access request")}">Email</a><button type="button" class="adm-mini" data-act="copyemail">Copy email</button>`
+          : "";
+        return `<div class="adm-req" data-name="${esc(q.name)}">
+          <label class="adm-check"><input type="checkbox" class="adm-row__check" data-act="select" ${queueSel.has(q.name) ? "checked" : ""} aria-label="Select ${esc(q.name)}"></label>
+          <div class="adm-row__main">
+            <div class="adm-row__title">${esc(q.name)}</div>
+            <div class="adm-row__meta">
+              <span class="adm-tag ${q.email ? "" : "adm-tag--bad"}">${q.email ? esc(q.email) : "No email given"}</span>
+              <span>${q.count} request${q.count === 1 ? "" : "s"}</span>
+              <span>${whenHtml(q.lastAttempt)}</span>
+            </div>
+            <div class="adm-req__tools"><button type="button" class="adm-mini" data-act="copyname">Copy name</button>${mail}</div>
           </div>
-        </div>
-        <div class="admin-req__actions">
-          <button type="button" class="admin-btn admin-btn--approve" data-action="approve">Approve</button>
-          <button type="button" class="admin-btn admin-btn--reject" data-action="reject">Reject</button>
-        </div>`;
-      row.querySelector('[data-queue-check]').addEventListener("change", (e) => {
-        if (e.target.checked) selectedQueueNames.add(q.name);
-        else selectedQueueNames.delete(q.name);
-        updateQueueBulkBtns();
-      });
-      const btns = row.querySelectorAll(".admin-btn");
-      const act = async (approved) => {
-        btns.forEach((b) => { b.disabled = true; });
-        const clicked = row.querySelector(approved ? '[data-action="approve"]' : '[data-action="reject"]');
-        const oldLabel = clicked.textContent;
-        clicked.textContent = "Working\u2026";
-        const res = await adminFetch(approved ? "approveName" : "rejectName", { name: q.name });
-        if (!res) {
-          btns.forEach((b) => { b.disabled = false; });
-          clicked.textContent = oldLabel;
-          showToast(`Couldn't ${approved ? "approve" : "reject"} ${q.name}: ${adminErrText()}`, true);
-          showApprovalResult(`Couldn't ${approved ? "approve" : "reject"} ${q.name}: ${adminErrText()}`, true);
-          return;
-        }
-        const o = describeOutcome(q.name, res, approved);
-        showToast(o.text, o.emailFailed);
-        showApprovalResult(o.text, o.emailFailed);
-        renderApprovalQueue();
-        if (!approved) renderRejectedQueue();
-      };
-      row.querySelector('[data-action="approve"]').addEventListener("click", () => act(true));
-      row.querySelector('[data-action="reject"]').addEventListener("click", () => act(false));
-      adminApprovalList.appendChild(row);
-    });
+          <div class="adm-req__actions">
+            <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-act="approve">Approve</button>
+            <button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-act="reject">Reject</button>
+          </div></div>`;
+      }).join("");
+    }
+    updateQueueBulk();
+    renderAttention();
+    updateBadges();
+    renderStats();
   }
 
-  function updateQueueBulkBtns() {
-    const n = selectedQueueNames.size;
-    adminApproveSelectedBtn.textContent = `Approve selected (${n})`;
-    adminRejectSelectedBtn.textContent = `Reject selected (${n})`;
-    adminApproveSelectedBtn.disabled = n === 0;
-    adminRejectSelectedBtn.disabled = n === 0;
+  function updateQueueBulk() {
+    const n = queueSel.size;
+    $id("adminApproveSelectedBtn").textContent = `Approve selected (${n})`;
+    $id("adminRejectSelectedBtn").textContent = `Reject selected (${n})`;
+    $id("adminApproveSelectedBtn").disabled = n === 0;
+    $id("adminRejectSelectedBtn").disabled = n === 0;
+    const all = $id("admQueueAll");
+    all.checked = S.queue.length > 0 && n === S.queue.length;
+    all.disabled = !S.queue.length;
   }
 
-  // One at a time (not all at once) so two approvals can never collide
-  // while writing to the sheet, and so each email result is reported.
+  async function decide(name, approved, rowEl) {
+    const btns = rowEl ? rowEl.querySelectorAll("button") : [];
+    btns.forEach((b) => { b.disabled = true; });
+    const res = await adminFetch(approved ? "approveName" : "rejectName", { name });
+    if (!res) {
+      btns.forEach((b) => { b.disabled = false; });
+      const msg = `Couldn't ${approved ? "approve" : "reject"} ${name}: ${adminErrText()}`;
+      showToast(msg, true); setApprovalResult(msg, true);
+      return false;
+    }
+    const o = describeOutcome(name, res, approved);
+    showToast(o.text, o.emailFailed); setApprovalResult(o.text, o.emailFailed);
+    S.queue = S.queue.filter((q) => q.name !== name);
+    queueSel.delete(name);
+    if (!approved) S.rejected = [{ name, rejectedAt: new Date().toISOString() }, ...S.rejected.filter((r) => r.name !== name)];
+    renderQueue(); renderRejected();
+    if (approved) refreshLive();
+    return true;
+  }
+
+  // One at a time so two approvals never collide in the sheet and each
+  // email result is reported.
   async function bulkDecide(names, approved) {
     let done = 0, failed = 0, emailed = 0, emailFailed = 0;
-    adminApproveSelectedBtn.disabled = true;
-    adminRejectSelectedBtn.disabled = true;
+    $id("adminApproveSelectedBtn").disabled = true;
+    $id("adminRejectSelectedBtn").disabled = true;
     for (const name of names) {
       const res = await adminFetch(approved ? "approveName" : "rejectName", { name });
       if (!res) { failed++; continue; }
@@ -4012,486 +3935,744 @@
     if (emailed) msg += ` ${emailed} email${emailed === 1 ? "" : "s"} sent.`;
     if (emailFailed) msg += ` ${emailFailed} email${emailFailed === 1 ? "" : "s"} failed.`;
     if (failed) msg += ` ${failed} failed: ${adminErrText()}`;
-    showToast(msg, !!(failed || emailFailed));
-    showApprovalResult(msg, !!(failed || emailFailed));
-    renderApprovalQueue();
-    renderRejectedQueue();
+    showToast(msg, !!(failed || emailFailed)); setApprovalResult(msg, !!(failed || emailFailed));
+    queueSel.clear();
+    refreshAdmin();
   }
 
-  async function onApproveSelected() {
-    const names = Array.from(selectedQueueNames);
-    if (!names.length) return;
-    await bulkDecide(names, true);
-  }
-
-  async function onRejectSelected() {
-    const names = Array.from(selectedQueueNames);
-    if (!names.length) return;
-    if (!(await showConfirm(`Reject ${names.length} pending name${names.length === 1 ? "" : "s"}? They'll stop showing up here \u2014 this doesn't block their device or name, just clears this queue entry.`))) return;
-    await bulkDecide(names, false);
-  }
-
-  async function renderRejectedQueue(preloaded) {
-    const data = preloaded ? { ok: true, queue: preloaded } : await adminFetch("rejectedQueue");
-    if (!data) return;
-    const queue = data.queue || [];
-    adminRejectedList.innerHTML = "";
-    if (!queue.length) {
-      adminRejectedList.innerHTML = `<p class="admin__empty">Nothing rejected</p>`;
-      return;
-    }
-    queue.forEach((q) => {
-      const when = q.rejectedAt ? new Date(q.rejectedAt).toLocaleString() : "";
-      const row = el("div", "admin__presence-row");
-      row.innerHTML = `
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${escapeHtml(q.name)}</span>
-          <span class="admin__presence-meta">Rejected ${when}</span>
+  function renderRejected() {
+    const list = $id("admRejectedList");
+    if (!S.rejected.length) { list.innerHTML = emptyMsg("Nothing rejected."); return; }
+    list.innerHTML = S.rejected.map((q) => `
+      <div class="adm-row" data-name="${esc(q.name)}">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(q.name)}</div>
+          <div class="adm-row__meta"><span>Rejected ${whenHtml(q.rejectedAt)}</span></div>
         </div>
-        <div class="admin__presence-actions">
-          <button type="button" class="admin__presence-btn" data-action="restore">Restore</button>
-        </div>`;
-      row.querySelector('[data-action="restore"]').addEventListener("click", async () => {
-        await adminFetch("unrejectName", { name: q.name });
-        renderRejectedQueue();
-        renderApprovalQueue();
-      });
-      adminRejectedList.appendChild(row);
-    });
+        <div class="adm-row__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-act="restore">Restore</button></div>
+      </div>`).join("");
   }
 
   async function onTestEmail() {
-    const to = await showPrompt("Send the test email to which address? (leave empty to send it to your own admin inbox)", "");
+    const to = await showPrompt("Send the test email to which address? Leave empty to send it to your own admin inbox.", "");
     if (to === null) return;
-    const btn = $("#adminTestEmailBtn");
-    if (btn) btn.disabled = true;
-    const params = to.trim() ? { to: to.trim() } : {};
-    const res = await adminFetch("testEmail", params);
-    if (btn) btn.disabled = false;
+    const btn = $id("adminTestEmailBtn");
+    btn.disabled = true;
+    const res = await adminFetch("testEmail", to.trim() ? { to: to.trim() } : {});
+    btn.disabled = false;
     if (!res) {
-      showToast(`Test email failed: ${adminErrText()}`, true);
-      showApprovalResult(`Test email failed: ${adminErrText()}`, true);
+      const m = `Test email failed: ${adminErrText()}`;
+      showToast(m, true); setApprovalResult(m, true);
       return;
     }
     const r = res.result || {};
-    const msg = r.ok
-      ? `Test email sent to ${res.to} (via ${r.via === "brevo" ? "Brevo" : "Gmail"}).${r.error ? " Brevo had failed first: " + r.error : ""}`
-      : `Test email NOT sent to ${res.to}. Reason: ${r.error || "unknown"}`;
-    showToast(msg, !r.ok);
-    showApprovalResult(msg, !r.ok);
+    const msg = r.ok ? `Test email sent to ${res.to}.` : `Test email NOT sent to ${res.to}. Reason: ${r.error || "unknown"}`;
+    showToast(msg, !r.ok); setApprovalResult(msg, !r.ok);
   }
 
   async function onAdminAddName() {
-    const name = adminAddNameInput.value.trim();
+    const input = $id("adminAddNameInput");
+    const name = input.value.trim();
     if (!name) return;
-    adminAddNameBtn.disabled = true;
+    const btn = $id("adminAddNameBtn");
+    btn.disabled = true;
     const res = await adminFetch("approveName", { name });
-    adminAddNameBtn.disabled = false;
-    if (!res) {
-      showToast(`Couldn't add ${name}: ${adminErrText()}`, true);
-      return;
-    }
-    adminAddNameInput.value = "";
-    const o = describeOutcome(name, res, true);
-    showToast(res.result && res.result.added === false ? `${name} was already approved.` : `Added ${name} to the access list.`);
-    showApprovalResult(res.result && res.result.added === false ? `${name} was already on the access list.` : `Added ${name} to the access list.`);
-    renderApprovalQueue();
+    btn.disabled = false;
+    if (!res) { showToast(`Couldn't add ${name}: ${adminErrText()}`, true); return; }
+    input.value = "";
+    const already = res.result && res.result.added === false;
+    const msg = already ? `${name} was already on the access list.` : `Added ${name} to the access list.`;
+    showToast(msg); setApprovalResult(msg);
+    refreshAdmin();
   }
 
-  function updateMergeBtn() {
-    const n = selectedForMerge.size;
-    adminMergeBtn.textContent = `Merge selected (${n})`;
-    adminMergeBtn.disabled = n !== 2;
-    adminSuspendSelectedBtn.textContent = `Suspend selected (${n})`;
-    adminSuspendSelectedBtn.disabled = n === 0;
+  // ── People ──────────────────────────────────────────────
+  function filteredPeople() {
+    const q = $id("adminRosterSearch").value.trim().toLowerCase();
+    let list = S.people.filter((p) => {
+      if (q && ![p.name, ...(p.aliases || [])].join(" ").toLowerCase().includes(q)) return false;
+      switch (peopleUI.filter) {
+        case "active": return !p.suspended;
+        case "today": return p.lastSeen && sameDay(p.lastSeen, Date.now());
+        case "suspended": return !!p.suspended;
+        case "expiring": return !!p.expiresAt;
+        default: return true;
+      }
+    });
+    const sort = peopleUI.sort;
+    list = list.slice().sort((a, b) => {
+      if (sort === "name") return String(a.name).localeCompare(String(b.name));
+      if (sort === "time") return (b.totalSessionSeconds || 0) - (a.totalSessionSeconds || 0);
+      return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+    });
+    return list;
+  }
+
+  function renderPeople() {
+    const list = $id("admPeopleList");
+    const people = filteredPeople();
+    const known = new Set(S.people.map((p) => p.name));
+    Array.from(peopleUI.selected).forEach((n) => { if (!known.has(n)) peopleUI.selected.delete(n); });
+    $id("admPeopleCount").textContent = S.people.length ? `Showing ${people.length} of ${S.people.length}` : "";
+    if (!S.people.length) { list.innerHTML = emptyMsg("No activity logged yet."); updateBulk(); return; }
+    if (!people.length) { list.innerHTML = emptyMsg("No one matches that."); updateBulk(); return; }
+    const onlineNames = new Set(S.online.map((o) => normName(o.name)));
+    list.innerHTML = people.map((p) => {
+      const sel = peopleUI.selected.has(p.name);
+      const live = onlineNames.has(normName(p.name));
+      const aka = p.aliases && p.aliases.length ? `<div class="adm-person__aka">also: ${esc(p.aliases.join(", "))}</div>` : "";
+      return `<div class="adm-person ${sel ? "adm-person--sel" : ""} ${p.suspended ? "adm-person--off" : ""}" data-name="${esc(p.name)}" tabindex="0">
+        <div class="adm-avatar">${esc((p.name || "?").trim().charAt(0).toUpperCase() || "?")}</div>
+        <div class="adm-person__body">
+          <div class="adm-person__name">${esc(p.name)}
+            ${live ? '<span class="adm-tag adm-tag--good">online</span>' : ""}
+            ${p.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : ""}
+            ${p.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(p.expiresAt).toLocaleDateString())}</span>` : ""}
+          </div>
+          ${aka}
+          <div class="adm-person__stats"><span>${esc(fmtMins(p.totalSessionSeconds))} on site</span><span>${p.sessionCount || 0} visit${p.sessionCount === 1 ? "" : "s"}</span><span>${p.filesTouched || 0}/${p.totalKnownFiles || 0} files</span></div>
+          <div class="adm-person__seen">Last seen ${whenHtml(p.lastSeen)}</div>
+        </div>
+        <input type="checkbox" class="adm-row__check adm-person__check" data-act="select" ${sel ? "checked" : ""} aria-label="Select ${esc(p.name)}">
+      </div>`;
+    }).join("");
+    updateBulk();
+  }
+
+  function updateBulk() {
+    const n = peopleUI.selected.size;
+    $id("admBulkBar").classList.toggle("hidden", n === 0);
+    $id("admBulkCount").textContent = `${n} selected`;
+    $id("adminMergeBtn").disabled = n !== 2;
+  }
+
+  function onlineSessionsFor(names) {
+    const wanted = new Set();
+    names.forEach((n) => {
+      wanted.add(normName(n));
+      const p = S.people.find((x) => x.name === n);
+      if (p) (p.aliases || []).forEach((a) => wanted.add(normName(a)));
+    });
+    return S.online.filter((o) => wanted.has(normName(o.name)));
   }
 
   async function onMergeSelected() {
-    if (selectedForMerge.size !== 2) return;
-    const [a, b] = Array.from(selectedForMerge);
-    const primary = await showPrompt(`Merging "${a}" and "${b}" as one person. Which name should show on the roster? (type it exactly, or leave as-is)`, a);
-    if (!primary) return;
-    const alias = primary === a ? b : a;
-    await adminFetch("mergeIdentities", { primary, alias });
-    selectedForMerge.clear();
-    updateMergeBtn();
-    renderAdminRoster();
+    if (peopleUI.selected.size !== 2) return;
+    const [a, b] = Array.from(peopleUI.selected);
+    const primary = await showPrompt(`Merging "${a}" and "${b}" into one person. Which name should be shown? Type it exactly.`, a);
+    if (!primary || !primary.trim()) return;
+    const alias = primary.trim() === a ? b : a;
+    const res = await act("mergeIdentities", { primary: primary.trim(), alias }, `Merged ${alias} into ${primary.trim()}.`, "Couldn't merge");
+    if (!res) return;
+    peopleUI.selected.clear();
+    refreshAdmin();
   }
 
-  async function onSuspendSelected() {
-    const names = Array.from(selectedForMerge);
+  async function bulkSuspend() {
+    const names = Array.from(peopleUI.selected);
     if (!names.length) return;
-    if (!(await showConfirm(`Suspend ${names.length} selected ${names.length === 1 ? "person" : "people"}? This blocks every device and name each of them has ever used, and signs them out right now if online.`))) return;
-    await Promise.all(names.map((name) => adminFetch("suspendIdentity", { name })));
-    selectedForMerge.clear();
-    updateMergeBtn();
-    renderAdminRoster();
+    if (!(await showConfirm(`Suspend ${names.length} ${names.length === 1 ? "person" : "people"}? This blocks every device and name each of them has used, and signs them out if they're online.`, { ok: "Suspend", danger: true }))) return;
+    let ok = 0, failed = [];
+    for (const name of names) {
+      const r = await adminFetch("suspendIdentity", { name });
+      if (r) ok++; else failed.push(name);
+    }
+    if (failed.length) showToast(`Suspended ${ok}. Couldn't suspend: ${failed.join(", ")} (${adminErrText()})`, true);
+    else showToast(`Suspended ${ok} ${ok === 1 ? "person" : "people"}.`);
+    peopleUI.selected.clear();
+    refreshAdmin();
+  }
+
+  async function bulkExpiry() {
+    const names = Array.from(peopleUI.selected);
+    if (!names.length) return;
+    const input = await showPrompt(`Access expiry date for ${names.length} ${names.length === 1 ? "person" : "people"}. Leave blank to remove their expiry.`, "", "date");
+    if (input === null) return;
+    let ok = 0, failed = [];
+    for (const name of names) {
+      const r = await adminFetch("setExpiry", { name, date: input.trim() });
+      if (r) ok++; else failed.push(name);
+    }
+    if (failed.length) showToast(`Updated ${ok}. Couldn't update: ${failed.join(", ")} (${adminErrText()})`, true);
+    else showToast(input.trim() ? `Expiry set for ${ok}.` : `Expiry removed for ${ok}.`);
+    peopleUI.selected.clear();
+    refreshAdmin();
+  }
+
+  async function bulkMessage() {
+    const names = Array.from(peopleUI.selected);
+    if (!names.length) return;
+    const live = await adminFetch("presenceLive");
+    if (!live) { showToast(`Couldn't check who is online: ${adminErrText()}`, true); return; }
+    S.online = live.online || [];
+    const targets = onlineSessionsFor(names);
+    if (!targets.length) { showToast("None of the selected people are online right now.", true); return; }
+    const message = await showPrompt(`Message for ${targets.length} online ${targets.length === 1 ? "person" : "people"} (pops up on their screen within about 45 seconds):`);
+    if (!message || !message.trim()) return;
+    let ok = 0;
+    for (const t of targets) {
+      const r = await adminFetch("sendMessage", { sessionId: t.sessionId, message: message.trim() });
+      if (r) ok++;
+    }
+    showToast(ok === targets.length ? `Sent to ${ok}.` : `Sent to ${ok} of ${targets.length}. ${adminErrText()}`, ok !== targets.length);
   }
 
   async function onToggleSuspend(name, currentlySuspended) {
-    const verb = currentlySuspended ? "unsuspend" : "suspend";
-    if (!(await showConfirm(`${currentlySuspended ? "Unsuspend" : "Suspend"} "${name}"?${currentlySuspended ? "" : " This also blocks every device and name they've ever used, and signs them out right now if online."}`))) return;
-    await adminFetch(currentlySuspended ? "unsuspendIdentity" : "suspendIdentity", { name });
-    renderAdminRoster();
+    const text = currentlySuspended
+      ? `Unsuspend "${name}"?`
+      : `Suspend "${name}"? This also blocks every device and name they have used, and signs them out if they're online.`;
+    if (!(await showConfirm(text, { ok: currentlySuspended ? "Unsuspend" : "Suspend", danger: !currentlySuspended }))) return false;
+    const res = await act(currentlySuspended ? "unsuspendIdentity" : "suspendIdentity", { name },
+      currentlySuspended ? `Unsuspended ${name}.` : `Suspended ${name}.`,
+      `Couldn't ${currentlySuspended ? "unsuspend" : "suspend"} ${name}`);
+    if (!res) return false;
+    refreshAdmin();
+    return true;
   }
 
   async function onSetExpiry(name, currentExpiresAt) {
     const current = currentExpiresAt ? new Date(currentExpiresAt).toISOString().slice(0, 10) : "";
-    const input = await showPrompt(`Access expiry date for "${name}" (YYYY-MM-DD). Leave blank to remove expiry.`, current);
-    if (input === null) return; // cancelled
-    await adminFetch("setExpiry", { name, date: input.trim() });
-    renderAdminRoster();
-  }
-
-  async function renderFlags(preloaded) {
-    const data = preloaded ? { ok: true, flags: preloaded } : await adminFetch("flags");
-    if (!data) {
-      adminFlagsList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-      return;
-    }
-    const { deviceCycling = [], rapidRepeat = [], bulkView = [] } = data.flags || {};
-    adminFlagsList.innerHTML = "";
-
-    const items = [
-      ...deviceCycling.map((f) => ({
-        label: `One device used ${f.names.length} different names: ${f.names.join(", ")}`,
-        when: f.when,
-        names: f.names
-      })),
-      ...rapidRepeat.map((f) => ({
-        label: `"${f.name}" attempted login ${f.count} times, 5+ within a minute`,
-        when: f.when,
-        names: [f.name]
-      })),
-      ...bulkView.map((f) => ({
-        label: `${f.name} opened/downloaded ${f.count} files, 8+ within 5 minutes`,
-        when: f.when,
-        names: [f.name]
-      }))
-    ].sort((a, b) => new Date(b.when) - new Date(a.when));
-
-    if (!items.length) {
-      adminFlagsList.innerHTML = `<p class="admin__empty">Nothing flagged</p>`;
-      return;
-    }
-
-    items.forEach((f) => {
-      const row = el("div", "admin__presence-row");
-      const actionsHtml = f.names.map((n) =>
-        `<button type="button" class="admin__presence-btn admin__presence-btn--danger" data-suspend="${n.replace(/"/g, "&quot;")}">Suspend${f.names.length > 1 ? ` "${n}"` : ""}</button>`
-      ).join("");
-      row.innerHTML = `
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${f.label}</span>
-          <span class="admin__presence-meta">${new Date(f.when).toLocaleString()}</span>
-        </div>
-        <div class="admin__presence-actions">${actionsHtml}</div>`;
-      row.querySelectorAll("[data-suspend]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const name = btn.getAttribute("data-suspend");
-          if (!(await showConfirm(`Suspend "${name}"? This blocks every device and name they've used, and signs them out right now if online.`))) return;
-          await adminFetch("suspendIdentity", { name });
-          showToast(`Suspended "${name}".`);
-          renderFlags();
-        });
-      });
-      adminFlagsList.appendChild(row);
-    });
-  }
-
-  async function onArchiveOldLogs() {
-    const daysStr = await showPrompt("Move log rows older than how many days into a separate archive tab? (nothing is deleted, just moved out of the live sheet)", "90");
-    if (daysStr === null) return;
-    const days = Number(daysStr);
-    if (!days || days < 1) { showToast("Enter a number of days.", true); return; }
-    if (!(await showConfirm(`Archive everything older than ${days} days? Roster totals will drop for anyone whose activity is entirely in that window — their history moves to a LogArchive tab, it isn't deleted.`))) return;
-    const data = await adminFetch("archiveOldLogs", { days });
-    if (!data) { showToast("Couldn't reach the sheet.", true); return; }
-    showToast(`Archived ${data.result.archived} rows, ${data.result.kept} left in the live sheet.`);
+    const input = await showPrompt(`Access expiry date for "${name}". Leave blank to remove the expiry.`, current, "date");
+    if (input === null) return false;
+    const res = await act("setExpiry", { name, date: input.trim() },
+      input.trim() ? `Expiry for ${name} set to ${input.trim()}.` : `Expiry removed for ${name}.`,
+      `Couldn't change expiry for ${name}`);
+    if (!res) return false;
     refreshAdmin();
+    return true;
+  }
+
+  async function sendAdminMessage(sessionId, name) {
+    const message = await showPrompt(`Message to send ${name} (pops up on their screen within about 45 seconds):`);
+    if (!message || !message.trim()) return;
+    await act("sendMessage", { sessionId, message: message.trim() }, `Message sent to ${name}.`, `Couldn't message ${name}`);
+  }
+
+  async function forceLogoutUser(sessionId, name) {
+    if (!(await showConfirm(`Sign ${name} out now? They'll see a notice and be returned to the login screen.`, { ok: "Sign out", danger: true }))) return;
+    const res = await act("forceLogout", { sessionId }, `${name} will be signed out within about 45 seconds.`, `Couldn't sign ${name} out`);
+    if (res) refreshLive();
   }
 
   async function onBroadcastMessage() {
     const message = await showPrompt("Message to send to everyone online right now:");
     if (!message || !message.trim()) return;
     const data = await adminFetch("presenceLive");
-    const online = (data && data.online) || [];
-    await Promise.all(online.map((p) => adminFetch("sendMessage", { sessionId: p.sessionId, message: message.trim() })));
-    showToast(`Sent to ${online.length} online session${online.length === 1 ? "" : "s"}.`);
-  }
-
-  async function renderAuditLog(preloaded) {
-    const data = preloaded ? { ok: true, log: preloaded } : await adminFetch("adminActionLog");
-    if (!data) return;
-    const log = data.log || [];
-    adminAuditList.innerHTML = "";
-    if (!log.length) {
-      adminAuditList.innerHTML = `<p class="admin__empty">No admin actions yet</p>`;
-      return;
+    if (!data) { showToast(`Couldn't check who is online: ${adminErrText()}`, true); return; }
+    const online = data.online || [];
+    if (!online.length) { showToast("Nobody is online right now.", true); return; }
+    let ok = 0;
+    for (const p of online) {
+      const r = await adminFetch("sendMessage", { sessionId: p.sessionId, message: message.trim() });
+      if (r) ok++;
     }
-    log.slice(0, 30).forEach((entry) => {
-      const row = el("div", "admin__presence-row");
-      row.innerHTML = `
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${entry.action}${entry.detail ? " — " + entry.detail : ""}</span>
-          <span class="admin__presence-meta">${new Date(entry.timestamp).toLocaleString()}</span>
-        </div>`;
-      adminAuditList.appendChild(row);
-    });
+    showToast(ok === online.length ? `Sent to ${ok} online session${ok === 1 ? "" : "s"}.` : `Sent to ${ok} of ${online.length}. ${adminErrText()}`, ok !== online.length);
   }
 
   function onExportCsv() {
-    if (!lastRosterPeople.length) return;
+    if (!S.people.length) { showToast("Nothing to export yet.", true); return; }
     const headers = ["Name", "Aliases", "Suspended", "ExpiresAt", "LastSeen", "SessionCount", "TotalSessionMinutes", "TotalViewMinutes", "LoginCount", "UnauthorizedCount"];
-    const rows = lastRosterPeople.map((p) => [
-      p.name,
-      (p.aliases || []).join("; "),
-      p.suspended ? "yes" : "no",
+    const rows = S.people.map((p) => [
+      p.name, (p.aliases || []).join("; "), p.suspended ? "yes" : "no",
       p.expiresAt ? new Date(p.expiresAt).toISOString().slice(0, 10) : "",
       p.lastSeen ? new Date(p.lastSeen).toISOString() : "",
-      p.sessionCount,
-      Math.round((p.totalSessionSeconds || 0) / 60),
-      Math.round((p.totalViewSeconds || 0) / 60),
-      p.loginCount,
-      p.unauthorizedCount
+      p.sessionCount, Math.round((p.totalSessionSeconds || 0) / 60), Math.round((p.totalViewSeconds || 0) / 60),
+      p.loginCount, p.unauthorizedCount
     ]);
-    const csv = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
+    // A leading = + - @ in a cell can run as a formula when opened in Excel.
+    const safe = (c) => { const s = String(c == null ? "" : c); return /^[=+\-@]/.test(s) ? "'" + s : s; };
+    const csv = [headers, ...rows].map((r) => r.map((c) => `"${safe(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a");
-    a.href = url;
-    a.download = `roster-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.href = url; a.download = `roster-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  async function renderAdminPresence(preloaded) {
-    const data = preloaded ? { ok: true, online: preloaded } : await adminFetch("presenceLive");
-    const online = (data && data.online) || [];
-    adminPresenceList.innerHTML = "";
-
-    if (!data) {
-      adminPresenceList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-      return;
-    }
-    if (!online.length) {
-      adminPresenceList.innerHTML = `<p class="admin__empty">Nobody online right now</p>`;
-      return;
-    }
-
-    online.forEach((person) => {
-      const startedAt = new Date(person.sessionStart).getTime();
-      const mins = Math.max(0, Math.round((Date.now() - startedAt) / 60000));
-      const row = el("div", "admin__presence-row");
-      row.innerHTML = `
-        <span class="admin__presence-dot"></span>
-        <div class="admin__presence-info">
-          <span class="admin__presence-name">${person.name}</span>
-          <span class="admin__presence-meta">online ${mins} min · ${person.currentPage || "home"}</span>
-        </div>
-        <div class="admin__presence-actions">
-          <button type="button" class="admin__presence-btn" data-action="message">Message</button>
-          <button type="button" class="admin__presence-btn admin__presence-btn--danger" data-action="logout">Log out</button>
-        </div>`;
-      row.addEventListener("click", () => openAdminDetail(person.name));
-      row.querySelector('[data-action="message"]').addEventListener("click", (e) => {
-        e.stopPropagation();
-        sendAdminMessage(person.sessionId, person.name);
-      });
-      row.querySelector('[data-action="logout"]').addEventListener("click", (e) => {
-        e.stopPropagation();
-        forceLogoutUser(person.sessionId, person.name);
-      });
-      adminPresenceList.appendChild(row);
-    });
-  }
-
-  async function sendAdminMessage(sessionId, name) {
-    const message = await showPrompt(`Message to send ${name} (pops up on their screen within ~45s):`);
-    if (!message) return;
-    await adminFetch("sendMessage", { sessionId, message });
-  }
-
-  async function forceLogoutUser(sessionId, name) {
-    if (!(await showConfirm(`Sign ${name} out now? They'll see a notice and be returned to the login screen.`))) return;
-    await adminFetch("forceLogout", { sessionId });
-  }
-
-  async function renderAdminRoster(preloadedOrSkip) {
-    if (Array.isArray(preloadedOrSkip)) {
-      lastRosterPeople = preloadedOrSkip;
-    } else if (!preloadedOrSkip) {
-      adminRosterList.innerHTML = `<p class="admin__loading">Loading…</p>`;
-      const data = await adminFetch("adminSummary");
-      if (!data) {
-        adminRosterList.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-        return;
-      }
-      lastRosterPeople = data.people || [];
-    }
-    // preloadedOrSkip === true (search-box re-filter): fall through
-    // and reuse whatever's already in lastRosterPeople, no fetch.
-
-    const query = adminRosterSearch.value.trim().toLowerCase();
-    const people = query
-      ? lastRosterPeople.filter((p) => {
-          const haystack = [p.name, ...(p.aliases || [])].join(" ").toLowerCase();
-          return haystack.includes(query);
-        })
-      : lastRosterPeople;
-
-    adminRosterList.innerHTML = "";
-
-    if (!lastRosterPeople.length) {
-      adminRosterList.innerHTML = `<p class="admin__empty">No activity logged yet</p>`;
-      return;
-    }
-    if (!people.length) {
-      adminRosterList.innerHTML = `<p class="admin__empty">No one matches "${query}"</p>`;
-      return;
-    }
-
-    people.forEach((p) => {
-      const row = el("div", "admin__roster-row");
-      row.tabIndex = 0;
-      const lastSeen = p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "—";
-      const totalMins = Math.round((p.totalSessionSeconds || 0) / 60);
-      const akaText = p.aliases && p.aliases.length ? ` <span class="admin__roster-aka">aka ${p.aliases.join(", ")}</span>` : "";
-      const expiryLabel = p.expiresAt ? "Expires " + new Date(p.expiresAt).toLocaleDateString() : "Set expiry…";
-      const actionLabels = { approveName: "Approved", rejectName: "Rejected", suspendIdentity: "Suspended", unsuspendIdentity: "Unsuspended", setExpiry: "Expiry set" };
-      const lastActionText = p.lastAction
-        ? `${actionLabels[p.lastAction.action] || p.lastAction.action} ${new Date(p.lastAction.timestamp).toLocaleDateString()}`
-        : "No admin action yet";
-      row.innerHTML = `
-        <input type="checkbox" class="admin__roster-checkbox" ${selectedForMerge.has(p.name) ? "checked" : ""}>
-        <div class="admin__roster-name">${p.name}${akaText}${p.suspended ? ' <span class="admin__roster-badge">suspended</span>' : ""}</div>
-        <div class="admin__roster-stat">${totalMins}m total</div>
-        <div class="admin__roster-stat">${p.sessionCount} session${p.sessionCount === 1 ? "" : "s"}</div>
-        <div class="admin__roster-stat">${p.filesTouched}/${p.totalKnownFiles} files</div>
-        <div class="admin__roster-stat admin__roster-lastseen">Last seen ${lastSeen}</div>
-        <div class="admin__roster-stat admin__roster-lastaction">${lastActionText}</div>
-        <div class="admin__row-menu">
-          <button type="button" class="admin__row-menu-btn" data-action="menu-toggle" aria-label="Actions">\u22EF</button>
-          <div class="admin__row-menu-dropdown hidden">
-            <button type="button" class="admin__row-menu-item admin__row-menu-item--danger" data-action="suspend">${p.suspended ? "Unsuspend" : "Suspend"}</button>
-            <button type="button" class="admin__row-menu-item" data-action="expiry">${expiryLabel}</button>
-          </div>
-        </div>`;
-
-      row.addEventListener("click", () => openAdminDetail(p.name));
-      row.addEventListener("keydown", (e) => { if (e.key === "Enter") openAdminDetail(p.name); });
-
-      row.querySelector(".admin__roster-checkbox").addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (e.target.checked) selectedForMerge.add(p.name);
-        else selectedForMerge.delete(p.name);
-        updateMergeBtn();
-      });
-
-      const dropdown = row.querySelector(".admin__row-menu-dropdown");
-      row.querySelector('[data-action="menu-toggle"]').addEventListener("click", (e) => {
-        e.stopPropagation();
-        const wasOpen = !dropdown.classList.contains("hidden");
-        closeAllRowMenus();
-        if (!wasOpen) dropdown.classList.remove("hidden");
-      });
-      row.querySelector('[data-action="suspend"]').addEventListener("click", (e) => {
-        e.stopPropagation();
-        closeAllRowMenus();
-        onToggleSuspend(p.name, !!p.suspended);
-      });
-      row.querySelector('[data-action="expiry"]').addEventListener("click", (e) => {
-        e.stopPropagation();
-        closeAllRowMenus();
-        onSetExpiry(p.name, p.expiresAt);
-      });
-
-      adminRosterList.appendChild(row);
-    });
-  }
-
-  // Closes any open "⋯" dropdown — called before opening a new one,
-  // and on any outside click, so at most one is ever open at a time.
-  function closeAllRowMenus() {
-    $$(".admin__row-menu-dropdown").forEach((d) => d.classList.add("hidden"));
-  }
-  document.addEventListener("click", closeAllRowMenus);
-
+  // ── Person detail drawer ────────────────────────────────
   async function openAdminDetail(name) {
-    adminDetail.classList.remove("hidden");
-    adminDetailName.textContent = name;
-    adminDetailBody.innerHTML = `<p class="admin__loading">Loading…</p>`;
+    const detail = $id("adminDetail");
+    detail.classList.remove("hidden");
+    $id("adminDetailName").textContent = name;
+    const body = $id("adminDetailBody");
+    body.innerHTML = `<p class="adm-empty">Loading…</p>`;
     const data = await adminFetch("personDetail", { name });
-    if (!data) {
-      adminDetailBody.innerHTML = `<p class="admin__empty">${escapeHtml(adminErrText())}</p>`;
-      return;
-    }
-    renderAdminDetail(data.events || [], data.totals || {});
+    if (!data) { body.innerHTML = emptyMsg(adminErrText()); return; }
+    renderAdminDetail(name, data.events || [], data.totals || {});
   }
 
-  function closeAdminDetail() {
-    adminDetail.classList.add("hidden");
-  }
+  function closeAdminDetail() { $id("adminDetail").classList.add("hidden"); }
 
-  function renderAdminDetail(events, totals) {
+  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out" };
+
+  function renderAdminDetail(name, events, totals) {
     const subjectMap = getFileSubjectMap();
-    const subjectSeconds = {};
-    const fileSeconds = {};
-    const recentRows = events.slice(0, 40);
-
-    // Bars below still need to be built from view_end events (they
-    // break time down per-file/subject, which the backend doesn't
-    // pre-aggregate). The top summary numbers, though, come straight
-    // from `totals` — computed backend-side the same way the roster
-    // computes them, including an estimate for a session/view that's
-    // still in progress right now. Recomputing them here from only
-    // "_end" events (the old approach) is exactly why this panel used
-    // to show 0m/0/0 for someone currently online.
-    const totalViewSeconds = totals.totalViewSeconds || 0;
-    const totalSessionSeconds = totals.totalSessionSeconds || 0;
-    const sessionCount = totals.sessionCount || 0;
-
+    const subjectSeconds = {}, fileSeconds = {};
     events.forEach((ev) => {
       if (ev.type === "view_end" && ev.duration) {
         fileSeconds[ev.detail] = (fileSeconds[ev.detail] || 0) + ev.duration;
-        const mapped = subjectMap[ev.detail];
-        const subj = mapped ? mapped.subject : "Other";
+        const subj = subjectOfFile(ev.detail, subjectMap);
         subjectSeconds[subj] = (subjectSeconds[subj] || 0) + ev.duration;
       }
     });
+    const bars = (obj, colorFn) => {
+      const keys = Object.keys(obj).sort((a, b) => obj[b] - obj[a]).slice(0, 8);
+      if (!keys.length) return emptyMsg("No PDF time recorded yet.");
+      const max = obj[keys[0]] || 1;
+      return `<div class="adm-bars">${keys.map((k) => `
+        <div><div class="adm-bar-row__top"><span class="adm-bar-row__label">${esc(k)}</span><span class="adm-bar-row__val">${esc(fmtMins(obj[k]))}</span></div>
+        <div class="adm-bar-track"><div class="adm-bar-fill" style="width:${Math.max(4, Math.round(obj[k] / max * 100))}%;background:${colorFn(k)}"></div></div></div>`).join("")}</div>`;
+    };
 
-    const barRows = (obj, unit) =>
-      Object.keys(obj)
-        .sort((a, b) => obj[b] - obj[a])
-        .slice(0, 10)
-        .map((k) => `<div class="admin__bar-row"><span class="admin__bar-label">${k}</span><span class="admin__bar-value">${Math.round(obj[k] / 60)}${unit}</span></div>`)
-        .join("") || `<p class="admin__empty">No PDF views yet</p>`;
+    const person = S.people.find((p) => p.name === name) || {};
+    const live = onlineSessionsFor([name])[0];
+    const tags = [
+      live ? '<span class="adm-tag adm-tag--good">online now</span>' : "",
+      person.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : "",
+      person.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(person.expiresAt).toLocaleDateString())}</span>` : "",
+      ...(person.aliases || []).map((a) => `<span class="adm-tag">also ${esc(a)}</span>`)
+    ].join(" ");
 
-    const timeline = recentRows.map((ev) => {
-      const t = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : "";
-      const extra = ev.duration ? ` · ${Math.round(ev.duration)}s` : "";
-      return `<div class="admin__timeline-row">
-        <span class="admin__timeline-time">${t}</span>
-        <span class="admin__timeline-type">${ev.type}</span>
-        <span class="admin__timeline-detail">${ev.detail || ""}${extra}</span>
-      </div>`;
-    }).join("") || `<p class="admin__empty">No activity yet</p>`;
+    let timeline = "", lastDay = "";
+    events.slice(0, 60).forEach((ev) => {
+      const d = ev.timestamp ? new Date(ev.timestamp) : null;
+      const dayLabel = d ? (sameDay(d, Date.now()) ? "Today" : d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })) : "";
+      if (dayLabel !== lastDay) { timeline += `<div class="adm-day">${esc(dayLabel)}</div>`; lastDay = dayLabel; }
+      const extra = ev.duration ? ` <span class="adm-muted">(${esc(fmtMins(ev.duration))})</span>` : "";
+      timeline += `<div class="adm-tl"><span class="adm-tl__time" title="${esc(d ? d.toLocaleString() : "")}">${esc(d ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "")}</span>
+        <span class="adm-tl__what"><b>${esc(EVENT_LABELS[ev.type] || ev.type)}</b> ${esc(ev.detail || "")}${extra}</span></div>`;
+    });
 
-    adminDetailBody.innerHTML = `
-      <div class="admin__detail-summary">
-        <div class="admin__detail-stat"><span class="admin__detail-num">${Math.round(totalSessionSeconds / 60)}m</span><span class="admin__detail-label">total on site</span></div>
-        <div class="admin__detail-stat"><span class="admin__detail-num">${Math.round(totalViewSeconds / 60)}m</span><span class="admin__detail-label">inside PDFs</span></div>
-        <div class="admin__detail-stat"><span class="admin__detail-num">${sessionCount}</span><span class="admin__detail-label">sessions</span></div>
+    $id("adminDetailBody").innerHTML = `
+      <div>${tags}</div>
+      <div class="adm-bar" style="margin-top:14px">
+        <button type="button" class="adm-btn adm-btn--sm ${person.suspended ? "adm-btn--good" : "adm-btn--danger-ghost"}" data-dact="suspend">${person.suspended ? "Unsuspend" : "Suspend"}</button>
+        <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="expiry">${person.expiresAt ? "Change expiry" : "Set expiry"}</button>
+        ${live ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="message">Message</button><button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-dact="logout">Log out</button>` : ""}
       </div>
-      <p class="admin__detail-heading">Time by subject</p>
-      <div class="admin__bars">${barRows(subjectSeconds, "m")}</div>
-      <p class="admin__detail-heading">Most-viewed files</p>
-      <div class="admin__bars">${barRows(fileSeconds, "m")}</div>
-      <p class="admin__detail-heading">Recent activity</p>
-      <div class="admin__timeline">${timeline}</div>
-    `;
+      <div class="adm-facts">
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalSessionSeconds))}</div><div class="adm-fact__label">on the site</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalViewSeconds))}</div><div class="adm-fact__label">inside PDFs</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${totals.sessionCount || 0}</div><div class="adm-fact__label">visits</div></div>
+      </div>
+      <p class="adm-h">Time by subject</p>${bars(subjectSeconds, subjectColor)}
+      <p class="adm-h">Most-read files</p>${bars(fileSeconds, (k) => subjectColor(subjectOfFile(k, subjectMap)))}
+      <p class="adm-h">Recent activity</p>${timeline || emptyMsg("No activity yet.")}`;
+
+    $id("adminDetailBody").onclick = async (e) => {
+      const b = e.target.closest("[data-dact]");
+      if (!b) return;
+      const k = b.dataset.dact;
+      if (k === "suspend") { if (await onToggleSuspend(name, !!person.suspended)) closeAdminDetail(); }
+      else if (k === "expiry") { if (await onSetExpiry(name, person.expiresAt)) closeAdminDetail(); }
+      else if (k === "message" && live) sendAdminMessage(live.sessionId, name);
+      else if (k === "logout" && live) forceLogoutUser(live.sessionId, name);
+    };
+  }
+
+  // ── Security ────────────────────────────────────────────
+  function renderFlags() {
+    const box = $id("admFlagsList");
+    const { deviceCycling = [], rapidRepeat = [], bulkView = [] } = S.flags || {};
+    const kind = $id("admFlagFilter").value;
+    let items = [
+      ...deviceCycling.map((f) => ({ kind: "device", label: `One device used ${f.names.length} different names: ${f.names.join(", ")}`, when: f.when, names: f.names })),
+      ...rapidRepeat.map((f) => ({ kind: "login", label: `"${f.name}" tried to log in ${f.count} times within a minute`, when: f.when, names: [f.name] })),
+      ...bulkView.map((f) => ({ kind: "bulk", label: `${f.name} opened or downloaded ${f.count} files within 5 minutes`, when: f.when, names: [f.name] }))
+    ].sort((a, b) => new Date(b.when) - new Date(a.when));
+    if (kind !== "all") items = items.filter((i) => i.kind === kind);
+    if (!items.length) { box.innerHTML = emptyMsg("Nothing flagged."); return; }
+    box.innerHTML = items.map((f) => `
+      <div class="adm-row">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(f.label)}</div>
+          <div class="adm-row__meta"><span>${whenHtml(f.when)}</span></div>
+        </div>
+        <div class="adm-row__actions">${f.names.map((n) => `<button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-suspend="${esc(n)}">Suspend${f.names.length > 1 ? ` ${esc(n)}` : ""}</button>`).join("")}</div>
+      </div>`).join("");
+  }
+
+  function renderDevices() {
+    const box = $id("admDevicesList");
+    if (!S.devices.length) { box.innerHTML = emptyMsg("Nothing blocked."); return; }
+    box.innerHTML = S.devices.map((d) => `
+      <div class="adm-row">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(d.label || "Unknown device")}</div>
+          <div class="adm-row__meta"><span>${esc(String(d.deviceId || "").slice(0, 12))}…</span><span>blocked ${whenHtml(d.firstBlockedAt)}</span></div>
+        </div>
+        <div class="adm-row__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-unblock="${esc(d.deviceId)}">Unblock</button></div>
+      </div>`).join("");
+  }
+
+  function logRowHtml(entry) {
+    return `<div class="adm-row">
+      <div class="adm-row__main">
+        <div class="adm-row__title">${esc(actionLabel(entry.action))}</div>
+        ${entry.detail ? `<div class="adm-row__meta"><span>${esc(entry.detail)}</span></div>` : ""}
+      </div>
+      <span class="adm-muted" style="margin:0;white-space:nowrap">${whenHtml(entry.timestamp)}</span>
+    </div>`;
+  }
+
+  function renderLog() {
+    const sel = $id("admLogFilter");
+    const prev = sel.value || "all";
+    const actions = Array.from(new Set((S.log || []).map((l) => l.action)));
+    sel.innerHTML = `<option value="all">All actions</option>` + actions.map((a) => `<option value="${esc(a)}">${esc(actionLabel(a))}</option>`).join("");
+    sel.value = actions.includes(prev) ? prev : "all";
+    const q = $id("admLogSearch").value.trim().toLowerCase();
+    const items = (S.log || []).filter((l) =>
+      (sel.value === "all" || l.action === sel.value) &&
+      (!q || `${actionLabel(l.action)} ${l.detail}`.toLowerCase().includes(q)));
+    $id("admLogList").innerHTML = items.length ? items.slice(0, 100).map(logRowHtml).join("") : emptyMsg("No matching actions.");
+  }
+
+  function renderHousekeeping() {
+    const rows = (S.overview && S.overview.logRows) || 0;
+    $id("admLogSize").textContent = rows
+      ? `The activity log currently has ${rows.toLocaleString()} rows.${rows > 20000 ? " That is large — archiving will make this page load faster." : ""}`
+      : "";
+  }
+
+  async function onArchiveOldLogs() {
+    const daysStr = await showPrompt("Archive activity older than how many days? (It is moved to a separate tab in your sheet. Nothing is deleted.)", "90");
+    if (daysStr === null) return;
+    const days = Number(daysStr);
+    if (!days || days < 1) { showToast("Enter a number of days.", true); return; }
+    const pv = await adminFetch("archivePreview", { days });
+    if (!pv) { showToast(`Couldn't check what would be archived: ${adminErrText()}`, true); return; }
+    const p = pv.preview || {};
+    if (!p.wouldArchive) { showToast(`Nothing is older than ${days} days — nothing to archive.`); return; }
+    if (!(await showConfirm(`This will move ${p.wouldArchive.toLocaleString()} of ${p.total.toLocaleString()} activity rows (older than ${days} days) into a LogArchive tab, and keep ${p.wouldKeep.toLocaleString()}. People's time totals will drop by whatever was in the old rows. Nothing is deleted. Continue?`, { ok: "Archive" }))) return;
+    const res = await act("archiveOldLogs", { days }, null, "Couldn't archive");
+    if (!res) return;
+    showToast(`Archived ${res.result.archived.toLocaleString()} rows, ${res.result.kept.toLocaleString()} left in the live sheet.`);
+    refreshAdmin();
+  }
+
+  async function onTidySheet() {
+    if (!(await showConfirm("This tidies your Google Sheet: it removes unimportant log rows (moved to LogArchive, with a backup copy of the Log), tidies and colours every tab, adds a Summary and Guide tab, and hides the behind-the-scenes tabs. Nothing is deleted. Continue?", { ok: "Tidy the sheet" }))) return;
+    const btn = $id("adminTidyBtn");
+    btn.disabled = true;
+    btn.textContent = "Tidying\u2026";
+    const res = await adminFetch("tidySheet");
+    btn.disabled = false;
+    btn.textContent = "Tidy up the Google Sheet";
+    if (!res) { showToast(`Couldn't tidy the sheet: ${adminErrText()}`, true); return; }
+    showToast((res.report && res.report[0]) || "Sheet tidied.");
+    refreshAdmin();
+  }
+
+  // ── Content ─────────────────────────────────────────────
+  function renderContentStats() {
+    const box = $id("admStatsList");
+    const q = $id("admStatsSearch").value.trim().toLowerCase();
+    const stats = (S.stats || []).filter((s) => !q || String(s.file).toLowerCase().includes(q)).slice(0, 25);
+    if (!stats.length) { box.innerHTML = emptyMsg(S.stats.length ? "No files match." : "No views logged yet."); return; }
+    const map = getFileSubjectMap();
+    const max = Math.max(1, ...stats.map((s) => s.views));
+    box.innerHTML = stats.map((s) => `
+      <div class="adm-row" style="display:block">
+        <div class="adm-bar-row__top"><span class="adm-row__title">${esc(s.file)}</span><span class="adm-bar-row__val">${s.views} opened</span></div>
+        <div class="adm-bar-track"><div class="adm-bar-fill" style="width:${Math.max(3, Math.round(s.views / max * 100))}%;background:${subjectColor(subjectOfFile(s.file, map))}"></div></div>
+        <div class="adm-row__meta"><span>${s.distinctViewers} ${s.distinctViewers === 1 ? "person" : "people"}</span><span>${s.downloads} download${s.downloads === 1 ? "" : "s"}</span><span>${esc(fmtMins(s.seconds))} total</span></div>
+      </div>`).join("");
+  }
+
+  function renderFeedbackAdmin() {
+    const box = $id("admFeedbackList");
+    const fb = S.feedback || {};
+    $id("admFeedbackAvg").textContent = fb.averageRating ? `${fb.averageRating} / 5 average · ${fb.count} response${fb.count === 1 ? "" : "s"}` : "No ratings yet";
+    const f = $id("admFeedbackFilter").value;
+    const q = $id("admFeedbackSearch").value.trim().toLowerCase();
+    const items = (fb.entries || []).filter((e) => {
+      if (f === "low" && !(e.rating && e.rating <= 2)) return false;
+      if (["3", "4", "5"].includes(f) && e.rating !== Number(f)) return false;
+      if (q && ![e.name, e.email, e.improvements, e.suggestion].join(" ").toLowerCase().includes(q)) return false;
+      return true;
+    }).slice(0, 50);
+    if (!items.length) { box.innerHTML = emptyMsg((fb.entries || []).length ? "No feedback matches." : "No feedback yet."); return; }
+    box.innerHTML = items.map((e) => {
+      const stars = e.rating ? "★".repeat(e.rating) + "☆".repeat(5 - e.rating) : "";
+      return `<div class="adm-row"><div class="adm-row__main">
+        <div class="adm-row__title">${esc(e.name || "Anonymous")}<span class="adm-stars">${stars}</span></div>
+        <div class="adm-row__meta">${e.email ? `<span>${esc(e.email)}</span>` : ""}${e.improvements ? `<span>${esc(e.improvements)}</span>` : ""}<span>${whenHtml(e.timestamp)}</span></div>
+        ${e.suggestion ? `<p class="adm-row__note">${esc(e.suggestion)}</p>` : ""}
+      </div></div>`;
+    }).join("");
+  }
+
+  // ── Scan Backblaze for new files ("scan and confirm") ───
+  // Nothing is added to the live site until you review it here and
+  // confirm. A wrong guess at a file's subject would show it to
+  // students immediately, which is why nothing here is automatic.
+  let scanTimerInterval = null;
+
+  function scanBusy(label, busy) {
+    const prog = $id("adminScanProgress");
+    $id("adminScanBtn").disabled = busy;
+    $id("adminSyncBtn").disabled = busy;
+    if (scanTimerInterval) { clearInterval(scanTimerInterval); scanTimerInterval = null; }
+    if (!busy) { prog.classList.add("hidden"); return; }
+    prog.classList.remove("hidden");
+    const startedAt = Date.now();
+    const timer = $id("adminScanTimer");
+    timer.textContent = `${label} 0.0s`;
+    scanTimerInterval = setInterval(() => { timer.textContent = `${label} ${((Date.now() - startedAt) / 1000).toFixed(1)}s`; }, 100);
+  }
+
+  async function onSyncBackblaze() {
+    if (!(await showConfirm("This refreshes the whole catalog so it matches your Backblaze bucket exactly (removes duplicates, adds new files, cleans everything). Continue?", { ok: "Sync everything" }))) return;
+    const out = $id("adminScanResults");
+    out.innerHTML = "";
+    scanBusy("Syncing with Backblaze…", true);
+    const data = await adminFetch("syncCatalog");
+    scanBusy("", false);
+    if (!data) {
+      out.innerHTML = emptyMsg(`Sync failed: ${adminErrText()}`);
+      showToast(`Sync failed: ${adminErrText()}`, true);
+      return;
+    }
+    if (data.error) {
+      out.innerHTML = emptyMsg(`Sync failed: ${data.error}`);
+      showToast("Sync failed: " + data.error, true);
+      return;
+    }
+    showToast(`Synced ${data.synced || 0} files from Backblaze.`);
+    out.innerHTML = `<div class="adm-result">✓ Catalog synced. ${esc(data.synced || 0)} files are now live and duplicate-free.</div>`;
+    fetchAndApplyCatalog().then(() => render());
+  }
+
+  async function onScanBackblaze() {
+    const out = $id("adminScanResults");
+    out.innerHTML = "";
+    scanBusy("Scanning…", true);
+    const data = await adminFetch("scanBackblaze");
+    scanBusy("", false);
+    if (!data) { out.innerHTML = emptyMsg(adminErrText()); showToast(`Scan failed: ${adminErrText()}`, true); return; }
+    if (data.error) { out.innerHTML = emptyMsg(`Scan failed: ${data.error}`); return; }
+    renderScanResults(data);
+  }
+
+  function renderScanResults(data) {
+    const out = $id("adminScanResults");
+    const newFiles = data.newFiles || [];
+    const unrecognized = data.unrecognized || [];
+    out.innerHTML = "";
+    out.appendChild(el("p", "adm-muted", `Scanned ${data.totalInBucket || 0} file${data.totalInBucket === 1 ? "" : "s"} in the bucket — ${newFiles.length} new.`));
+    if (!newFiles.length && !unrecognized.length) {
+      out.appendChild(el("p", "adm-empty", "Nothing new — the catalog is already up to date."));
+      return;
+    }
+    if (newFiles.length) {
+      const list = el("div", "adm-list");
+      const subjectOptions = SITE_CONFIG.subjects.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+      newFiles.forEach((item, idx) => {
+        const row = el("div", "adm-scan");
+        row.dataset.idx = String(idx);
+        row.innerHTML = `
+          <input type="checkbox" class="adm-row__check" data-scan-check checked aria-label="Include ${esc(item.displayName)}">
+          <div class="adm-scan__fields">
+            <select class="adm-select" data-field="subjectId">${subjectOptions}</select>
+            <input type="text" class="adm-input" data-field="folderName" value="${esc(item.folderName)}" placeholder="Folder / chapter name">
+            <input type="text" class="adm-input" data-field="displayName" value="${esc(item.displayName)}" placeholder="Display name">
+          </div>
+          <span class="adm-scan__path">${esc(item.filePath)}</span>`;
+        row.querySelector('[data-field="subjectId"]').value = item.subjectId;
+        list.appendChild(row);
+      });
+      out.appendChild(list);
+      const btn = el("button", "adm-btn adm-btn--sm", "Add selected files to the site");
+      btn.type = "button";
+      btn.style.marginTop = "12px";
+      btn.addEventListener("click", () => onConfirmScanResults(list, newFiles, btn));
+      out.appendChild(btn);
+    }
+    if (unrecognized.length) {
+      out.appendChild(el("p", "adm-h", "Couldn't tell where these belong — fix the path in Backblaze and scan again"));
+      unrecognized.forEach((u) => out.appendChild(el("p", "adm-scan__path", u.path)));
+    }
+  }
+
+  async function onConfirmScanResults(list, newFiles, btn) {
+    const items = [];
+    list.querySelectorAll(".adm-scan").forEach((row) => {
+      if (!row.querySelector("[data-scan-check]").checked) return;
+      const original = newFiles[Number(row.dataset.idx)];
+      items.push({
+        subjectId: row.querySelector('[data-field="subjectId"]').value,
+        folderName: row.querySelector('[data-field="folderName"]').value.trim(),
+        fileName: original.fileName,
+        filePath: original.filePath,
+        displayName: row.querySelector('[data-field="displayName"]').value.trim() || original.displayName
+      });
+    });
+    if (!items.length) { showToast("Tick at least one file first.", true); return; }
+    btn.disabled = true;
+    const res = await adminFetch("confirmCatalogAdditions", { items });
+    btn.disabled = false;
+    if (!res) { showToast(`Couldn't add the files: ${adminErrText()}`, true); return; }
+    showToast(`Added ${res.added != null ? res.added : items.length} file${items.length === 1 ? "" : "s"} to the site.`);
+    fetchAndApplyCatalog().then(() => render());
+    onScanBackblaze();
+  }
+
+  // ── Wiring: one set of listeners for the whole admin page ─
+  function initAdminUI() {
+    adminBackBtn.addEventListener("click", exitAdmin);
+    adminRefreshBtn.addEventListener("click", refreshAdmin);
+    adminTabs.addEventListener("click", (e) => {
+      const btn = e.target.closest(".adm-tab");
+      if (btn) switchAdminTab(btn.dataset.tab);
+    });
+    adminApp.addEventListener("click", (e) => {
+      const g = e.target.closest("[data-goto]");
+      if (g && g.dataset.goto) switchAdminTab(g.dataset.goto);
+    });
+    $id("admBanner").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-banner]");
+      if (!b) return;
+      if (b.dataset.banner === "retry") refreshAdmin();
+      if (b.dataset.banner === "copykey" && adminApiKey) copyText(adminApiKey);
+    });
+
+    // Overview: quick approve/reject, online actions
+    $id("admAttention").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      const row = e.target.closest("[data-name]");
+      if (!b || !row) return;
+      decide(row.dataset.name, b.dataset.act === "approve", row);
+    });
+    $id("admOnline").addEventListener("click", (e) => {
+      const row = e.target.closest("[data-open]");
+      if (!row) return;
+      const person = S.online[Number(row.dataset.i)];
+      const b = e.target.closest("[data-act]");
+      if (b && person) {
+        if (b.dataset.act === "message") sendAdminMessage(person.sessionId, person.name);
+        else forceLogoutUser(person.sessionId, person.name);
+        return;
+      }
+      openAdminDetail(row.dataset.open);
+    });
+    $id("adminBroadcastBtn").addEventListener("click", onBroadcastMessage);
+    window.addEventListener("resize", () => { if (!adminApp.classList.contains("hidden")) renderChart(); });
+
+    // Approvals
+    $id("adminAddNameBtn").addEventListener("click", onAdminAddName);
+    $id("adminAddNameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") onAdminAddName(); });
+    $id("adminTestEmailBtn").addEventListener("click", onTestEmail);
+    $id("admQueueAll").addEventListener("change", (e) => {
+      queueSel.clear();
+      if (e.target.checked) S.queue.forEach((q) => queueSel.add(q.name));
+      renderQueue();
+    });
+    $id("admApprovalList").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      const row = e.target.closest("[data-name]");
+      if (!b || !row) return;
+      const name = row.dataset.name;
+      const q = S.queue.find((x) => x.name === name) || {};
+      switch (b.dataset.act) {
+        case "approve": decide(name, true, row); break;
+        case "reject": decide(name, false, row); break;
+        case "copyname": copyText(name); break;
+        case "copyemail": copyText(q.email || ""); break;
+        case "select":
+          if (b.checked) queueSel.add(name); else queueSel.delete(name);
+          updateQueueBulk();
+          break;
+        default: break;
+      }
+    });
+    $id("adminApproveSelectedBtn").addEventListener("click", () => { const n = Array.from(queueSel); if (n.length) bulkDecide(n, true); });
+    $id("adminRejectSelectedBtn").addEventListener("click", async () => {
+      const n = Array.from(queueSel);
+      if (!n.length) return;
+      if (!(await showConfirm(`Reject ${n.length} pending name${n.length === 1 ? "" : "s"}? They'll leave this queue. This doesn't block their device or name.`, { ok: "Reject", danger: true }))) return;
+      bulkDecide(n, false);
+    });
+    $id("admRejectedList").addEventListener("click", async (e) => {
+      const b = e.target.closest('[data-act="restore"]');
+      const row = e.target.closest("[data-name]");
+      if (!b || !row) return;
+      b.disabled = true;
+      const res = await act("unrejectName", { name: row.dataset.name }, `Restored ${row.dataset.name}.`, `Couldn't restore ${row.dataset.name}`);
+      if (res) refreshAdmin(); else b.disabled = false;
+    });
+
+    // People
+    $id("adminRosterSearch").addEventListener("input", renderPeople);
+    $id("admPeopleSort").addEventListener("change", (e) => { peopleUI.sort = e.target.value; renderPeople(); });
+    $id("admPeopleFilters").addEventListener("click", (e) => {
+      const c = e.target.closest("[data-filter]");
+      if (!c) return;
+      peopleUI.filter = c.dataset.filter;
+      $$("#admPeopleFilters .adm-chip").forEach((x) => x.classList.toggle("adm-chip--on", x === c));
+      renderPeople();
+    });
+    $id("admPeopleList").addEventListener("click", (e) => {
+      const card = e.target.closest("[data-name]");
+      if (!card) return;
+      const name = card.dataset.name;
+      if (e.target.closest('[data-act="select"]')) {
+        if (e.target.checked) peopleUI.selected.add(name); else peopleUI.selected.delete(name);
+        card.classList.toggle("adm-person--sel", e.target.checked);
+        updateBulk();
+        return;
+      }
+      openAdminDetail(name);
+    });
+    $id("admPeopleList").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const card = e.target.closest("[data-name]");
+      if (card && e.target === card) openAdminDetail(card.dataset.name);
+    });
+    $id("admBulkSuspend").addEventListener("click", bulkSuspend);
+    $id("admBulkExpiry").addEventListener("click", bulkExpiry);
+    $id("admBulkMessage").addEventListener("click", bulkMessage);
+    $id("adminMergeBtn").addEventListener("click", onMergeSelected);
+    $id("admBulkClear").addEventListener("click", () => { peopleUI.selected.clear(); renderPeople(); });
+    $id("adminExportBtn").addEventListener("click", onExportCsv);
+
+    // Security
+    $id("admFlagFilter").addEventListener("change", renderFlags);
+    $id("admFlagsList").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-suspend]");
+      if (!b) return;
+      const name = b.dataset.suspend;
+      if (!(await showConfirm(`Suspend "${name}"? This blocks every device and name they've used, and signs them out if they're online.`, { ok: "Suspend", danger: true }))) return;
+      b.disabled = true;
+      const res = await act("suspendIdentity", { name }, `Suspended "${name}".`, `Couldn't suspend ${name}`);
+      if (res) refreshAdmin(); else b.disabled = false;
+    });
+    $id("admDevicesList").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-unblock]");
+      if (!b) return;
+      if (!(await showConfirm("Unblock this device? Anyone using it can log in again (under any name that isn't suspended).", { ok: "Unblock" }))) return;
+      b.disabled = true;
+      const res = await act("unblockDevice", { deviceId: b.dataset.unblock }, "Device unblocked.", "Couldn't unblock the device");
+      if (res) refreshAdmin(); else b.disabled = false;
+    });
+    $id("admLogSearch").addEventListener("input", renderLog);
+    $id("admLogFilter").addEventListener("change", renderLog);
+    $id("adminArchiveBtn").addEventListener("click", onArchiveOldLogs);
+    $id("adminTidyBtn").addEventListener("click", onTidySheet);
+
+    // Content
+    $id("adminSyncBtn").addEventListener("click", onSyncBackblaze);
+    $id("adminScanBtn").addEventListener("click", onScanBackblaze);
+    $id("admStatsSearch").addEventListener("input", renderContentStats);
+    $id("admFeedbackSearch").addEventListener("input", renderFeedbackAdmin);
+    $id("admFeedbackFilter").addEventListener("change", renderFeedbackAdmin);
+
+    // Drawer
+    $id("adminDetailClose").addEventListener("click", closeAdminDetail);
+    $id("adminDetailOverlay").addEventListener("click", closeAdminDetail);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$id("adminDetail").classList.contains("hidden") && confirmOverlay.classList.contains("hidden")) closeAdminDetail(); });
+    // Pause nothing, but catch up as soon as the tab is visible again.
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshLive(); });
   }
 
   // ── Utility ────────────────────────────────────────────
