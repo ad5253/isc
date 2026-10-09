@@ -3642,7 +3642,7 @@
     const b = $id("admBanner");
     const parts = [];
     if (bannerState.error) {
-      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text"><strong>Couldn't load the dashboard.</strong> ${esc(bannerState.error)}</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
+      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text"><strong>Couldn't load the dashboard.</strong> ${esc(bannerState.error)}${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? " Press <em>Copy my key</em>, paste it over the old key in the Apps Script, save, then deploy a New version." : ""}</div><div class="adm-banner__actions">${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? '<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-banner="copykey">Copy my key</button>' : ""}<button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
     } else if (bannerState.partial) {
       parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text">${esc(bannerState.partial)}</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
     }
