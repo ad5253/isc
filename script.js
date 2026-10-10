@@ -1108,6 +1108,19 @@
     initAdminUI();
 
     viewerClose.addEventListener("click", closeViewer);
+    const viewerDoneBtn = document.getElementById("viewerDoneBtn");
+    const viewerShareBtn = document.getElementById("viewerShareBtn");
+    if (viewerDoneBtn) viewerDoneBtn.addEventListener("click", () => {
+      if (!currentPdfPath) return;
+      const on = !getRevisedSet().has(currentPdfPath);
+      setRevised(currentPdfPath, on);
+      syncViewerDoneBtn();
+      showToast(on ? "Marked as done \u2713" : "Unmarked");
+      buzz();
+    });
+    if (viewerShareBtn) viewerShareBtn.addEventListener("click", () => {
+      if (currentPdfPath) shareFile(currentPdfPath, viewerName.textContent || "Document");
+    });
     viewerThumbToggle.addEventListener("click", () => {
       viewerThumbStrip.classList.toggle("viewer__thumb-strip--open");
     });
@@ -1449,6 +1462,8 @@
       const res = await fetch(`${endpoint}?action=catalog`, { signal: controller.signal });
       clearTimeout(timeout);
       const data = await res.json();
+      if (data && data.ok) liveAnnouncement = data.announcement || null;
+      fileSubjectMap = null;
       if (!data || !data.ok || !data.catalog) return;
       SITE_CONFIG.subjects.forEach((s) => {
         const liveSubfolders = data.catalog[s.id];
@@ -1496,14 +1511,26 @@
     // here from search actually goes somewhere relevant. Only consumed
     // once: replaceState strips it from the URL immediately after, so
     // a later reload or manual "Home" tap behaves completely normally.
-    const requestedSubject = new URLSearchParams(location.search).get("subject");
+    const qs = new URLSearchParams(location.search);
+    const requestedSubject = qs.get("subject");
+    const requestedFile = qs.get("file"); // a shared link to one PDF
     const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
-    if (subjectMatch) {
-      nav("subject", subjectMatch.id, null, "replace"); // also rewrites ?subject=x into /x/
-    } else {
-      nav("home", null, null, "replace");
+    let openedShared = false;
+    if (requestedFile) openedShared = openRequestedFile(requestedFile);
+    if (!openedShared) {
+      if (subjectMatch) {
+        nav("subject", subjectMatch.id, null, "replace"); // also rewrites ?subject=x into /x/
+      } else {
+        nav("home", null, null, "replace");
+      }
     }
-    fetchAndApplyCatalog().then(() => render());
+    fetchAndApplyCatalog().then(() => {
+      if (requestedFile && !openedShared) {
+        if (!openRequestedFile(requestedFile)) render();
+      } else {
+        render();
+      }
+    });
   }
 
   // ── Heartbeat ("who's on the site right now") ───────────
@@ -1736,6 +1763,7 @@
     curSubject = subjectId ? SITE_CONFIG.subjects.find((s) => s.id === subjectId) : null;
     curFolder = folderId && curSubject ? curSubject.subfolders.find((f) => (f.id && f.id === folderId) || f.name === folderId) : null;
     updateCrumbs();
+    applyAccent();
     render();
 
     if (historyMode !== "none") {
@@ -1966,6 +1994,8 @@
     content.appendChild(label);
 
     if (!sessionId) return;
+    const skeletons = [0, 1, 2].map(() => el("div", "sk sk-card"));
+    skeletons.forEach((n) => content.appendChild(n));
 
     let viewedNames = new Set();
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
@@ -1982,6 +2012,8 @@
       }
     }
 
+    skeletons.forEach((n) => n.remove());
+    if (curView !== "progress") return; // they went somewhere else while this was loading
     SITE_CONFIG.subjects.forEach((s) => {
       const allFiles = s.subfolders.flatMap((f) => f.files.map((file) => ({ ...file, folderName: f.name })));
       const total = allFiles.length;
@@ -1996,7 +2028,7 @@
         const pct = Math.round((revisedCount / total) * 100);
         card.querySelector(".progress-subject__pct").textContent = `${pct}%`;
         card.querySelector(".progress-bar__fill").style.width = `${pct}%`;
-        card.querySelector(".progress-subject__stat").textContent = `${revisedCount}/${total} revised \u00B7 ${openedCount}/${total} opened`;
+        card.querySelector(".progress-subject__stat").textContent = `${revisedCount}/${total} done \u00B7 ${openedCount}/${total} opened`;
       };
 
       card.innerHTML = `
@@ -2025,7 +2057,7 @@
           <span class="progress-file-row__folder">${f.folderName}</span>
           <label class="progress-file-row__check">
             <input type="checkbox" ${getRevisedSet().has(f.path) ? "checked" : ""}>
-            Revised
+            Done
           </label>`;
         row.querySelector('input[type="checkbox"]').addEventListener("change", (e) => {
           setRevised(f.path, e.target.checked);
@@ -2064,83 +2096,325 @@
       const empty = el("div", "empty fade-up");
       empty.innerHTML = `
         <div class="empty__icon">${ICONS.tray}</div>
-        <p class="empty__title">Nothing matches "${query}"</p>
-        <p class="empty__sub">Try a shorter word, or check the spelling</p>`;
+        <p class="empty__title"></p>
+        <p class="empty__sub">Try a shorter word or check the spelling — or ask for it and I'll look into adding it.</p>
+        <div class="empty__actions">
+          <button type="button" class="empty__btn empty__btn--go" data-act="req">Request this file</button>
+          <button type="button" class="empty__btn" data-act="clear">Clear search</button>
+        </div>`;
+      empty.querySelector(".empty__title").textContent = `Nothing matches "${query}"`;
+      empty.querySelector('[data-act="req"]').addEventListener("click", () => openRequestBox(query));
+      empty.querySelector('[data-act="clear"]').addEventListener("click", () => { searchInput.value = ""; render(); });
       content.append(label, empty);
       return;
     }
 
     const grid = el("div", "files stagger");
-    matches.forEach(({ file, subject, folder }) => {
-      const card = el("div", "file-card fade-up");
-      card.tabIndex = 0;
-
-      const preview = el("div", "file-card__preview");
-      const skeleton = el("div", "file-card__skeleton");
-      skeleton.innerHTML = `${ICONS.doc}<span class="file-card__skeleton-text">Loading preview…</span>`;
-      preview.appendChild(skeleton);
-      const canvas = document.createElement("canvas");
-      canvas.style.display = "none";
-      preview.appendChild(canvas);
-      observeThumbnail(preview, file.path, canvas, skeleton);
-
-      card.addEventListener("click", () => openViewer(file.path, file.name));
-      card.addEventListener("keydown", (e) => { if (e.key === "Enter") openViewer(file.path, file.name); });
-
-      const info = el("div", "file-card__info");
-      const nameP = el("p", "file-card__name");
-      nameP.textContent = file.name;
-      const typeP = el("p", "file-card__type", `${subject.name} · ${folder.name}`);
-      info.append(nameP, typeP);
-
-      card.append(preview, info);
-      grid.appendChild(card);
-    });
-
+    matches.forEach(({ file, subject, folder }) => grid.appendChild(buildFileCard(file, subject, folder, false)));
     content.append(label, grid);
+  }
+
+  // ── Round 2 helpers ────────────────────────────────────
+  const ICON_CHECK = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  const ICON_FLAME = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2c.4 3.1-1.3 4.8-2.9 6.6C7.6 10.3 6 12.1 6 14.8 6 18.2 8.7 21 12 21s6-2.8 6-6.2c0-2.2-1-3.8-2.2-5.1-.2 1.2-.8 2-1.6 2.4.5-3.4-.3-6.9-2.2-10.1z"/></svg>`;
+  const ICON_MEGAPHONE = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
+  const ICON_PLUS = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>`;
+  const ICON_X = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+  let liveAnnouncement = null;
+
+  // Chapter number, type tag (Notes / Formulas / …) and a tidy title,
+  // worked out from the file and folder names — nothing to configure.
+  const TYPE_RULES = [
+    [/formula/i, "Formulas"], [/solution/i, "Solutions"], [/numerical/i, "Numericals"],
+    [/revision/i, "Revision"], [/question|pyq|paper|sample/i, "Questions"], [/notes?\b/i, "Notes"]
+  ];
+  function detectType(name, folderName) {
+    for (const [re, label] of TYPE_RULES) if (re.test(name)) return label;
+    for (const [re, label] of TYPE_RULES) if (re.test(folderName || "")) return label;
+    return "PDF";
+  }
+  function fileMeta(file, folder) {
+    const name = file.name || "";
+    const m = name.match(/^\s*(?:ch(?:apter)?\.?\s*)?0*(\d{1,2})\s*[.\-—–:)]\s*/i);
+    const type = detectType(name, folder && folder.name);
+    let title = m ? name.slice(m[0].length) : name;
+    if (type === "Notes" || type === "Formulas") title = title.replace(/\s+(Notes?|Formulas?)$/i, "");
+    title = title.trim() || name;
+    return { chapter: m ? Number(m[1]) : null, type, title };
+  }
+
+  // Page counts are only known once a PDF has loaded; remember them so
+  // later visits show "24 pages" instantly. (Same for everyone — it's a fact about the file.)
+  function pageCounts() { try { return JSON.parse(localStorage.getItem("c12_pagecounts") || "{}"); } catch { return {}; } }
+  function pageLabel(n) { return n ? `${n} page${n === 1 ? "" : "s"}` : ""; }
+  function notePageCount(path, n) {
+    if (!n) return;
+    try {
+      const all = pageCounts();
+      if (all[path] !== n) { all[path] = n; localStorage.setItem("c12_pagecounts", JSON.stringify(all)); }
+    } catch { /* storage unavailable */ }
+    document.querySelectorAll("[data-pages-for]").forEach((node) => {
+      if (node.dataset.pagesFor === path) node.textContent = pageLabel(n);
+    });
+  }
+
+  function allFilesFlat() {
+    const out = [];
+    SITE_CONFIG.subjects.forEach((s) => s.subfolders.forEach((f) => f.files.forEach((file) => out.push({ file, subject: s, folder: f }))));
+    return out;
+  }
+  function findFileByPath(path) {
+    return allFilesFlat().find((x) => x.file.path === path) || null;
+  }
+  function subjectForPath(path) {
+    const first = String(path || "").split("/")[0].toLowerCase();
+    return SITE_CONFIG.subjects.find((s) => s.id === first) || null;
+  }
+
+  // The colour of whatever subject you're inside — used for small accents.
+  function applyAccent() {
+    const root = document.documentElement;
+    if (curSubject && curSubject.color) root.style.setProperty("--accent", curSubject.color);
+    else root.style.removeProperty("--accent");
+  }
+
+  // ── Light / dark mode ──
+  function currentTheme() { return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark"; }
+  function setTheme(t) {
+    const root = document.documentElement;
+    root.classList.add("theme-fade");
+    if (t === "light") root.setAttribute("data-theme", "light"); else root.removeAttribute("data-theme");
+    try { localStorage.setItem("c12_theme", t); } catch { /* fine */ }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", t === "light" ? "#f6f2e9" : "#121218");
+    setTimeout(() => root.classList.remove("theme-fade"), 450);
+  }
+  (function initTheme() {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && currentTheme() === "light") meta.setAttribute("content", "#f6f2e9");
+    const btn = document.getElementById("themeBtn");
+    if (btn) btn.addEventListener("click", () => setTheme(currentTheme() === "light" ? "dark" : "light"));
+  })();
+
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate(8); } catch { /* not supported */ } }
+
+  // ── Study streak (days in a row you opened a file; this device) ──
+  function daysKey() { return `c12_days_${normalizeName(currentName || "")}`; }
+  function dayStr(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+  function noteStudyDay() {
+    if (!currentName) return;
+    try {
+      const days = JSON.parse(localStorage.getItem(daysKey()) || "[]");
+      const today = dayStr(new Date());
+      if (days[days.length - 1] === today) return;
+      days.push(today);
+      localStorage.setItem(daysKey(), JSON.stringify(days.slice(-400)));
+    } catch { /* storage unavailable */ }
+  }
+  function getStreak() {
+    let days;
+    try { days = new Set(JSON.parse(localStorage.getItem(daysKey()) || "[]")); } catch { return { count: 0, alive: false }; }
+    const d = new Date();
+    const doneToday = days.has(dayStr(d));
+    if (!doneToday) d.setDate(d.getDate() - 1); // yesterday still keeps the streak going
+    let count = 0;
+    while (days.has(dayStr(d))) { count++; d.setDate(d.getDate() - 1); }
+    return { count, alive: count > 0, doneToday };
+  }
+
+  // ── Share a file link ──
+  async function shareFile(path, name) {
+    const url = `${location.origin}${APP_BASE}?file=${encodeURIComponent(path)}`;
+    try {
+      if (navigator.share && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        await navigator.share({ title: name, text: `${name} — Class 12 Study Portal`, url });
+        return;
+      }
+    } catch (e) { if (e && e.name === "AbortError") return; }
+    let ok = false;
+    try { await navigator.clipboard.writeText(url); ok = true; } catch {
+      const ta = document.createElement("textarea");
+      ta.value = url; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+    }
+    showToast(ok ? "Link copied — they'll need an approved name to open it." : "Couldn't copy the link.", !ok);
+  }
+
+  // Opens a file named in ?file=… (a shared link). Returns true if it was found.
+  function openRequestedFile(path) {
+    const hit = findFileByPath(path);
+    if (!hit) return false;
+    nav("subfolder", hit.subject.id, hit.folder.id || hit.folder.name, "replace");
+    openViewer(hit.file.path, hit.file.name);
+    return true;
+  }
+
+  // ── Request a file ──
+  function openRequestBox(prefill) {
+    if (!currentName || document.querySelector(".req-overlay")) return;
+    const ov = el("div", "req-overlay");
+    ov.innerHTML = `
+      <div class="req-box" role="dialog" aria-modal="true" aria-label="Request a file">
+        <h3>Request a file</h3>
+        <p>Tell me what's missing — a chapter, topic or type of material. I'll see it straight away.</p>
+        <textarea id="reqText" maxlength="300" placeholder="e.g. Physics Ch 10 Wave Optics solutions"></textarea>
+        <div class="req-box__foot">
+          <span class="req-box__count" id="reqCount">0 / 300</span>
+          <div class="req-box__btns">
+            <button type="button" class="req-btn" id="reqCancel">Cancel</button>
+            <button type="button" class="req-btn req-btn--go" id="reqSend" disabled>Send request</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const ta = ov.querySelector("#reqText"), send = ov.querySelector("#reqSend"), cnt = ov.querySelector("#reqCount");
+    const close = () => { ov.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    const sync = () => { cnt.textContent = `${ta.value.length} / 300`; send.disabled = ta.value.trim().length < 4; };
+    ta.addEventListener("input", sync);
+    if (prefill) ta.value = prefill;
+    sync();
+    ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+    ov.querySelector("#reqCancel").addEventListener("click", close);
+    send.addEventListener("click", async () => {
+      const last = Number(localStorage.getItem("c12_lastreq") || 0);
+      if (Date.now() - last < 30000) { showToast("Please wait a few seconds before sending another.", true); return; }
+      const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) { showToast("Requests aren't set up yet.", true); return; }
+      send.disabled = true;
+      try {
+        await fetch(endpoint, {
+          method: "POST", mode: "no-cors",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ type: "fileRequest", name: currentName, text: ta.value.trim() })
+        });
+        try { localStorage.setItem("c12_lastreq", String(Date.now())); } catch { /* fine */ }
+        showToast("Request sent — thanks!");
+        close();
+      } catch {
+        showToast("Couldn't send — check your connection and try again.", true);
+        send.disabled = false;
+      }
+    });
+    setTimeout(() => ta.focus(), 50);
+  }
+
+  function whenLabel(ts) {
+    const d = new Date(Number(ts)); if (isNaN(d)) return "";
+    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+    return days <= 0 ? "Posted today" : days === 1 ? "Posted yesterday" : `Posted ${days} days ago`;
+  }
+
+  function folderProgress(folder, doneSet) {
+    const total = folder.files.length;
+    const done = folder.files.filter((f) => doneSet.has(f.path)).length;
+    return { total, done, fresh: folder.files.filter((f) => f.n).length };
+  }
+
+  function makeThumbSkeleton() {
+    const sk = el("div", "file-card__skeleton");
+    sk.innerHTML = `<div class="sk-page"><span class="sk-line sk-line--title"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-block"></span><span class="sk-line"></span><span class="sk-line"></span></div><span class="sk-ico">${ICONS.doc}</span><span class="file-card__skeleton-text"></span>`;
+    return sk;
   }
 
   // ── Subjects ───────────────────────────────────────────
   function renderSubjects() {
-    // Big, prominent summary — the small nav icon was easy to miss;
-    // this sits right up top so progress is the first thing seen on
-    // the home screen. Percentage is revised-based, same metric as
-    // the full My Progress page, so the two numbers always agree.
+    const doneSet = getRevisedSet();
     const allFiles = SITE_CONFIG.subjects.flatMap((s) => s.subfolders.flatMap((f) => f.files));
     const totalFiles = allFiles.length;
-    if (totalFiles && currentName) {
-      const revisedSet = getRevisedSet();
-      const revisedCount = allFiles.filter((f) => revisedSet.has(f.path)).length;
-      const pct = Math.round((revisedCount / totalFiles) * 100);
 
+    // Announcement from the admin
+    if (liveAnnouncement && liveAnnouncement.text) {
+      let dismissed = "";
+      try { dismissed = localStorage.getItem("c12_ann_dismissed") || ""; } catch { /* fine */ }
+      if (dismissed !== String(liveAnnouncement.id)) {
+        const ann = el("div", "ann-banner fade-up" + (liveAnnouncement.kind === "important" ? " ann-banner--important" : ""));
+        ann.innerHTML = `<span class="ann-banner__ico">${ICON_MEGAPHONE}</span>
+          <div class="ann-banner__body"><div class="ann-banner__text"></div><div class="ann-banner__when"></div></div>
+          <button type="button" class="ann-banner__x" aria-label="Dismiss">${ICON_X}</button>`;
+        ann.querySelector(".ann-banner__text").textContent = liveAnnouncement.text;
+        ann.querySelector(".ann-banner__when").textContent = whenLabel(liveAnnouncement.at);
+        ann.querySelector(".ann-banner__x").addEventListener("click", () => {
+          try { localStorage.setItem("c12_ann_dismissed", String(liveAnnouncement.id)); } catch { /* fine */ }
+          ann.remove();
+        });
+        content.appendChild(ann);
+      }
+    }
+
+    // Continue studying: the last file, back at the page you stopped on
+    const recent = getRecentFiles();
+    if (recent.length && currentName) {
+      const r = recent[0];
+      const hit = findFileByPath(r.path);
+      const subj = (hit && hit.subject) || subjectForPath(r.path);
+      const pos = loadPositions()[r.path];
+      const pages = pageCounts()[r.path];
+      const bits = [];
+      if (subj) bits.push(subj.name);
+      if (hit) bits.push(hit.folder.name);
+      if (pos && pos.p > 1) bits.push(`page ${pos.p}${pages ? " of " + pages : ""}`);
+      const card = el("button", "resume-card fade-up");
+      card.type = "button";
+      if (subj && subj.color) card.style.setProperty("--accent", subj.color);
+      card.innerHTML = `
+        <span class="resume-card__icon">${(subj && ICONS[subj.id]) || ICONS.doc}</span>
+        <span class="resume-card__text">
+          <span class="resume-card__kicker">Continue studying</span>
+          <span class="resume-card__title"></span>
+          <span class="resume-card__meta"></span>
+        </span>
+        <span class="resume-card__go">Resume <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>`;
+      card.querySelector(".resume-card__title").textContent = hit ? fileMeta(hit.file, hit.folder).title : r.name;
+      card.querySelector(".resume-card__meta").textContent = bits.join(" · ");
+      card.addEventListener("click", () => openViewer(r.path, r.name));
+      content.appendChild(card);
+    }
+
+    // Progress + streak
+    if (totalFiles && currentName) {
+      const doneCount = allFiles.filter((f) => doneSet.has(f.path)).length;
+      const pct = Math.round((doneCount / totalFiles) * 100);
+      const st = getStreak();
       const banner = el("button", "progress-banner fade-up");
       banner.innerHTML = `
         <div class="progress-banner__text">
           <span class="progress-banner__label">My Progress</span>
-          <span class="progress-banner__stat">${revisedCount}/${totalFiles} chapters revised</span>
+          <span class="progress-banner__stat">${doneCount}/${totalFiles} chapters done</span>
         </div>
-        <div class="progress-banner__pct">${pct}%</div>`;
+        <div class="progress-banner__right">
+          ${st.alive ? `<span class="streak${st.doneToday ? "" : " streak--cold"}" title="${st.doneToday ? "Keep it going tomorrow!" : "Open a file today to keep your streak"}">${ICON_FLAME}${st.count}-day streak</span>` : ""}
+          <div class="progress-banner__pct">${pct}%</div>
+        </div>`;
       banner.addEventListener("click", () => nav("progress"));
       content.appendChild(banner);
     }
 
-    // Always visible — explicitly kept, not hidden after someone
-    // submits once. A one-time review shouldn't mean the option to
-    // leave another disappears for good.
     if (currentName) {
       const feedbackBanner = el("button", "feedback-banner fade-up");
       feedbackBanner.innerHTML = `${ICONS.star}<span>Help us improve — leave a quick review</span>`;
       feedbackBanner.addEventListener("click", () => nav("feedback"));
       content.appendChild(feedbackBanner);
+
+      const reqBanner = el("button", "req-banner fade-up");
+      reqBanner.type = "button";
+      reqBanner.innerHTML = `${ICON_PLUS}<span>Missing a chapter or topic? Request a file</span>`;
+      reqBanner.addEventListener("click", () => openRequestBox());
+      content.appendChild(reqBanner);
     }
 
-    const recent = getRecentFiles();
-    if (recent.length) {
-      const rLabel = el("p", "section-label", "Continue where you left off");
+    const others = recent.slice(1);
+    if (others.length) {
+      const rLabel = el("p", "section-label", "Recently opened");
       const rRow = el("div", "recent-row stagger");
-      recent.forEach((r) => {
+      others.forEach((r) => {
         const chip = el("button", "recent-chip fade-up");
-        chip.innerHTML = `${ICONS.doc}<span class="recent-chip__name">${r.name}</span>`;
+        chip.innerHTML = `${ICONS.doc}<span class="recent-chip__name"></span>`;
+        chip.querySelector(".recent-chip__name").textContent = r.name;
         chip.addEventListener("click", () => openViewer(r.path, r.name));
         rRow.appendChild(chip);
       });
@@ -2153,7 +2427,8 @@
       const bRow = el("div", "recent-row stagger");
       bookmarks.forEach((b) => {
         const chip = el("button", "recent-chip recent-chip--bookmark fade-up");
-        chip.innerHTML = `${ICONS.star}<span class="recent-chip__name">${b.name}</span>`;
+        chip.innerHTML = `${ICONS.star}<span class="recent-chip__name"></span>`;
+        chip.querySelector(".recent-chip__name").textContent = b.name;
         chip.addEventListener("click", () => openViewer(b.path, b.name));
         bRow.appendChild(chip);
       });
@@ -2165,6 +2440,10 @@
 
     SITE_CONFIG.subjects.forEach((s) => {
       const folderPreview = s.subfolders.map((f) => f.name).join(" · ");
+      const files = s.subfolders.flatMap((f) => f.files);
+      const done = files.filter((f) => doneSet.has(f.path)).length;
+      const fresh = files.filter((f) => f.n).length;
+      const pctS = files.length ? Math.round((done / files.length) * 100) : 0;
       const card = el("div", "subject fade-up");
       card.style.setProperty("--subject-color", s.color);
       card.onclick = () => nav("subject", s.id);
@@ -2172,6 +2451,8 @@
         <span class="subject__icon">${ICONS[s.id] || ICONS.maths}</span>
         <h2 class="subject__name">${s.name}</h2>
         <p class="subject__meta">${folderPreview}</p>
+        ${files.length && currentName ? `<div class="mini-progress"><span style="width:${pctS}%"></span></div>
+        <div class="subject__stat"><span><b>${done}</b> of ${files.length} done</span>${fresh ? `<span class="pill-new">${fresh} new</span>` : ""}</div>` : ""}
         <span class="subject__arrow">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
         </span>`;
@@ -2206,15 +2487,20 @@
     if (!curSubject) return;
     const label = el("p", "section-label", curSubject.name);
     const list = el("div", "subfolders stagger");
+    const doneSet = getRevisedSet();
 
     curSubject.subfolders.forEach((f) => {
+      const pg = folderProgress(f, doneSet);
       const row = el("div", "subfolder fade-up");
       row.onclick = () => nav("subfolder", curSubject.id, f.id || f.name);
+      const doneTxt = currentName && pg.total
+        ? `<span class="subfolder__done${pg.done === pg.total ? " subfolder__done--all" : ""}">${pg.done === pg.total ? "✓ All done" : `${pg.done}/${pg.total} done`}</span>` : "";
       row.innerHTML = `
         <div class="subfolder__icon">${ICONS.folder}</div>
         <div class="subfolder__info">
           <div class="subfolder__name">${f.name}</div>
-          <div class="subfolder__count">${f.files.length} file${f.files.length !== 1 ? 's' : ''}</div>
+          <div class="subfolder__count"><span>${f.files.length} file${f.files.length !== 1 ? 's' : ''}</span>${doneTxt}${pg.fresh ? `<span class="pill-new">${pg.fresh} new</span>` : ""}</div>
+          ${currentName && pg.total ? `<div class="mini-progress mini-progress--row"><span style="width:${Math.round(pg.done / pg.total * 100)}%"></span></div>` : ""}
         </div>
         <span class="subfolder__chevron">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -2223,6 +2509,86 @@
     });
 
     content.append(label, list);
+  }
+
+  // One file card — used by folders and by search results.
+  function buildFileCard(file, subject, folder, withOverlay) {
+    const meta = fileMeta(file, folder);
+    const doneSet = getRevisedSet();
+    const isDone = doneSet.has(file.path);
+    const card = el("div", "file-card fade-up" + (isDone ? " file-card--done" : ""));
+    card.tabIndex = 0;
+    if (subject && subject.color) card.style.setProperty("--accent", subject.color);
+
+    const preview = el("div", "file-card__preview");
+    const skeleton = makeThumbSkeleton();
+    preview.appendChild(skeleton);
+    const canvas = document.createElement("canvas");
+    canvas.style.display = "none";
+    preview.appendChild(canvas);
+    observeThumbnail(preview, file.path, canvas, skeleton);
+
+    if (withOverlay) {
+      const overlay = el("div", "file-card__overlay");
+      const viewBtn = document.createElement("button");
+      viewBtn.className = "file-card__overlay-btn file-card__overlay-btn--view";
+      viewBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> View`;
+      viewBtn.addEventListener("click", (e) => { e.stopPropagation(); openViewer(file.path, file.name); });
+      overlay.append(viewBtn);
+      preview.appendChild(overlay);
+    }
+
+    // Tick = "I'm done with this one" (feeds the progress bars)
+    const doneBtn = document.createElement("button");
+    doneBtn.type = "button";
+    doneBtn.className = "file-card__done" + (isDone ? " file-card__done--on" : "");
+    doneBtn.setAttribute("aria-label", "Mark as done");
+    doneBtn.setAttribute("aria-pressed", isDone ? "true" : "false");
+    doneBtn.title = "Mark as done";
+    doneBtn.innerHTML = ICON_CHECK;
+    doneBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const on = !getRevisedSet().has(file.path);
+      setRevised(file.path, on);
+      doneBtn.classList.toggle("file-card__done--on", on);
+      doneBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      card.classList.toggle("file-card--done", on);
+      if (on) buzz();
+    });
+    preview.appendChild(doneBtn);
+
+    const bookmarkBtn = document.createElement("button");
+    bookmarkBtn.className = "file-card__bookmark" + (isBookmarked(file.path) ? " file-card__bookmark--active" : "");
+    bookmarkBtn.setAttribute("aria-label", "Bookmark this file");
+    bookmarkBtn.innerHTML = ICONS.star;
+    bookmarkBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleBookmark(file.path, file.name);
+      bookmarkBtn.classList.toggle("file-card__bookmark--active");
+      buzz();
+    });
+    preview.appendChild(bookmarkBtn);
+
+    if (file.n) preview.appendChild(el("span", "pill-new file-card__new", "New"));
+
+    card.addEventListener("click", () => openViewer(file.path, file.name));
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter") openViewer(file.path, file.name); });
+
+    const info = el("div", "file-card__info");
+    const metaRow = el("div", "file-card__meta");
+    if (meta.chapter != null) metaRow.appendChild(el("span", "file-card__chip", `Ch ${meta.chapter}`));
+    metaRow.appendChild(el("span", "file-card__tag", meta.type));
+    const pagesEl = el("span", "file-card__pages", pageLabel(pageCounts()[file.path]));
+    pagesEl.dataset.pagesFor = file.path;
+    metaRow.appendChild(pagesEl);
+    const nameP = el("p", "file-card__name");
+    nameP.textContent = meta.title;
+    nameP.title = file.name;
+    info.append(metaRow, nameP);
+    if (subject && folder && withOverlay === false) info.appendChild(el("p", "file-card__type", `${subject.name} · ${folder.name}`));
+
+    card.append(preview, info);
+    return card;
   }
 
   // ── Files (Grid with PDF Thumbnails) ───────────────────
@@ -2236,66 +2602,19 @@
       empty.innerHTML = `
         <div class="empty__icon">${ICONS.tray}</div>
         <p class="empty__title">Nothing filed here yet</p>
-        <p class="empty__sub">Materials will appear once added to this folder</p>`;
+        <p class="empty__sub">Materials will appear once they're added to this folder. Want something specific?</p>
+        <div class="empty__actions">
+          <button type="button" class="empty__btn empty__btn--go" data-act="req">Request a file</button>
+          <button type="button" class="empty__btn" data-act="back">Go back</button>
+        </div>`;
+      empty.querySelector('[data-act="req"]').addEventListener("click", () => openRequestBox(`${curSubject ? curSubject.name + " — " : ""}${curFolder.name}: `));
+      empty.querySelector('[data-act="back"]').addEventListener("click", () => nav("subject", curSubject && curSubject.id));
       content.append(label, empty);
       return;
     }
 
     const grid = el("div", "files stagger");
-
-    curFolder.files.forEach((file) => {
-      const card = el("div", "file-card fade-up");
-      card.tabIndex = 0;
-
-      const preview = el("div", "file-card__preview");
-
-      const skeleton = el("div", "file-card__skeleton");
-      skeleton.innerHTML = `${ICONS.doc}<span class="file-card__skeleton-text">Loading preview…</span>`;
-      preview.appendChild(skeleton);
-
-      const canvas = document.createElement("canvas");
-      canvas.style.display = "none";
-      preview.appendChild(canvas);
-      observeThumbnail(preview, file.path, canvas, skeleton);
-
-      const overlay = el("div", "file-card__overlay");
-
-      const viewBtn = document.createElement("button");
-      viewBtn.className = "file-card__overlay-btn file-card__overlay-btn--view";
-      viewBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> View`;
-      viewBtn.addEventListener("click", (e) => { e.stopPropagation(); openViewer(file.path, file.name); });
-
-      overlay.append(viewBtn);
-      preview.appendChild(overlay);
-
-      // Always-visible (not hover-only, unlike the overlay above) so
-      // it's actually reachable on mobile, where there's no hover.
-      const bookmarkBtn = document.createElement("button");
-      bookmarkBtn.className = "file-card__bookmark" + (isBookmarked(file.path) ? " file-card__bookmark--active" : "");
-      bookmarkBtn.setAttribute("aria-label", "Bookmark this file");
-      bookmarkBtn.innerHTML = ICONS.star;
-      bookmarkBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleBookmark(file.path, file.name);
-        bookmarkBtn.classList.toggle("file-card__bookmark--active");
-      });
-      preview.appendChild(bookmarkBtn);
-
-      card.addEventListener("click", () => openViewer(file.path, file.name));
-      card.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") openViewer(file.path, file.name);
-      });
-
-      const info = el("div", "file-card__info");
-      const nameP = el("p", "file-card__name");
-      nameP.textContent = file.name;
-      const typeP = el("p", "file-card__type", "PDF");
-      info.append(nameP, typeP);
-
-      card.append(preview, info);
-      grid.appendChild(card);
-    });
-
+    curFolder.files.forEach((file) => grid.appendChild(buildFileCard(file, curSubject, curFolder, true)));
     content.append(label, grid);
   }
 
@@ -2308,6 +2627,7 @@
     const textEl = skeleton.querySelector(".file-card__skeleton-text");
     if (!window.pdfjsLib) {
       textEl.textContent = "PDF";
+      skeleton.classList.add("file-card__skeleton--failed");
       return Promise.resolve();
     }
 
@@ -2323,6 +2643,7 @@
     };
 
     return loading.promise.then((pdf) => {
+      notePageCount(path, pdf.numPages);
       return withTimeout(
         pdf.getPage(1).then((page) => {
           const desiredWidth = 400;
@@ -2352,7 +2673,7 @@
       );
     }).catch(() => {
       textEl.textContent = "PDF";
-      skeleton.style.animation = "none";
+      skeleton.classList.add("file-card__skeleton--failed");
     });
   }
 
@@ -2553,6 +2874,10 @@
     currentViewResumedAt = document.hidden ? null : Date.now();
     currentViewLogged = false; // the "view" is only logged once the PDF has really loaded
     addRecentFile(path, name);
+    noteStudyDay();
+    const vSubj = subjectForPath(path);
+    viewer.style.setProperty("--accent", (vSubj && vSubj.color) || "");
+    syncViewerDoneBtn();
 
     viewerPages.innerHTML = "";
     currentPdf = null;
@@ -2581,11 +2906,14 @@
     const track = el("div", "viewer__progress-track viewer__progress-track--indeterminate");
     const fill = el("div", "viewer__progress-fill");
     track.appendChild(fill);
-    status.append(statusText, track);
+    const skPages = el("div", "sk-viewer");
+    skPages.innerHTML = '<span class="sk-block"></span><span class="sk-block"></span>';
+    status.append(statusText, track, skPages);
     viewerPages.appendChild(status);
 
     if (!window.pdfjsLib) {
       statusText.textContent = "Couldn't load the PDF viewer. Please refresh and try again.";
+      skPages.remove();
       track.remove();
       return;
     }
@@ -2660,6 +2988,7 @@
         statusText.textContent = "Couldn't load this PDF.";
       }
       track.remove();
+      skPages.remove();
       // A dead-looking status line with no way forward is exactly what
       // read as "just stays blank" — this makes the next step obvious
       // and actually clickable, instead of requiring someone to work
@@ -3036,6 +3365,14 @@
       const nextWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum + 1}"]`);
       if (nextWrap) queuePageRender(() => renderPageInto(nextWrap, pageNum + 1), pageNum + 1, { priority: true });
     }
+  }
+
+  function syncViewerDoneBtn() {
+    const b = document.getElementById("viewerDoneBtn");
+    if (!b) return;
+    const on = !!currentPdfPath && getRevisedSet().has(currentPdfPath);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = on ? "Marked as done (tap to undo)" : "Mark as done";
   }
 
   // ── Remember reading position per file (this device, per person) ──
@@ -3430,6 +3767,7 @@
   const S = {
     people: [], queue: [], rejected: [], flags: {}, stats: [], log: [], online: [],
     devices: [], feedback: { entries: [], averageRating: null, count: 0 },
+    announcement: null, requests: [],
     overview: { activity: [], filesToday: 0, logRows: 0 },
     bandwidth: null, keyMode: "", loadedAt: 0
   };
@@ -3570,6 +3908,7 @@
     adminApp.classList.remove("hidden");
     adminOrigTitle = document.title;
     switchAdminTab("overview");
+    if (!S.loadedAt) showAdminSkeletons();
     refreshAdmin();
     stopAdminPolling();
     // Pending requests and who's online refresh by themselves; the heavy
@@ -3696,6 +4035,8 @@
     const fc = (f.deviceCycling || []).length + (f.rapidRepeat || []).length + (f.bulkView || []).length;
     const fb = $id("admFlagBadge");
     fb.textContent = fc; fb.classList.toggle("hidden", !fc);
+    const rb = $id("admRequestBadge");
+    if (rb) { const rn = (S.requests || []).length; rb.textContent = rn; rb.classList.toggle("hidden", !rn); }
     document.title = (n ? `(${n}) ` : "") + "Admin";
   }
 
@@ -3717,6 +4058,7 @@
     if (!data) {
       bannerState.error = adminErrText();
       renderBanners();
+      if (!S.loadedAt) clearAdminSkeletons();
       if (S.keyMode === "secure" && /key was rejected/.test(bannerState.error)) showKeyDiagnosis();
       // Don't hammer a server that just failed; try the approvals alone.
       const q = await adminFetch("unauthorizedQueue");
@@ -3736,6 +4078,8 @@
     S.devices = keep("devices", data.devices || [], S.devices);
     S.feedback = keep("feedback", data.feedback || S.feedback, S.feedback);
     S.overview = keep("overview", data.overview || S.overview, S.overview);
+    S.announcement = keep("announcement", data.announcement || null, S.announcement);
+    S.requests = keep("requests", data.requests || [], S.requests);
     S.bandwidth = data.bandwidth || null;
     S.keyMode = data.keyMode || S.keyMode;
     S.loadedAt = Date.now();
@@ -3762,6 +4106,112 @@
     renderHousekeeping();
     renderContentStats();
     renderFeedbackAdmin();
+    renderTopChapters();
+    renderAnnouncementAdmin();
+    renderRequestsAdmin();
+  }
+
+
+  // ── Loading placeholders (first load only) ──────────────
+  function showAdminSkeletons() {
+    const stats = $id("admStats");
+    if (stats) stats.innerHTML = [0, 1, 2, 3].map(() => '<div class="sk adm-skel"></div>').join("");
+    ["admAttention", "admOnline", "admTopChapters"].forEach((id) => {
+      const host = $id(id);
+      if (host) host.innerHTML = [0, 1, 2].map(() => '<div class="sk adm-skel adm-skel--row"></div>').join("");
+    });
+  }
+  function clearAdminSkeletons() {
+    renderStats(); renderAttention(); renderOnline(); renderTopChapters();
+  }
+
+  // ── Most read chapters (Overview) ───────────────────────
+  function renderTopChapters() {
+    const host = $id("admTopChapters");
+    if (!host) return;
+    const stats = S.stats || [];
+    if (!stats.length) { host.innerHTML = emptyMsg("No views logged yet."); return; }
+    const map = getFileSubjectMap();
+    const groups = new Map();
+    stats.forEach((st) => {
+      const info = map[st.file];
+      if (!info) return; // practicals / files that were removed
+      const meta = fileMeta({ name: st.file }, { name: info.folder });
+      const key = info.subject + "|" + (meta.chapter != null ? "ch" + meta.chapter : st.file);
+      let g = groups.get(key);
+      if (!g) { g = { subject: info.subject, chapter: meta.chapter, title: meta.title, views: 0, best: -1, byType: {} }; groups.set(key, g); }
+      g.views += st.views;
+      g.byType[meta.type] = (g.byType[meta.type] || 0) + st.views;
+      if (st.views > g.best) { g.best = st.views; g.title = meta.title; }
+    });
+    const top = Array.from(groups.values()).sort((a, b) => b.views - a.views).slice(0, 8);
+    if (!top.length) { host.innerHTML = emptyMsg("No chapter views yet."); return; }
+    const max = Math.max(1, top[0].views);
+    host.innerHTML = top.map((g) => {
+      const types = Object.keys(g.byType).sort((a, b) => g.byType[b] - g.byType[a]).map((t) => `${esc(t)} ${g.byType[t]}`).join(" · ");
+      return `
+      <div class="adm-row" style="display:block">
+        <div class="adm-bar-row__top"><span class="adm-row__title">${esc(g.subject)}${g.chapter != null ? ` · Ch ${g.chapter}` : ""} — ${esc(g.title)}</span><span class="adm-bar-row__val">${g.views} opened</span></div>
+        <div class="adm-bar-track"><div class="adm-bar-fill" style="width:${Math.max(3, Math.round(g.views / max * 100))}%;background:${subjectColor(g.subject)}"></div></div>
+        <div class="adm-row__meta"><span>${types}</span></div>
+      </div>`;
+    }).join("");
+  }
+
+  // ── Announcement banner (Content) ───────────────────────
+  function renderAnnouncementAdmin() {
+    const cur = $id("admAnnCurrent");
+    const clr = $id("admAnnClear");
+    if (!cur) return;
+    const a = S.announcement;
+    if (a && a.text) {
+      const until = a.expires ? ` · until ${esc(new Date(a.expires).toLocaleDateString(undefined, { day: "numeric", month: "short" }))}` : " · until you remove it";
+      cur.innerHTML = `<b>${a.expired ? "Expired" : "Showing now"}${a.expired ? "" : until}</b>${esc(a.text)}`;
+      if (clr) clr.disabled = false;
+    } else {
+      cur.innerHTML = "";
+      if (clr) clr.disabled = true;
+    }
+  }
+  async function onPublishAnnouncement() {
+    const ta = $id("admAnnText");
+    const text = ta.value.trim();
+    if (!text) { showToast("Write the message first.", true); return; }
+    const btn = $id("admAnnPublish");
+    btn.disabled = true;
+    const res = await act("setAnnouncement", { text, kind: $id("admAnnKind").value, days: $id("admAnnDays").value }, "Banner published — students will see it on their next visit.", "Couldn't publish the banner");
+    btn.disabled = false;
+    if (res) { S.announcement = res.announcement || null; ta.value = ""; renderAnnouncementAdmin(); }
+  }
+  async function onClearAnnouncement() {
+    const res = await act("clearAnnouncement", {}, "Banner removed.", "Couldn't remove the banner");
+    if (res) { S.announcement = null; renderAnnouncementAdmin(); }
+  }
+
+  // ── File requests (Content) ─────────────────────────────
+  function renderRequestsAdmin() {
+    const host = $id("admRequestList");
+    if (!host) return;
+    const list = S.requests || [];
+    const c = $id("admRequestCount");
+    if (c) c.textContent = list.length ? `· ${list.length} open` : "";
+    if (!list.length) { host.innerHTML = emptyMsg("No requests right now."); return; }
+    host.innerHTML = list.map((r) => `
+      <div class="adm-req" data-row="${Number(r.row)}">
+        <div class="adm-req__main">
+          <div class="adm-req__text">${esc(r.text)}</div>
+          <div class="adm-req__meta">${esc(r.name)} · ${whenHtml(r.timestamp)}</div>
+        </div>
+        <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-done>Done</button>
+      </div>`).join("");
+  }
+  async function onResolveRequest(row) {
+    const res = await act("resolveRequest", { row }, "Marked as done.", "Couldn't update the request");
+    if (res) {
+      S.requests = (S.requests || []).filter((r) => Number(r.row) !== Number(row));
+      renderRequestsAdmin();
+      updateBadges();
+    }
   }
 
   // ── Overview ────────────────────────────────────────────
@@ -4708,6 +5158,13 @@
     $id("adminSyncBtn").addEventListener("click", onSyncBackblaze);
     $id("adminScanBtn").addEventListener("click", onScanBackblaze);
     $id("admStatsSearch").addEventListener("input", renderContentStats);
+    $id("admAnnPublish").addEventListener("click", onPublishAnnouncement);
+    $id("admAnnClear").addEventListener("click", onClearAnnouncement);
+    $id("admRequestList").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-done]");
+      const row = e.target.closest("[data-row]");
+      if (b && row) onResolveRequest(Number(row.dataset.row));
+    });
     $id("admFeedbackSearch").addEventListener("input", renderFeedbackAdmin);
     $id("admFeedbackFilter").addEventListener("change", renderFeedbackAdmin);
 
