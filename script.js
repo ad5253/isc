@@ -944,6 +944,7 @@
   // open PDF view, log the session as ended, stop the heartbeat, wipe
   // the saved name, then reload back to the gate.
   function performLogout(reason) {
+    try { if (currentName) setDt(currentName, ""); } catch (e) {} // signing out forgets the PIN proof
     try { history.replaceState(null, "", APP_BASE); } catch (e) {}
     endCurrentView();
     if (sessionId) {
@@ -1309,7 +1310,7 @@
     gatePinForgot.classList.toggle("hidden", create);
     gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my PIN for the Class 12 portal. My name: " + name);
     gatePinHint.textContent = create
-      ? "Create a 4–6 digit PIN so nobody else can use your name. You'll only be asked on new devices."
+      ? "Create a 4–6 digit PIN so nobody else can use your name. You'll be asked for it each time you sign in."
       : "Enter your PIN to continue.";
     gatePinInput.focus();
   }
@@ -1318,7 +1319,7 @@
   // now showing a PIN box and the person must act.
   async function runPinStep(name) {
     if (pinMode === null) {
-      const st = await pinApi({ op: "state", name, dt: getDt(name) });
+      const st = await pinApi({ op: "state", name }); // no device-trust: the PIN is asked at EVERY login
       if (!st || !st.ok || !st.state) return "ok"; // also covers an older backend that doesn't know PINs yet
       if (st.state === "trusted") return "ok";
       if (st.state === "none") {
