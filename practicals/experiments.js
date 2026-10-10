@@ -39,6 +39,13 @@ window.PHYSICS_EXPERIMENTS = [
     title: "Internal Resistance of a Cell",
     blurb: "Use a potentiometer to find the internal resistance of a cell. Wire the circuit, slide the jockey, take readings.",
     tag: "3D"
+  },
+  {
+    slug: "potential-fall-potentiometer",
+    num: 5,
+    title: "Potential Fall along a Potentiometer Wire",
+    blurb: "Set up a potentiometer, slide the jockey along the wire and measure the fall of potential to find the potential gradient.",
+    tag: "3D"
   }
-  // , { slug: "...", num: 5, title: "...", blurb: "...", tag: "3D" }
+  // , { slug: "...", num: 6, title: "...", blurb: "...", tag: "3D" }
 ];
