@@ -31,7 +31,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=44">
+    <link rel="stylesheet" href="style.css?v=45">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -301,6 +301,9 @@
                     <button id="viewerDoneBtn" class="viewer__btn viewer__btn--done" aria-label="Mark as done" title="Mark as done" aria-pressed="false">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     </button>
+                    <button id="viewerModeBtn" class="viewer__btn" aria-label="Reading mode" title="Reading mode">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg>
+                    </button>
                     <button id="viewerShareBtn" class="viewer__btn" aria-label="Share link" title="Share link">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7"/></svg>
                     </button>
@@ -539,6 +542,14 @@
                     </div>
                 </div>
                 <div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Weekly summary email</h2></div>
+                    <p class="adm-muted">A short email to you every Sunday evening: who came, new students, most-read files, who has gone quiet. Status: <b id="admDigestState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admDigestToggle" class="adm-btn adm-btn--sm">Turn on</button>
+                        <button type="button" id="admDigestNow" class="adm-btn adm-btn--ghost adm-btn--sm">Send one now</button>
+                    </div>
+                </div>
+                <div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">File requests <span id="admRequestCount" class="adm-muted"></span></h2>
                     </div>
@@ -617,7 +628,8 @@
 
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
-    <script defer src="script.js?v=44"></script>
+    <script defer src="daily.js?v=1"></script>
+    <script defer src="script.js?v=45"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

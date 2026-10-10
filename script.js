@@ -949,6 +949,7 @@
   // the saved name, then reload back to the gate.
   function performLogout(reason) {
     try { if (currentName) setDt(currentName, ""); } catch (e) {} // signing out forgets the PIN proof
+    try { writeFocus(null); } catch (e) {}
     try { history.replaceState(null, "", APP_BASE); } catch (e) {}
     endCurrentView();
     if (sessionId) {
@@ -1165,6 +1166,9 @@
       viewerPageTotal.title = "Jump to the last page";
       viewerPageTotal.addEventListener("click", () => { if (currentPdf) scrollToPage(currentPdf.numPages); });
     }
+    const viewerModeBtn = document.getElementById("viewerModeBtn");
+    if (viewerModeBtn) viewerModeBtn.addEventListener("click", cycleReadMode);
+    applyReadMode(false);
     if (viewerShareBtn) viewerShareBtn.addEventListener("click", () => {
       if (currentPdfPath) shareFile(currentPdfPath, viewerName.textContent || "Document");
     });
@@ -1692,6 +1696,7 @@
     sessionStart = Date.now();
     app.classList.remove("hidden");
     greeting.textContent = `Hi, ${name}`;
+    focusRefresh();
     startHeartbeat();
     claimActiveSession(name); // fire-and-forget — see its own comment below for why this can't slow anything down
     ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
@@ -1971,6 +1976,9 @@
     applyAccent();
     render();
     syncTabbar();
+    if (content && !document.body.classList.contains("no-anim")) {
+      content.classList.remove("view-in"); void content.offsetWidth; content.classList.add("view-in");
+    }
 
     if (historyMode !== "none") {
       const target = urlForView(view, curSubject);
@@ -2313,7 +2321,7 @@
     if (!matches.length) {
       const empty = el("div", "empty fade-up");
       empty.innerHTML = `
-        <div class="empty__icon">${ICONS.tray}</div>
+        <div class="empty__icon empty__icon--art">${EMPTY_ART.search}</div>
         <p class="empty__title"></p>
         <p class="empty__sub">Try a shorter word or check the spelling — or ask for it and I'll look into adding it.</p>
         <div class="empty__actions">
@@ -2333,6 +2341,129 @@
   }
 
   // ── Round 2 helpers ────────────────────────────────────
+  const EMPTY_ART = {
+    search: `<svg viewBox="0 0 120 90" width="120" height="90" fill="none" aria-hidden="true"><rect x="22" y="14" width="46" height="60" rx="6" stroke="currentColor" stroke-width="1.6" opacity=".55"/><path d="M32 30h26M32 40h18M32 50h22" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".4"/><circle cx="76" cy="52" r="17" stroke="var(--accent, var(--brass))" stroke-width="2.4"/><path d="m89 65 14 14" stroke="var(--accent, var(--brass))" stroke-width="2.8" stroke-linecap="round"/><path d="M70 48c1-3 5-4 7-2s1 4-1 5-2 2-2 4" stroke="var(--accent, var(--brass))" stroke-width="1.8" stroke-linecap="round"/><circle cx="74" cy="60" r="1.2" fill="var(--accent, var(--brass))"/></svg>`,
+    folder: `<svg viewBox="0 0 120 90" width="120" height="90" fill="none" aria-hidden="true"><path d="M14 30a6 6 0 0 1 6-6h24l8 9h48a6 6 0 0 1 6 6v33a6 6 0 0 1-6 6H20a6 6 0 0 1-6-6z" stroke="currentColor" stroke-width="1.6" opacity=".6"/><path d="M14 42h92" stroke="currentColor" stroke-width="1.4" opacity=".35"/><path d="M92 12v10M87 17h10" stroke="var(--accent, var(--brass))" stroke-width="2.2" stroke-linecap="round"/><path d="M104 28v6M101 31h6" stroke="var(--accent, var(--brass))" stroke-width="1.8" stroke-linecap="round"/><circle cx="60" cy="62" r="7" stroke="var(--accent, var(--brass))" stroke-width="1.8" stroke-dasharray="3 3"/></svg>`
+  };
+
+  // ── Haptics (light taps on phones) ──────────────────────
+  // Android uses vibrate(); iPhones (iOS 17.4+) have no vibrate, but a
+  // hidden "switch" checkbox gives a tiny tick when toggled by a tap.
+  let hapticLabel = null;
+  function haptic(kind) {
+    try {
+      if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      if (localStorage.getItem("c12_nohaptic") === "1") return;
+    } catch {}
+    try {
+      if (navigator.vibrate) { navigator.vibrate(kind === "success" ? [10, 40, 16] : 8); return; }
+      if (!hapticLabel) {
+        hapticLabel = document.createElement("label");
+        hapticLabel.setAttribute("aria-hidden", "true");
+        hapticLabel.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none";
+        const i = document.createElement("input");
+        i.type = "checkbox"; i.setAttribute("switch", ""); i.tabIndex = -1;
+        hapticLabel.appendChild(i);
+        document.body.appendChild(hapticLabel);
+      }
+      hapticLabel.click();
+      if (kind === "success") setTimeout(() => hapticLabel.click(), 90);
+    } catch {}
+  }
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest && e.target.closest(".tabbar__btn,.viewer__btn,.viewer__zoom-btn,.seg__btn,.subject,.chapter-card,.file-card,.chapter-chip,.recent-chip,.empty__btn,.focus-pill button,.focus-card button,#themeBtn,.help-row button");
+    if (t) haptic(t.id === "viewerDoneBtn" ? "success" : "light");
+  }, true);
+
+  // Small friendly message at the bottom (student side).
+  let sToastTimer = null;
+  function studentToast(msg) {
+    let t = document.getElementById("studentToast");
+    if (!t) { t = document.createElement("div"); t.id = "studentToast"; t.className = "s-toast"; t.setAttribute("role", "status"); document.body.appendChild(t); }
+    t.textContent = msg;
+    t.classList.add("s-toast--on");
+    clearTimeout(sToastTimer);
+    sToastTimer = setTimeout(() => t.classList.remove("s-toast--on"), 3200);
+  }
+
+  // ── Focus timer (25 min) ────────────────────────────────
+  const FOCUS_KEY = "c12_focus_run";
+  let focusTimerId = null;
+  function readFocus() { try { return JSON.parse(localStorage.getItem(FOCUS_KEY) || "null"); } catch { return null; } }
+  function writeFocus(v) { try { if (v) localStorage.setItem(FOCUS_KEY, JSON.stringify(v)); else localStorage.removeItem(FOCUS_KEY); } catch {} }
+  function focusLeftMs(f) { return f.paused != null ? f.paused : Math.max(0, f.end - Date.now()); }
+  function fmtClock(ms) { const s = Math.ceil(ms / 1000); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }
+  function focusStart(min) { writeFocus({ end: Date.now() + min * 60000, dur: min, paused: null }); focusRefresh(); }
+  function focusPauseToggle() {
+    const f = readFocus(); if (!f) return;
+    if (f.paused != null) { f.end = Date.now() + f.paused; f.paused = null; } else { f.paused = Math.max(0, f.end - Date.now()); }
+    writeFocus(f); focusRefresh();
+  }
+  function focusStop() { writeFocus(null); focusRefresh(); }
+  function focusTotalKey() { return "c12_focusmin_" + normalizeName(currentName || ""); }
+  function focusComplete(f) {
+    writeFocus(null);
+    try { localStorage.setItem(focusTotalKey(), String((Number(localStorage.getItem(focusTotalKey())) || 0) + f.dur)); } catch {}
+    noteStudyDay();
+    haptic("success");
+    studentToast(`Focus session done — ${f.dur} minutes. Nice work!`);
+    focusRefresh();
+  }
+  function focusRefresh() {
+    const f = readFocus();
+    let pill = document.getElementById("focusPill");
+    if (f && f.paused == null && focusLeftMs(f) <= 0) { focusComplete(f); return; }
+    if (f && !pill && currentName) {
+      pill = document.createElement("div");
+      pill.id = "focusPill"; pill.className = "focus-pill";
+      pill.innerHTML = `<span class="focus-pill__dot" aria-hidden="true"></span><span class="focus-pill__time" aria-live="off"></span><button type="button" class="focus-pill__pause" aria-label="Pause or resume"></button><button type="button" class="focus-pill__stop" aria-label="Stop timer">${ICONS.close || "×"}</button>`;
+      pill.querySelector(".focus-pill__pause").addEventListener("click", focusPauseToggle);
+      pill.querySelector(".focus-pill__stop").addEventListener("click", focusStop);
+      document.body.appendChild(pill);
+    }
+    if (pill) {
+      if (!f) pill.remove();
+      else {
+        pill.querySelector(".focus-pill__time").textContent = fmtClock(focusLeftMs(f));
+        pill.classList.toggle("focus-pill--paused", f.paused != null);
+        pill.querySelector(".focus-pill__pause").textContent = f.paused != null ? "Resume" : "Pause";
+      }
+    }
+    document.querySelectorAll("[data-focus-label]").forEach((n) => { n.textContent = f ? (f.paused != null ? "Paused · " : "") + fmtClock(focusLeftMs(f)) : "Start 25 min"; });
+    document.querySelectorAll("[data-focus-card]").forEach((n) => n.classList.toggle("focus-card--on", !!f));
+    if (f && !focusTimerId) focusTimerId = setInterval(focusRefresh, 1000);
+    if (!f && focusTimerId) { clearInterval(focusTimerId); focusTimerId = null; }
+  }
+
+  // ── Formula of the day ──────────────────────────────────
+  function todaysFormula() {
+    const list = window.DAILY_FORMULAS;
+    if (!list || !list.length) return null;
+    const d = new Date();
+    const dayNum = Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+    return list[dayNum % list.length];
+  }
+
+  // ── Reading modes in the PDF viewer ─────────────────────
+  const READ_MODES = [["normal", "Normal"], ["dark", "Dark pages"], ["sepia", "Sepia"], ["dim", "Dimmed"]];
+  function readMode() { try { return localStorage.getItem("c12_readmode") || "normal"; } catch { return "normal"; } }
+  function applyReadMode(announce) {
+    const m = readMode();
+    const v = document.getElementById("viewer");
+    if (v) v.dataset.read = m;
+    const b = document.getElementById("viewerModeBtn");
+    if (b) {
+      const label = (READ_MODES.find((x) => x[0] === m) || READ_MODES[0])[1];
+      b.title = "Reading mode: " + label; b.setAttribute("aria-label", "Reading mode: " + label + ". Tap to change");
+      if (announce) { b.dataset.tip = label; b.classList.add("viewer__btn--tip"); setTimeout(() => b.classList.remove("viewer__btn--tip"), 1300); }
+    }
+  }
+  function cycleReadMode() {
+    const i = READ_MODES.findIndex((x) => x[0] === readMode());
+    try { localStorage.setItem("c12_readmode", READ_MODES[(i + 1) % READ_MODES.length][0]); } catch {}
+    applyReadMode(true);
+  }
+
   const ICON_CHECK = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
   const ICON_FLAME = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2c.4 3.1-1.3 4.8-2.9 6.6C7.6 10.3 6 12.1 6 14.8 6 18.2 8.7 21 12 21s6-2.8 6-6.2c0-2.2-1-3.8-2.2-5.1-.2 1.2-.8 2-1.6 2.4.5-3.4-.3-6.9-2.2-10.1z"/></svg>`;
   const ICON_MEGAPHONE = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
@@ -2640,6 +2771,29 @@
       content.append(bLabel, bRow);
     }
 
+    // Formula of the day + focus timer
+    const dailyF = todaysFormula();
+    const todayRow = el("div", "today-row stagger");
+    if (dailyF) {
+      const fc = el("div", "formula-card fade-up");
+      fc.style.setProperty("--subject-color", (SITE_CONFIG.subjects.find((x) => x.id === dailyF[0]) || {}).color || "var(--brass)");
+      fc.innerHTML = `<p class="formula-card__tag"></p><p class="formula-card__title"></p><p class="formula-card__f"></p>`;
+      fc.querySelector(".formula-card__tag").textContent = "Formula of the day · " + dailyF[0].charAt(0).toUpperCase() + dailyF[0].slice(1);
+      fc.querySelector(".formula-card__title").textContent = dailyF[1];
+      fc.querySelector(".formula-card__f").textContent = dailyF[2];
+      todayRow.appendChild(fc);
+    }
+    const focusCard = el("div", "focus-card fade-up");
+    focusCard.setAttribute("data-focus-card", "");
+    const focTotal = Number(localStorage.getItem(focusTotalKey())) || 0;
+    focusCard.innerHTML = `<p class="formula-card__tag">Focus timer</p>
+      <p class="focus-card__sub">25 quiet minutes, then a break. Counts toward your streak.</p>
+      <button type="button" class="focus-card__btn" data-focus-label>Start 25 min</button>
+      ${focTotal ? `<p class="focus-card__total">${focTotal >= 60 ? (Math.round(focTotal / 6) / 10) + " h" : focTotal + " min"} focused so far</p>` : ""}`;
+    focusCard.querySelector(".focus-card__btn").addEventListener("click", () => { const f = readFocus(); if (!f) focusStart(25); else focusPauseToggle(); });
+    todayRow.appendChild(focusCard);
+    focusRefresh();
+
     const label = el("p", "section-label", "Select a subject");
     const grid = el("div", "subjects stagger");
 
@@ -2685,6 +2839,7 @@
     grid.appendChild(pr);
 
     content.append(label, grid);
+    content.appendChild(todayRow);
 
     if (currentName) {
       const help = el("div", "help-row fade-up");
@@ -2713,7 +2868,7 @@
       const row = el("div", "subfolder fade-up");
       row.onclick = () => nav("subfolder", curSubject.id, f.id || f.name);
       const doneTxt = currentName && pg.total
-        ? `<span class="subfolder__done${pg.done === pg.total ? " subfolder__done--all" : ""}">${pg.done === pg.total ? "✓ All done" : `${pg.done}/${pg.total} done`}</span>` : "";
+        ? `<span class="subfolder__done${pg.done === pg.total ? " subfolder__done--all" : ""}">${pg.done === pg.total ? "All done" : `${pg.done}/${pg.total} done`}</span>` : "";
       row.innerHTML = `
         <div class="subfolder__icon">${ICONS.folder}</div>
         <div class="subfolder__info">
@@ -2926,7 +3081,7 @@
     if (curFolder.files.length === 0) {
       const empty = el("div", "empty fade-up");
       empty.innerHTML = `
-        <div class="empty__icon">${ICONS.tray}</div>
+        <div class="empty__icon empty__icon--art">${EMPTY_ART.folder}</div>
         <p class="empty__title">Nothing filed here yet</p>
         <p class="empty__sub">Materials will appear once they're added to this folder. Want something specific?</p>
         <div class="empty__actions">
@@ -4205,7 +4360,7 @@
 
   const ACTION_LABELS = {
     approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
-    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
     sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
     archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
     testEmail: "Test email", emailFailed: "Email failed"
@@ -4344,6 +4499,7 @@
     $$(".adm-tab", adminTabs).forEach((btn) => btn.classList.toggle("adm-tab--active", btn.dataset.tab === tabName));
     $$(".adm-panel").forEach((p) => p.classList.toggle("adm-panel--active", p.dataset.panel === tabName));
     if (tabName === "overview") renderChart();
+    if (tabName === "content") refreshDigestUI();
     window.scrollTo(0, 0);
     adminApp.scrollTop = 0;
   }
@@ -4522,6 +4678,28 @@
   async function onClearAnnouncement() {
     const res = await act("clearAnnouncement", {}, "Banner removed.", "Couldn't remove the banner");
     if (res) { S.announcement = null; renderAnnouncementAdmin(); }
+  }
+
+  // ── Weekly summary email (Content) ──────────────────────
+  async function refreshDigestUI() {
+    const st = $id("admDigestState");
+    if (!st) return;
+    const r = await adminFetch("digestStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    st.textContent = r.on ? "ON — arrives every Sunday evening." : "OFF.";
+    $id("admDigestToggle").textContent = r.on ? "Turn off" : "Turn on";
+    $id("admDigestToggle").dataset.on = r.on ? "1" : "0";
+  }
+  async function onDigestToggle() {
+    const turnOn = $id("admDigestToggle").dataset.on !== "1";
+    const res = await act("setWeeklyDigest", { on: turnOn ? "1" : "0" }, turnOn ? "Weekly email turned on." : "Weekly email turned off.", "Couldn't change the weekly email");
+    if (res) refreshDigestUI();
+  }
+  async function onDigestNow() {
+    const btn = $id("admDigestNow");
+    btn.disabled = true;
+    await act("sendWeeklyNow", {}, "Sent — check your inbox.", "Couldn't send the email");
+    btn.disabled = false;
   }
 
   // ── File requests (Content) ─────────────────────────────
@@ -5503,6 +5681,8 @@
     $id("adminScanBtn").addEventListener("click", onScanBackblaze);
     $id("admStatsSearch").addEventListener("input", renderContentStats);
     $id("admAnnPublish").addEventListener("click", onPublishAnnouncement);
+    $id("admDigestToggle").addEventListener("click", onDigestToggle);
+    $id("admDigestNow").addEventListener("click", onDigestNow);
     $id("admAnnClear").addEventListener("click", onClearAnnouncement);
     $id("admRequestList").addEventListener("click", (e) => {
       const b = e.target.closest("[data-done]");
