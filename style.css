@@ -3457,3 +3457,6 @@ html.theme-fade, html.theme-fade * { transition: background-color .35s var(--eas
 .skip-link:focus { top: 10px; }
 #content:focus { outline: none; }
 .chapter-card:focus-visible, .file-card:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+/* Quiet redraw: no intro animation when the home screen is refreshed with live data */
+body.no-anim *, body.no-anim *::before, body.no-anim *::after { animation-duration: 0s !important; animation-delay: 0s !important; transition-duration: 0s !important; }

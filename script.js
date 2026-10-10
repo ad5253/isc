@@ -656,14 +656,18 @@
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return fallback;
     try {
       const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}`, cacheBase() ? 3500 : 2000).catch(() => null);
-      cachedLoginCheck = (data && data.ok) ? {
-        blockedDeviceIds: data.blockedDeviceIds || [],
-        accessHashes: data.accessHashes || [],
-        suspendedHashes: data.suspendedHashes || [],
-        active: !!data.active
-      } : fallback;
+      if (data && data.ok) {
+        cachedLoginCheck = {
+          blockedDeviceIds: data.blockedDeviceIds || [],
+          accessHashes: data.accessHashes || [],
+          suspendedHashes: data.suspendedHashes || [],
+          active: !!data.active
+        };
+      } else {
+        return fallback; // not cached — the next attempt asks again
+      }
     } catch {
-      cachedLoginCheck = fallback;
+      return fallback;
     }
     return cachedLoginCheck;
   }
@@ -964,7 +968,11 @@
       if (ep && ep.indexOf("PASTE_YOUR") !== 0) fetch(`${ep}?action=ping`).catch(() => {});
     } catch (e) {}
     const saved = readSession();
-    if (!saved) loadGateStats();
+    if (!saved) {
+      loadGateStats();
+      // Warm the checks while the person is still typing their name.
+      getDeviceId().catch(() => {}); getClientIp().catch(() => {}); fetchLoginCheck("").catch(() => {});
+    }
     if (saved && (await isSuspended(saved))) {
       clearSession();
       gate.classList.remove("hidden");
@@ -1262,6 +1270,7 @@
   // Network trouble NEVER blocks login here (fails open) — the server
   // still refuses PDF tokens for PIN-protected names without proof.
   let pinMode = null;
+  let pinStateP = null; // started in parallel with the other login checks
   let pinSkipFlag = false;
   const dtKey = (name) => "c12_dt_" + normalizeName(name);
   function getDt(name) { try { return localStorage.getItem(dtKey(name)) || ""; } catch { return ""; } }
@@ -1283,8 +1292,8 @@
         return await res.json();
       } finally { clearTimeout(timer); }
     };
-    try { return await attempt(10000); } catch {
-      try { return await attempt(10000); } catch { return null; }
+    try { return await attempt(7000); } catch {
+      try { return await attempt(9000); } catch { return null; }
     }
   }
 
@@ -1306,12 +1315,14 @@
     gatePinConfirm.value = "";
     const create = mode === "create";
     gatePinConfirmField.classList.toggle("hidden", !create);
+    gatePinInput.autocomplete = create ? "new-password" : "current-password";
+    gatePinInput.placeholder = "Password";
     gatePinSkip.classList.toggle("hidden", !create);
     gatePinForgot.classList.toggle("hidden", create);
-    gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my PIN for the Class 12 portal. My name: " + name);
+    gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my password for the Class 12 portal. My name: " + name);
     gatePinHint.textContent = create
-      ? "Create a 4–6 digit PIN so nobody else can use your name. You'll be asked for it each time you sign in."
-      : "Enter your PIN to continue.";
+      ? "Create a password (4–32 characters) so nobody else can use your name. You'll be asked for it each time you sign in."
+      : "Enter your password to continue.";
     gatePinInput.focus();
   }
 
@@ -1319,7 +1330,8 @@
   // now showing a PIN box and the person must act.
   async function runPinStep(name) {
     if (pinMode === null) {
-      const st = await pinApi({ op: "state", name }); // no device-trust: the PIN is asked at EVERY login
+      const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
+      pinStateP = null;
       if (!st || !st.ok || !st.state) return "ok"; // also covers an older backend that doesn't know PINs yet
       if (st.state === "trusted") return "ok";
       if (st.state === "none") {
@@ -1339,27 +1351,27 @@
         resetPinUI();
         return "ok";
       }
-      const pin = gatePinInput.value.trim();
-      if (!/^\d{4,6}$/.test(pin)) { showGateError("PIN must be 4 to 6 digits."); gatePinInput.focus(); return "wait"; }
-      if (pin !== gatePinConfirm.value.trim()) { showGateError("The two PINs don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
+      const pin = gatePinInput.value;
+      if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
+      if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
       const r = await pinApi({ op: "set", name, pin });
       if (!r) return "ok"; // couldn't reach the server — let them in, they'll be asked again next time
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
-      if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a PIN — enter it."); return "wait"; }
-      if (r.error === "bad_pin") { showGateError("PIN must be 4 to 6 digits."); return "wait"; }
+      if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
+      if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
       return "ok";
     }
 
     // enter
-    const pin = gatePinInput.value.trim();
+    const pin = gatePinInput.value;
     if (!pin) { gatePinInput.focus(); return "wait"; }
     const r = await pinApi({ op: "check", name, pin });
-    if (!r || !r.ok) { showGateError("Couldn't check your PIN — check your connection and try again."); return "wait"; }
+    if (!r || !r.ok) { showGateError("Couldn't check your password — check your connection and try again."); return "wait"; }
     if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
-    if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot PIN.`);
-    else showGateError(`Wrong PIN.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);
+    if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot password.`);
+    else showGateError(`Wrong password.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);
     return "wait";
   }
 
@@ -1455,6 +1467,7 @@
       // isSuspended()/isAuthorized()/isNameActive() below just read
       // the already-resolved, cached result instead of each firing
       // their own request.
+      if (pinMode === null && !credentialsVerified) pinStateP = pinApi({ op: "state", name });
       const [deviceId, ip] = await Promise.all([
         getDeviceId(),
         getClientIp(),
@@ -1520,7 +1533,7 @@
       gatePasswordField.classList.add("hidden");
       gatePasswordInput.value = "";
       gate.classList.add("fade-out");
-      setTimeout(() => { gate.classList.add("hidden"); showApp(name); }, 650);
+      setTimeout(() => { gate.classList.add("hidden"); showApp(name); }, 300);
     } finally {
       // Always release the busy state — on a rejected path the person
       // needs the button back immediately to retry; on the success
@@ -1714,6 +1727,9 @@
       }
     }
     fetchAndApplyCatalog().then(() => {
+      // The page is already on screen — redraw quietly (no second intro animation).
+      document.body.classList.add("no-anim");
+      setTimeout(() => document.body.classList.remove("no-anim"), 400);
       if (requestedFile && !openedShared) {
         if (!openRequestedFile(requestedFile)) render();
       } else {
@@ -3299,7 +3315,7 @@
         statusText.textContent = "You're not authorized to view this file.";
         canRetry = false;
       } else if (reason === "pin_required") {
-        statusText.textContent = "Please sign out and sign in again with your PIN.";
+        statusText.textContent = "Please sign out and sign in again with your password.";
         canRetry = false;
       } else {
         statusText.textContent = "Couldn't load this PDF.";
@@ -4189,7 +4205,7 @@
 
   const ACTION_LABELS = {
     approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
-    unsuspendIdentity: "Unsuspended", resetPin: "PIN reset", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
     sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
     archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
     testEmail: "Test email", emailFailed: "Email failed"
@@ -5043,7 +5059,7 @@
     const tags = [
       live ? '<span class="adm-tag adm-tag--good">online now</span>' : "",
       person.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : "",
-      person.hasPin ? '<span class="adm-tag">PIN set</span>' : '<span class="adm-tag">no PIN yet</span>',
+      person.hasPin ? '<span class="adm-tag">password set</span>' : '<span class="adm-tag">no password yet</span>',
       person.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(person.expiresAt).toLocaleDateString())}</span>` : "",
       ...(person.aliases || []).map((a) => `<span class="adm-tag">also ${esc(a)}</span>`)
     ].join(" ");
@@ -5063,7 +5079,7 @@
       <div class="adm-bar" style="margin-top:14px">
         <button type="button" class="adm-btn adm-btn--sm ${person.suspended ? "adm-btn--good" : "adm-btn--danger-ghost"}" data-dact="suspend">${person.suspended ? "Unsuspend" : "Suspend"}</button>
         <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="expiry">${person.expiresAt ? "Change expiry" : "Set expiry"}</button>
-        ${person.hasPin ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="resetpin">Reset PIN</button>` : ""}
+        ${person.hasPin ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="resetpin">Reset password</button>` : ""}
         ${live ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="message">Message</button><button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-dact="logout">Log out</button>` : ""}
       </div>
       <div class="adm-facts">
@@ -5082,8 +5098,8 @@
       if (k === "suspend") { if (await onToggleSuspend(name, !!person.suspended)) closeAdminDetail(); }
       else if (k === "expiry") { if (await onSetExpiry(name, person.expiresAt)) closeAdminDetail(); }
       else if (k === "resetpin") {
-        if (await showConfirm(`Remove ${name}'s PIN? They can create a new one next time they sign in.`, { ok: "Reset PIN", danger: true })) {
-          const r = await act("resetPin", { name }, `PIN removed for ${name}.`, `Couldn't reset PIN for ${name}`);
+        if (await showConfirm(`Remove ${name}'s password? They can create a new one next time they sign in.`, { ok: "Reset password", danger: true })) {
+          const r = await act("resetPin", { name }, `Password removed for ${name}.`, `Couldn't reset password for ${name}`);
           if (r) { person.hasPin = false; refreshAdmin(); closeAdminDetail(); }
         }
       }

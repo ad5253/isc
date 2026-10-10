@@ -99,16 +99,16 @@
                 <div class="gate__pin hidden" id="gatePinBox">
                     <p class="gate__pin-hint" id="gatePinHint" role="status" aria-live="polite"></p>
                     <div class="gate__field">
-                        <input type="password" id="gatePinInput" class="gate__input gate__input--pin" placeholder="PIN" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" enterkeyhint="go" aria-label="PIN">
+                        <input type="password" id="gatePinInput" class="gate__input" placeholder="Password" maxlength="32" autocomplete="current-password" enterkeyhint="go" aria-label="Password">
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__field hidden" id="gatePinConfirmField">
-                        <input type="password" id="gatePinConfirm" class="gate__input gate__input--pin" placeholder="Repeat PIN" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" enterkeyhint="go" aria-label="Repeat PIN">
+                        <input type="password" id="gatePinConfirm" class="gate__input" placeholder="Repeat password" maxlength="32" autocomplete="new-password" enterkeyhint="go" aria-label="Repeat password">
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__pin-links">
                         <button type="button" id="gatePinSkip" class="gate__linkbtn hidden">Not now</button>
-                        <a id="gatePinForgot" class="gate__linkbtn hidden" href="https://wa.me/917405806352" target="_blank" rel="noopener">Forgot PIN?</a>
+                        <a id="gatePinForgot" class="gate__linkbtn hidden" href="https://wa.me/917405806352" target="_blank" rel="noopener">Forgot password?</a>
                     </div>
                 </div>
                 <button type="submit" class="gate__btn">
