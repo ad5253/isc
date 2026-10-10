@@ -31,12 +31,11 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=45">
+    <link rel="stylesheet" href="style.css?v=46">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
-    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
     <script type="application/ld+json">
     {
@@ -300,6 +299,9 @@
                     <button id="viewerDoneBtn" class="viewer__btn viewer__btn--done" aria-label="Mark as done" title="Mark as done" aria-pressed="false">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     </button>
+                    <button id="viewerSearchBtn" class="viewer__btn" aria-label="Find in this PDF" title="Find in this PDF (press /)">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+                    </button>
                     <button id="viewerModeBtn" class="viewer__btn" aria-label="Reading mode" title="Reading mode">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg>
                     </button>
@@ -310,6 +312,12 @@
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                 </div>
+            </div>
+            <div id="viewerSearch" class="viewer__search hidden" role="search">
+                <input id="viewerSearchInput" type="search" class="viewer__search-input" placeholder="Find in this PDF…" aria-label="Find in this PDF" autocomplete="off" enterkeyhint="search">
+                <span id="viewerSearchStatus" class="viewer__search-status" aria-live="polite"></span>
+                <div id="viewerSearchHits" class="viewer__hits"></div>
+                <button type="button" id="viewerSearchClose" class="viewer__btn" aria-label="Close search">&times;</button>
             </div>
             <!-- Moved out of .viewer__bar: that bar now has backdrop-filter
                  for the glass look, and backdrop-filter makes an element
@@ -541,6 +549,14 @@
                     </div>
                 </div>
                 <div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Weekly backup email</h2></div>
+                    <p class="adm-muted">Every Monday morning you get one zip with a copy of your people, passwords, catalog and progress sheets. If the Sheet is ever lost or damaged, you can rebuild from it. Status: <b id="admBackupState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admBackupToggle" class="adm-btn adm-btn--sm">Turn on</button>
+                        <button type="button" id="admBackupNow" class="adm-btn adm-btn--ghost adm-btn--sm">Send one now</button>
+                    </div>
+                </div>
+                <div class="adm-card">
                     <div class="adm-card__head"><h2 class="adm-card__title">Weekly summary email</h2></div>
                     <p class="adm-muted">A short email to you every Sunday evening: who came, new students, most-read files, who has gone quiet. Status: <b id="admDigestState">…</b></p>
                     <div class="adm-bar">
@@ -628,7 +644,7 @@
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="script.js?v=45"></script>
+    <script defer src="script.js?v=46"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

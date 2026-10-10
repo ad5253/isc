@@ -7,9 +7,25 @@
   "use strict";
 
   // ── PDF.js setup ───────────────────────────────────────
-  if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  // The PDF library (~350 KB) is no longer downloaded on the login
+  // screen — it starts loading the moment someone is signed in (or is
+  // awaited on demand), so login gets the bandwidth to itself.
+  let pdfLibPromise = null;
+  function ensurePdfLib() {
+    if (window.pdfjsLib) return Promise.resolve(true);
+    if (!pdfLibPromise) {
+      pdfLibPromise = new Promise((resolve) => {
+        const sc = document.createElement("script");
+        sc.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+        sc.onload = () => {
+          try { pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; } catch {}
+          resolve(!!window.pdfjsLib);
+        };
+        sc.onerror = () => { pdfLibPromise = null; resolve(false); }; // allow a retry next time
+        document.head.appendChild(sc);
+      });
+    }
+    return pdfLibPromise;
   }
 
   // A folder's thumbnails and the full viewer used to each call
@@ -111,7 +127,8 @@
     let realTask = null;
     let fellBack = false;
 
-    const fullAttempt = ensurePdfToken().then((token) => {
+    const fullAttempt = Promise.all([ensurePdfToken(), ensurePdfLib()]).then(([token, libOk]) => {
+      if (!libOk) throw new Error("network");
       realTask = pdfjsLib.getDocument({ url: pdfWorkerUrl(path, token), disableRange: true });
       realTask.onProgress = (p) => { if (!fellBack && task.onProgress) task.onProgress(p); };
       return realTask.promise;
@@ -190,7 +207,8 @@
     let realTask = null; // captured once created, so a timeout can properly destroy() it instead of just walking away and leaving it running in the background — which would keep eating memory even after this code has given up on it, compounding exactly the RAM pressure this is meant to fix
     let timedOut = false;
 
-    const realLoadPromise = ensurePdfToken().then((token) => {
+    const realLoadPromise = Promise.all([ensurePdfToken(), ensurePdfLib()]).then(([token, libOk]) => {
+      if (!libOk) throw new Error("network");
       realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
       realTask.onProgress = (p) => { if (task.onProgress) task.onProgress(p); };
       return realTask.promise;
@@ -947,7 +965,8 @@
   // open PDF view, log the session as ended, stop the heartbeat, wipe
   // the saved name, then reload back to the gate.
   function performLogout(reason) {
-    try { if (currentName) setDt(currentName, ""); } catch (e) {} // signing out forgets the PIN proof
+    try { syncPush(true); } catch (e) {} // must run BEFORE the proof below is forgotten
+    try { if (currentName) setDt(currentName, ""); } catch (e) {} // signing out forgets the password proof
     try { writeFocus(null); } catch (e) {}
     try { history.replaceState(null, "", APP_BASE); } catch (e) {}
     endCurrentView();
@@ -1164,6 +1183,7 @@
       viewerPageTotal.title = "Jump to the last page";
       viewerPageTotal.addEventListener("click", () => { if (currentPdf) scrollToPage(currentPdf.numPages); });
     }
+    wireViewerSearch();
     const viewerModeBtn = document.getElementById("viewerModeBtn");
     if (viewerModeBtn) viewerModeBtn.addEventListener("click", cycleReadMode);
     applyReadMode(false);
@@ -1227,6 +1247,17 @@
 
       // Keyboard navigation for PDF viewer (PageUp/PageDown)
       if (!viewer.classList.contains("hidden")) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); openViewerSearch(); return; }
+        if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          // Laptop shortcuts: ←/→ page, + / − zoom, F fit width, D reading mode, / find
+          if (e.key === "ArrowRight") { e.preventDefault(); nextPage(); }
+          else if (e.key === "ArrowLeft") { e.preventDefault(); prevPage(); }
+          else if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomIn(); }
+          else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomOut(); }
+          else if (e.key === "f" || e.key === "F") { e.preventDefault(); fitToWidth(); }
+          else if (e.key === "d" || e.key === "D") { e.preventDefault(); cycleReadMode(); }
+          else if (e.key === "/") { e.preventDefault(); openViewerSearch(); }
+        }
         if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") {
           if (e.key === "PageDown" || (e.key === "ArrowDown" && e.altKey)) {
             e.preventDefault();
@@ -1684,6 +1715,8 @@
     app.classList.remove("hidden");
     greeting.textContent = `Hi, ${name}`;
     focusRefresh();
+    ensurePdfLib(); // start the PDF library download now that the person is signed in
+    syncOnLogin();
     startHeartbeat();
     claimActiveSession(name); // fire-and-forget — see its own comment below for why this can't slow anything down
     ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
@@ -1733,7 +1766,7 @@
   // ── Heartbeat ("who's on the site right now") ───────────
   function startHeartbeat() {
     stopHeartbeat();
-    heartbeatTimer = setInterval(sendHeartbeat, 45000);
+    heartbeatTimer = setInterval(sendHeartbeat, 60000);
     sendHeartbeat(); // so Presence shows them immediately, not after 45s
   }
 
@@ -1744,15 +1777,50 @@
     }
   }
 
-  function sendHeartbeat() {
-    if (!sessionId) return;
+  // One readable request per minute does three jobs: marks the student
+  // as online, brings back any admin message / forced logout, and
+  // returns "studied today". (It used to be three separate requests
+  // every 45s.) An older backend only answers {ok:true}; then we fall
+  // back to the old separate calls so nothing breaks mid-deploy.
+  let hbBusy = false;
+  async function sendHeartbeat() {
+    if (!sessionId || hbBusy) return;
+    if (document.hidden && !sendHeartbeat.force) return; // nobody is looking — don't bother Google
+    sendHeartbeat.force = false;
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
     const where = currentViewId
       ? `viewing: ${currentViewName}`
       : (curFolder ? curFolder.name : curSubject ? curSubject.name : "home");
-    logEvent("heartbeat", currentName, where);
-    checkCommands();
-    refreshStudyTime();
+    hbBusy = true;
+    let data = null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: buildLogPayload("heartbeat", currentName, where),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      data = await res.json();
+    } catch { data = null; } finally { hbBusy = false; }
+    if (data && data.ok && data.cmd !== undefined) {
+      applyCommand(data.cmd);
+      if (typeof data.todaySeconds === "number" && studyTimeEl) {
+        const mins = Math.round(data.todaySeconds / 60);
+        studyTimeEl.textContent = mins > 0 ? `Studied ${mins}m today` : "";
+      }
+    } else if (data && data.ok) {
+      checkCommands(); refreshStudyTime(); // older backend
+    } else {
+      logEvent("heartbeat", currentName, where); // couldn't read a reply — at least record presence the old way
+    }
   }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && sessionId) { sendHeartbeat.force = true; sendHeartbeat(); }
+  });
 
   // Refetches "studied Xm today" and updates the nav display. Called
   // once right after login and then again on every heartbeat (~45s),
@@ -1810,6 +1878,20 @@
     }
   }
 
+  function applyCommand(data) {
+    if (!data) return;
+    if (data.forceLogout) {
+      showAdminNotice(
+        "You've been signed out by the admin.",
+        () => performLogout("admin_logout")
+      );
+      return;
+    }
+    if (data.message) {
+      showAdminNotice(data.message);
+    }
+  }
+
   async function checkCommands() {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0 || !sessionId) return;
@@ -1820,20 +1902,9 @@
       const res = await fetch(url.toString());
       const data = await res.json();
       if (!data || !data.ok) return;
-      if (data.forceLogout) {
-        showAdminNotice(
-          "You've been signed out by the admin.",
-          () => performLogout("admin_logout")
-        );
-        return;
-      }
-      if (data.message) {
-        showAdminNotice(data.message);
-      }
+      applyCommand(data);
     } catch {
-      // Silent — same fire-and-forget spirit as the rest of logging.
-      // A missed poll just means the message/logout arrives on the
-      // next heartbeat instead.
+      // Silent — a missed poll just means the message/logout arrives on the next heartbeat instead.
     }
   }
 
@@ -2422,6 +2493,118 @@
     if (!f && focusTimerId) { clearInterval(focusTimerId); focusTimerId = null; }
   }
 
+  // ── Progress that follows the student's login ────────────
+  // Ticks, bookmarks, recent files, streak days, last pages and focus
+  // minutes are saved to the Sheet (keyed to the name, proven by the
+  // password-session token) so they survive a new phone or cleared
+  // browser. Pushes are small and rare: when the tab is hidden, at
+  // sign-out, and every 2 minutes if something changed.
+  let syncReady = false, syncTimer = null, syncBusy = false;
+  const nk = () => normalizeName(currentName || "");
+  const SYNC_H = () => "c12_sync_h_" + nk();
+  const SYNC_T = () => "c12_sync_ts_" + nk();
+  function lsJSON(key, fallback) { try { const v = JSON.parse(localStorage.getItem(key) || "null"); return v == null ? fallback : v; } catch { return fallback; } }
+  function collectProgress() {
+    const n = nk();
+    return {
+      revised: lsJSON("c12_revised_" + n, []),
+      bookmarks: lsJSON("c12_bookmarks_" + n, []),
+      recent: lsJSON("c12_recent_" + n, []),
+      days: lsJSON("c12_days_" + n, []),
+      pos: lsJSON("c12_pos_" + n, {}),
+      focus: Number(localStorage.getItem("c12_focusmin_" + n)) || 0
+    };
+  }
+  function applyProgress(p) {
+    const n = nk();
+    try {
+      localStorage.setItem("c12_revised_" + n, JSON.stringify(p.revised || []));
+      localStorage.setItem("c12_bookmarks_" + n, JSON.stringify(p.bookmarks || []));
+      localStorage.setItem("c12_recent_" + n, JSON.stringify((p.recent || []).slice(0, 5)));
+      localStorage.setItem("c12_days_" + n, JSON.stringify((p.days || []).slice(-400)));
+      localStorage.setItem("c12_pos_" + n, JSON.stringify(p.pos || {}));
+      localStorage.setItem("c12_focusmin_" + n, String(p.focus || 0));
+    } catch {}
+  }
+  function mergeProgress(a, b) {
+    const byPath = (x, y) => { const seen = new Set(); return [...x, ...y].filter((i) => !seen.has(i.path) && seen.add(i.path)); };
+    const pos = Object.assign({}, b.pos || {});
+    Object.keys(a.pos || {}).forEach((k) => { if (!pos[k] || (a.pos[k].t || 0) >= (pos[k].t || 0)) pos[k] = a.pos[k]; });
+    return {
+      revised: Array.from(new Set([...(a.revised || []), ...(b.revised || [])])),
+      bookmarks: byPath(a.bookmarks || [], b.bookmarks || []),
+      recent: byPath(a.recent || [], b.recent || []).sort((x, y) => (y.ts || 0) - (x.ts || 0)).slice(0, 5),
+      days: Array.from(new Set([...(a.days || []), ...(b.days || [])])).sort(),
+      pos,
+      focus: Math.max(a.focus || 0, b.focus || 0)
+    };
+  }
+  function hashStr(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return String(h); }
+  function progressHash(p) { return hashStr(JSON.stringify(p)); }
+
+  async function progressApi(body, keepalive) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch(endpoint, {
+        method: "POST", keepalive: !!keepalive,
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(Object.assign({ type: "progress", name: currentName, pt: getDt(currentName) }, body)),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      return await res.json();
+    } catch { return null; }
+  }
+
+  async function syncPush(final) {
+    if (!syncReady || !currentName || syncBusy) return;
+    const p = collectProgress(), h = progressHash(p);
+    if (h === localStorage.getItem(SYNC_H())) return;
+    const data = JSON.stringify(p);
+    if (data.length > 44000) return;
+    syncBusy = true;
+    const r = await progressApi({ op: "put", data }, final);
+    syncBusy = false;
+    if (r && r.ok) { try { localStorage.setItem(SYNC_H(), h); localStorage.setItem(SYNC_T(), String(r.ts)); } catch {} }
+  }
+
+  async function syncOnLogin() {
+    if (!currentName || !getDt(currentName)) return; // protected accounts / no password proof: stay local
+    const r = await progressApi({ op: "get" });
+    if (!r || !r.ok || r.ts === undefined) return; // older backend or offline: just stay local this time
+    let server = null;
+    try { server = r.data ? JSON.parse(r.data) : null; } catch { server = null; }
+    const local = collectProgress(), lh = progressHash(local);
+    const lastH = localStorage.getItem(SYNC_H()), lastTs = localStorage.getItem(SYNC_T());
+    let changedLocalView = false;
+    if (!server) {
+      syncReady = true; // nothing on the server yet — first push will create it
+      localStorage.removeItem(SYNC_H()); localStorage.removeItem(SYNC_T());
+      await syncPush(false);
+    } else if (lastTs && String(r.ts) === lastTs) {
+      syncReady = true; // server unchanged since we last looked; push our edits if any
+      await syncPush(false);
+    } else {
+      const localUnchanged = lastH && lh === lastH;
+      const next = localUnchanged ? server : mergeProgress(local, server);
+      if (progressHash(next) !== lh) { applyProgress(next); changedLocalView = true; }
+      try { localStorage.setItem(SYNC_H(), progressHash(collectProgress())); localStorage.setItem(SYNC_T(), String(r.ts)); } catch {}
+      syncReady = true;
+      if (!localUnchanged) { localStorage.removeItem(SYNC_H()); await syncPush(false); }
+    }
+    if (changedLocalView) {
+      document.body.classList.add("no-anim");
+      setTimeout(() => document.body.classList.remove("no-anim"), 400);
+      render();
+    }
+    if (!syncTimer) syncTimer = setInterval(() => syncPush(false), 120000);
+  }
+  document.addEventListener("visibilitychange", () => { if (document.hidden) syncPush(true); });
+  window.addEventListener("pagehide", () => syncPush(true));
+
   // ── Formula of the day ──────────────────────────────────
   function todaysFormula() {
     const list = window.DAILY_FORMULAS;
@@ -2429,6 +2612,80 @@
     const d = new Date();
     const dayNum = Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
     return list[dayNum % list.length];
+  }
+
+  // ── Find inside the open PDF ────────────────────────────
+  // Lists the pages where a word appears (pages are drawn as pictures,
+  // so exact words can't be highlighted — jumping to the page is the
+  // useful part). Text of each page is read once and remembered.
+  const pdfTextCache = new WeakMap();
+  let vsToken = 0, vsTimer = null;
+  function vsEls() { return { box: document.getElementById("viewerSearch"), input: document.getElementById("viewerSearchInput"), status: document.getElementById("viewerSearchStatus"), hits: document.getElementById("viewerSearchHits") }; }
+  function openViewerSearch() {
+    if (!currentPdf) return;
+    const { box, input } = vsEls();
+    box.classList.remove("hidden");
+    input.focus(); input.select();
+  }
+  function closeViewerSearch() {
+    const { box, input, status, hits } = vsEls();
+    if (!box) return;
+    vsToken++;
+    box.classList.add("hidden");
+    input.value = ""; status.textContent = ""; hits.innerHTML = "";
+  }
+  async function pageText(pdf, n) {
+    let cache = pdfTextCache.get(pdf);
+    if (!cache) { cache = {}; pdfTextCache.set(pdf, cache); }
+    if (cache[n] === undefined) {
+      try {
+        const page = await pdf.getPage(n);
+        const tc = await page.getTextContent();
+        cache[n] = tc.items.map((i) => i.str).join(" ").toLowerCase();
+      } catch { cache[n] = ""; }
+    }
+    return cache[n];
+  }
+  async function runViewerSearch(q, jump) {
+    const { status, hits } = vsEls();
+    const my = ++vsToken;
+    q = q.trim().toLowerCase();
+    hits.innerHTML = "";
+    if (q.length < 2 || !currentPdf) { status.textContent = ""; return; }
+    const pdf = currentPdf, total = pdf.numPages, found = [];
+    let anyText = false;
+    for (let n = 1; n <= total; n++) {
+      if (my !== vsToken || pdf !== currentPdf) return;
+      status.textContent = `Searching… ${n}/${total}`;
+      const t = await pageText(pdf, n);
+      if (t.trim()) anyText = true;
+      let c = 0, i = 0;
+      while ((i = t.indexOf(q, i)) !== -1) { c++; i += q.length; }
+      if (c) {
+        found.push([n, c]);
+        const b = el("button", "viewer__hit", `p.${n}${c > 1 ? " ×" + c : ""}`);
+        b.type = "button";
+        b.addEventListener("click", () => scrollToPage(n));
+        hits.appendChild(b);
+        if (found.length === 1 && jump) scrollToPage(n);
+      }
+    }
+    if (my !== vsToken) return;
+    status.textContent = found.length
+      ? `${found.reduce((a, f) => a + f[1], 0)} match${found.reduce((a, f) => a + f[1], 0) === 1 ? "" : "es"} on ${found.length} page${found.length === 1 ? "" : "s"}`
+      : (anyText ? "No matches" : "No searchable text (this PDF is scanned images)");
+  }
+  function wireViewerSearch() {
+    const { input } = vsEls();
+    const btn = document.getElementById("viewerSearchBtn");
+    if (!input || !btn) return;
+    btn.addEventListener("click", () => { const { box } = vsEls(); if (box.classList.contains("hidden")) openViewerSearch(); else closeViewerSearch(); });
+    document.getElementById("viewerSearchClose").addEventListener("click", closeViewerSearch);
+    input.addEventListener("input", () => { clearTimeout(vsTimer); vsTimer = setTimeout(() => runViewerSearch(input.value, true), 350); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); closeViewerSearch(); }
+      else if (e.key === "Enter") { e.preventDefault(); clearTimeout(vsTimer); const first = vsEls().hits.querySelector(".viewer__hit"); if (first && document.activeElement === input && input.dataset.last === input.value) { const all = Array.from(vsEls().hits.children); const cur = all.findIndex((b) => b.classList.contains("viewer__hit--on")); const nxt = all[(cur + 1) % all.length]; all.forEach((b) => b.classList.remove("viewer__hit--on")); nxt.classList.add("viewer__hit--on"); nxt.click(); } else { input.dataset.last = input.value; runViewerSearch(input.value, true); } }
+    });
   }
 
   // ── Reading modes in the PDF viewer ─────────────────────
@@ -3094,9 +3351,11 @@
   function renderThumbnail(path, canvas, skeleton) {
     const textEl = skeleton.querySelector(".file-card__skeleton-text");
     if (!window.pdfjsLib) {
-      textEl.textContent = "PDF";
-      skeleton.classList.add("file-card__skeleton--failed");
-      return Promise.resolve();
+      return ensurePdfLib().then((ok) => {
+        if (ok) return renderThumbnail(path, canvas, skeleton);
+        textEl.textContent = "PDF";
+        skeleton.classList.add("file-card__skeleton--failed");
+      });
     }
 
     const loading = getPdfLoadingTask(path);
@@ -3384,9 +3643,13 @@
     viewerPages.appendChild(status);
 
     if (!window.pdfjsLib) {
-      statusText.textContent = "Couldn't load the PDF viewer. Please refresh and try again.";
+      statusText.textContent = "Loading the viewer…";
       skPages.remove();
       track.remove();
+      ensurePdfLib().then((ok) => {
+        if (ok) openViewer(path, name);
+        else statusText.textContent = "Couldn't load the PDF viewer. Please refresh and try again.";
+      });
       return;
     }
 
@@ -4147,6 +4410,7 @@
   }
 
   function closeViewer() {
+    closeViewerSearch();
     endCurrentView();
     stopStuckPageWatchdog();
     viewer.classList.add("hidden");
@@ -4347,7 +4611,7 @@
 
   const ACTION_LABELS = {
     approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
-    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setPassword: "Password changed", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setPassword: "Password changed", setBackup: "Weekly backup changed", sendBackupNow: "Backup emailed", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
     sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
     archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
     testEmail: "Test email", emailFailed: "Email failed"
@@ -4486,7 +4750,7 @@
     $$(".adm-tab", adminTabs).forEach((btn) => btn.classList.toggle("adm-tab--active", btn.dataset.tab === tabName));
     $$(".adm-panel").forEach((p) => p.classList.toggle("adm-panel--active", p.dataset.panel === tabName));
     if (tabName === "overview") renderChart();
-    if (tabName === "content") refreshDigestUI();
+    if (tabName === "content") { refreshDigestUI(); refreshBackupUI(); }
     window.scrollTo(0, 0);
     adminApp.scrollTop = 0;
   }
@@ -4686,6 +4950,28 @@
     const btn = $id("admDigestNow");
     btn.disabled = true;
     await act("sendWeeklyNow", {}, "Sent — check your inbox.", "Couldn't send the email");
+    btn.disabled = false;
+  }
+
+  // ── Weekly backup email (Content) ───────────────────────
+  async function refreshBackupUI() {
+    const st = $id("admBackupState");
+    if (!st) return;
+    const r = await adminFetch("backupStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    st.textContent = r.on ? "ON — arrives every Monday early morning." : "OFF.";
+    $id("admBackupToggle").textContent = r.on ? "Turn off" : "Turn on";
+    $id("admBackupToggle").dataset.on = r.on ? "1" : "0";
+  }
+  async function onBackupToggle() {
+    const turnOn = $id("admBackupToggle").dataset.on !== "1";
+    const res = await act("setBackup", { on: turnOn ? "1" : "0" }, turnOn ? "Weekly backup turned on." : "Weekly backup turned off.", "Couldn't change the weekly backup");
+    if (res) refreshBackupUI();
+  }
+  async function onBackupNow() {
+    const btn = $id("admBackupNow");
+    btn.disabled = true;
+    await act("sendBackupNow", {}, "Backup sent — check your inbox.", "Couldn't send the backup");
     btn.disabled = false;
   }
 
@@ -5703,6 +5989,8 @@
     $id("admAnnPublish").addEventListener("click", onPublishAnnouncement);
     $id("admDigestToggle").addEventListener("click", onDigestToggle);
     $id("admDigestNow").addEventListener("click", onDigestNow);
+    $id("admBackupToggle").addEventListener("click", onBackupToggle);
+    $id("admBackupNow").addEventListener("click", onBackupNow);
     $id("admAnnClear").addEventListener("click", onClearAnnouncement);
     $id("admRequestList").addEventListener("click", (e) => {
       const b = e.target.closest("[data-done]");
