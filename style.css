@@ -3503,3 +3503,6 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 .empty__icon--art { width: auto; height: auto; border: 0; background: none; border-radius: 0; margin-bottom: 14px; }
 .empty__icon--art svg { display: block; max-width: 140px; height: auto; }
 @media (prefers-reduced-motion: reduce) { .content.view-in, .viewer:not(.hidden) .viewer__shell { animation: none; } }
+
+.adm-pw__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adm-pw__val { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; padding: 6px 10px; border-radius: 8px; background: var(--ink-raised-2); border: 1px solid var(--line); word-break: break-all; }

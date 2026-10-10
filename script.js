@@ -4360,7 +4360,7 @@
 
   const ACTION_LABELS = {
     approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
-    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setPassword: "Password changed", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
     sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
     archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
     testEmail: "Test email", emailFailed: "Email failed"
@@ -5265,9 +5265,12 @@
         <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalViewSeconds))}</div><div class="adm-fact__label">inside PDFs</div></div>
         <div class="adm-fact"><div class="adm-fact__num">${totals.sessionCount || 0}</div><div class="adm-fact__label">visits</div></div>
       </div>
+      <p class="adm-h">Password</p><div id="admPwBox" class="adm-pw"><span class="adm-muted">Loading…</span></div>
       <p class="adm-h">Time by subject</p>${bars(subjectSeconds, subjectColor)}
       <p class="adm-h">Most-read files</p>${bars(fileSeconds, (k) => subjectColor(subjectOfFile(k, subjectMap)))}
       <p class="adm-h">Recent activity</p>${timeline || emptyMsg("No activity yet.")}`;
+
+    loadPasswordBox(name, person);
 
     $id("adminDetailBody").onclick = async (e) => {
       const b = e.target.closest("[data-dact]");
@@ -5283,6 +5286,36 @@
       }
       else if (k === "message" && live) sendAdminMessage(live.sessionId, name);
       else if (k === "logout" && live) forceLogoutUser(live.sessionId, name);
+    };
+  }
+
+  // ── Student password (admin can see and change it) ──────
+  async function loadPasswordBox(name, person) {
+    const box = $id("admPwBox");
+    if (!box) return;
+    const r = await adminFetch("getPassword", { name });
+    if (!$id("admPwBox")) return;
+    if (!r) { box.innerHTML = `<span class="adm-muted">Couldn't load: ${esc(adminErrText())}</span>`; return; }
+    let shown = false;
+    const draw = () => {
+      const text = !r.hasPassword ? "No password set yet" : (r.known ? (shown ? r.password : "•".repeat(Math.max(4, r.password.length))) : "Set before this update — not stored. Set a new one below.");
+      box.innerHTML = `<div class="adm-pw__row"><code class="adm-pw__val">${esc(text)}</code>
+        ${r.known ? `<button type="button" class="adm-mini" data-pw="show">${shown ? "Hide" : "Show"}</button><button type="button" class="adm-mini" data-pw="copy">Copy</button>` : ""}
+        <button type="button" class="adm-mini" data-pw="edit">${r.hasPassword ? "Change" : "Set one"}</button></div>${r.locked ? '<div class="adm-muted">Currently locked after wrong tries — setting a new password unlocks it.</div>' : ""}`;
+    };
+    draw();
+    box.onclick = async (e) => {
+      const b = e.target.closest("[data-pw]");
+      if (!b) return;
+      if (b.dataset.pw === "show") { shown = !shown; draw(); }
+      else if (b.dataset.pw === "copy") { try { await navigator.clipboard.writeText(r.password); showToast("Password copied."); } catch { showToast("Couldn't copy.", true); } }
+      else if (b.dataset.pw === "edit") {
+        const v = await showPrompt(`New password for "${name}" (4–32 characters):`, r.known ? r.password : "");
+        if (v === null) return;
+        if (v.length < 4 || v.length > 32) { showToast("Password must be 4 to 32 characters.", true); return; }
+        const res = await act("setPassword", { name, password: v }, `Password updated for ${name}.`, `Couldn't update the password for ${name}`);
+        if (res) { r.hasPassword = true; r.known = true; r.password = v; r.locked = false; shown = true; draw(); if (person) person.hasPin = true; }
+      }
     };
   }
 
