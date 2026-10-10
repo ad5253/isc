@@ -3,5 +3,5 @@
 // Leave it empty and the site simply talks to Google directly, as before.
 (function () {
   if (typeof SITE_CONFIG === "undefined") return;
-  SITE_CONFIG.apiCache = { url: "" };
+  SITE_CONFIG.apiCache = { url: "https://class12-api-cache.merchantadnan052.workers.dev/" };
 })();
