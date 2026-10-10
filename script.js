@@ -379,7 +379,6 @@
   const gatePinInput = $("#gatePinInput");
   const gatePinConfirmField = $("#gatePinConfirmField");
   const gatePinConfirm = $("#gatePinConfirm");
-  const gatePinSkip = $("#gatePinSkip");
   const gatePinForgot = $("#gatePinForgot");
   const gateError   = $("#gateError");
   const gateField   = $(".gate__field");
@@ -990,7 +989,6 @@
 
     nameForm.addEventListener("submit", onNameSubmit);
     nameInput.addEventListener("input", () => { hideGateError(); if (pinMode) resetPinUI(); });
-    gatePinSkip.addEventListener("click", () => { pinSkipFlag = true; nameForm.requestSubmit(); });
     // Mandatory so an approval can actually be followed up on — the
     // approval queue used to have no way to tell someone their request
     // was accepted short of you personally remembering their name and
@@ -1275,7 +1273,6 @@
   // still refuses PDF tokens for PIN-protected names without proof.
   let pinMode = null;
   let pinStateP = null; // started in parallel with the other login checks
-  let pinSkipFlag = false;
   const dtKey = (name) => "c12_dt_" + normalizeName(name);
   function getDt(name) { try { return localStorage.getItem(dtKey(name)) || ""; } catch { return ""; } }
   function setDt(name, v) { try { if (v) localStorage.setItem(dtKey(name), v); else localStorage.removeItem(dtKey(name)); } catch {} }
@@ -1303,12 +1300,10 @@
 
   function resetPinUI() {
     pinMode = null;
-    pinSkipFlag = false;
     gatePinBox.classList.add("hidden");
     gatePinInput.value = "";
     gatePinConfirm.value = "";
     gatePinConfirmField.classList.add("hidden");
-    gatePinSkip.classList.add("hidden");
     gatePinForgot.classList.add("hidden");
   }
 
@@ -1321,11 +1316,10 @@
     gatePinConfirmField.classList.toggle("hidden", !create);
     gatePinInput.autocomplete = create ? "new-password" : "current-password";
     gatePinInput.placeholder = "Password";
-    gatePinSkip.classList.toggle("hidden", !create);
     gatePinForgot.classList.toggle("hidden", create);
     gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my password for the Class 12 portal. My name: " + name);
     gatePinHint.textContent = create
-      ? "Create a password (4–32 characters) so nobody else can use your name. You'll be asked for it each time you sign in."
+      ? "Choose a password (4–32 characters) — you need it every time you sign in, so nobody else can use your name. You'll be asked for it each time you sign in."
       : "Enter your password to continue.";
     gatePinInput.focus();
   }
@@ -1336,13 +1330,11 @@
     if (pinMode === null) {
       const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
       pinStateP = null;
-      if (!st || !st.ok || !st.state) return "ok"; // also covers an older backend that doesn't know PINs yet
+      if (!st) { showGateError("Couldn't reach the server — check your connection and try again."); return "wait"; }
+      if (!st.ok || !st.state) return "ok"; // an older backend that doesn't know passwords yet
       if (st.state === "trusted") return "ok";
       if (st.state === "none") {
-        let skippedAt = 0;
-        try { skippedAt = Number(localStorage.getItem("c12_pinskip_" + normalizeName(name))) || 0; } catch {}
-        if (Date.now() - skippedAt < 7 * 86400000) return "ok";
-        showPinUI("create", name);
+        showPinUI("create", name); // mandatory: no way past this without choosing a password
         return "wait";
       }
       showPinUI("enter", name);
@@ -1350,20 +1342,15 @@
     }
 
     if (pinMode === "create") {
-      if (pinSkipFlag) {
-        try { localStorage.setItem("c12_pinskip_" + normalizeName(name), String(Date.now())); } catch {}
-        resetPinUI();
-        return "ok";
-      }
       const pin = gatePinInput.value;
       if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
       if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
       const r = await pinApi({ op: "set", name, pin });
-      if (!r) return "ok"; // couldn't reach the server — let them in, they'll be asked again next time
+      if (!r) { showGateError("Couldn't reach the server — check your connection and try again."); return "wait"; }
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
       if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
       if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
-      return "ok";
+      showGateError("Couldn't save your password — please try again."); return "wait";
     }
 
     // enter
@@ -3470,7 +3457,7 @@
         statusText.textContent = "You're not authorized to view this file.";
         canRetry = false;
       } else if (reason === "pin_required") {
-        statusText.textContent = "Please sign out and sign in again with your password.";
+        statusText.textContent = "Please sign out and sign in again to enter or set your password.";
         canRetry = false;
       } else {
         statusText.textContent = "Couldn't load this PDF.";
