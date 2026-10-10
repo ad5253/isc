@@ -21,7 +21,7 @@
   /* Ink-on-paper type */
   --paper:          #f4f1e8;
   --paper-dim:      rgba(244, 241, 232, 0.62);
-  --paper-faint:    rgba(244, 241, 232, 0.36);
+  --paper-faint:    rgba(244, 241, 232, 0.5);
 
   /* One warm accent, used sparingly */
   --brass:          #c9a15a;
@@ -89,7 +89,10 @@ html, body { overscroll-behavior-y: contain; }
    could occasionally get captured by the browser as a whole-page zoom
    instead of reaching the custom in-PDF pinch-zoom handler — pan-x
    pan-y still allows normal scrolling everywhere, just not zooming. */
-html, body { touch-action: pan-x pan-y; }
+html, body { touch-action: manipulation; }
+/* Pinch-zoom of the page stays allowed for accessibility; only while the
+   PDF viewer is open do we hand pinch over to its own zoom handler. */
+body.viewer-open, html:has(body.viewer-open) { touch-action: pan-x pan-y; }
 
 body {
   font-family: var(--sans);
@@ -3014,9 +3017,9 @@ button.adm-stat:hover { border-color: var(--line-strong); transform: translateY(
   --line-strong:    rgba(40, 32, 18, 0.26);
   --paper:          #1f1b14;
   --paper-dim:      rgba(31, 27, 20, 0.72);
-  --paper-faint:    rgba(31, 27, 20, 0.5);
-  --brass:          #94701f;
-  --brass-dim:      rgba(148, 112, 31, 0.5);
+  --paper-faint:    rgba(31, 27, 20, 0.64);
+  --brass:          #7f5f14;
+  --brass-dim:      rgba(127, 95, 20, 0.5);
   --maths:          #5d7150;
   --physics:        #42677f;
   --chemistry:      #99472f;
@@ -3290,3 +3293,167 @@ html.theme-fade, html.theme-fade * { transition: background-color .35s var(--eas
 :root[data-theme="light"] .subject--wide .subject__icon { color: #94701f; }
 :root[data-theme="light"] .subject--wide .subject__meta { color: #7a6431; }
 :root[data-theme="light"] .subject--wide .subject__arrow { color: #94701f; }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   ROUND 3 — viewer bar rebuilt for thumbs, bottom tab bar, chapter
+   cards, calmer home
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Viewer: taller bar, real touch targets, file name back ───── */
+.viewer__bar { height: 50px; min-height: 50px; max-height: 50px; padding: 0 12px; gap: 10px; }
+.viewer__brand { gap: 10px; }
+.viewer__brand-text { gap: 2px; }
+.viewer__credit { font-size: 9px; }
+.viewer__name {
+  display: block; font-family: var(--sans); font-size: 13.5px; font-weight: 600; line-height: 1.15;
+  color: var(--paper); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.viewer__actions { gap: 8px; }
+.viewer__btn, .viewer__btn--close, .viewer__btn--done, #viewerShareBtn, .viewer__btn--pages {
+  position: relative; width: 34px; height: 34px; padding: 0; justify-content: center; align-items: center;
+}
+.viewer__btn svg { width: 17px; height: 17px; }
+.viewer__btn::after { content: ''; position: absolute; inset: -6px; }   /* invisible: grows the tap area to ~46px */
+.viewer__zoom-btn { width: 40px; height: 40px; font-size: 18px; }
+.viewer__page-total { cursor: pointer; border-radius: 6px; padding: 2px 4px; transition: color .15s, background .15s; }
+.viewer__page-total:hover { color: var(--paper); background: var(--line); }
+@media (max-width: 640px) {
+  .viewer__bar { padding: 0 10px; gap: 8px; }
+  .viewer__actions { gap: 6px; }
+  .viewer__zoom { padding: 4px 6px; gap: 0; }
+  .viewer__zoom-btn { width: 36px; height: 36px; font-size: 17px; }
+}
+@media (max-width: 400px) {
+  .viewer__zoom-btn { width: 33px; height: 33px; }
+  .viewer__page-input { width: 36px; }
+}
+
+/* ── Subject page: header, switch, chapter cards ─────────────── */
+.subject-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.subject-head .section-label { margin-bottom: 4px; }
+.subject-head__stat { font-size: 12.5px; color: var(--paper-faint); padding-left: 14px; }
+.subject-head__stat b { color: var(--paper-dim); }
+.mini-progress--wide { margin: 0 0 24px; height: 5px; }
+.mini-progress--wide > span { background: var(--accent); }
+
+.seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--ink-raised); border: 1px solid var(--line); }
+.seg__btn { padding: 7px 14px; border-radius: 999px; border: none; background: none; color: var(--paper-dim); font: 600 12.5px var(--sans); cursor: pointer; transition: background .2s var(--ease-soft), color .2s, transform .15s var(--ease-spring); }
+.seg__btn:active { transform: scale(.94); }
+.seg__btn--on { background: var(--accent); color: var(--ink); }
+:root[data-theme="light"] .seg__btn--on { color: #fff; }
+
+.chapters { display: flex; flex-direction: column; gap: 10px; }
+.chapters__sub { margin: 18px 0 2px 2px; font: 600 11px var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--paper-faint); }
+.chapter-card {
+  display: flex; align-items: center; gap: 16px; padding: 14px 16px; cursor: pointer;
+  background: var(--ink-raised); border: 1px solid var(--line); border-radius: var(--r-md);
+  -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none;
+  transition: transform .25s var(--ease-spring), border-color .25s var(--ease-soft), background .25s var(--ease-soft);
+}
+.chapter-card:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--ink-raised-2); }
+.chapter-card:active { transform: scale(0.985); transition-duration: .12s; }
+.chapter-card__num {
+  flex-shrink: 0; width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+  font: italic 500 22px var(--serif); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.chapter-card__num--icon { color: var(--paper-faint); background: var(--ink-raised-2); }
+.chapter-card__num--icon svg { width: 20px; height: 20px; }
+.chapter-card__main { flex: 1; min-width: 0; }
+.chapter-card__title { font: 600 15px/1.3 var(--sans); color: var(--paper); margin-bottom: 8px; overflow-wrap: anywhere; }
+.chapter-card--plain .chapter-card__title { margin-bottom: 7px; }
+.chapter-card__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chapter-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line-strong); background: none; color: var(--paper-dim); font: 600 12px var(--sans);
+  transition: background .2s var(--ease-soft), color .2s, border-color .2s, transform .15s var(--ease-spring);
+}
+.chapter-chip:hover { border-color: var(--accent); color: var(--paper); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.chapter-chip:active { transform: scale(.92); }
+.chapter-chip__tick { display: none; color: var(--good); }
+.chapter-chip__tick svg { width: 12px; height: 12px; display: block; }
+.chapter-chip--done { color: var(--paper-faint); }
+.chapter-chip--done .chapter-chip__tick { display: inline-flex; }
+.chapter-chip__new { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 6px; border-radius: 999px; background: var(--accent); color: var(--ink); }
+:root[data-theme="light"] .chapter-chip__new { color: #fff; }
+.chapter-card__state { flex-shrink: 0; font: 600 12px var(--sans); color: var(--paper-faint); }
+.chapter-card__all { display: flex; width: 26px; height: 26px; border-radius: 50%; align-items: center; justify-content: center; background: var(--good); color: #fff; }
+.chapter-card__all svg { width: 14px; height: 14px; }
+.chapter-card--done { border-color: color-mix(in srgb, var(--good) 35%, var(--line)); }
+@media (max-width: 560px) {
+  .chapter-card { padding: 12px 12px; gap: 12px; }
+  .chapter-card__num { width: 40px; height: 40px; font-size: 19px; border-radius: 12px; }
+  .chapter-card__title { font-size: 14px; }
+}
+
+/* ── Home: quiet help row at the bottom ──────────────────────── */
+.help-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+.help-btn { flex: 1 1 180px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 14px; border-radius: var(--r-md); border: 1px dashed var(--line-strong); background: none; color: var(--paper-dim); font: 500 13px var(--sans); cursor: pointer; transition: border-color .25s, color .25s, background .25s, transform .15s var(--ease-spring); }
+.help-btn svg { width: 15px; height: 15px; }
+.help-btn:hover { border-color: var(--brass-dim); color: var(--paper); background: var(--ink-raised); }
+.help-btn:active { transform: scale(.97); }
+
+/* ── Phone bottom bar + cleaner top bar ──────────────────────── */
+.tabbar { display: none; }
+.req-overlay { z-index: 1001; }
+@media (max-width: 640px) {
+  .tabbar {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 400;
+    padding: 6px 8px; padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+    background: var(--glass-bg-strong); border-top: 1px solid var(--glass-border);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+  }
+  .tabbar__btn {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 4px; min-height: 52px;
+    background: none; border: none; border-radius: 14px; color: var(--paper-faint); font: 600 10.5px var(--sans); letter-spacing: .02em; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: color .2s var(--ease-soft), background .2s, transform .15s var(--ease-spring);
+  }
+  .tabbar__btn:active { transform: scale(.9); }
+  .tabbar__btn--on { color: var(--brass); background: color-mix(in srgb, var(--brass) 11%, transparent); }
+  .app .content { padding-bottom: 96px; }
+  .app .foot { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+
+  /* progress + search now live in the bottom bar */
+  #progressBtn { display: none; }
+  .nav__search { display: none; }
+  body.search-open .nav__search {
+    display: block; position: fixed; top: var(--nav-h); left: 0; right: 0; z-index: 99; padding: 10px 16px;
+    background: var(--glass-bg-strong); border-bottom: 1px solid var(--glass-border);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    animation: itemUp .25s var(--ease-soft) both;
+  }
+  body.search-open .nav__search-input, body.search-open .nav__search-input:focus { width: 100%; font-size: 16px; padding: 11px 16px; }
+  body.search-open .content { padding-top: 64px; }
+  .nav__right { gap: 10px; }
+  .nav__contact, .nav__user { width: 34px; height: 34px; }
+  .nav__greeting { display: block; max-width: 28vw; font-size: 12px; }
+}
+@media (max-width: 400px) { .nav__greeting { display: none; } }
+@media (max-width: 560px) {
+  .chapter-card__count { display: none; }
+  .chapter-chip { padding: 6px 10px; font-size: 11.5px; gap: 5px; }
+  .chapter-card__chips { gap: 5px; }
+}
+
+
+/* ═══ Round 4 — PIN step, gate stats, accessibility ═══ */
+.gate__pin { flex: 1 0 100%; display: flex; flex-direction: column; gap: 14px; }
+.gate__pin.hidden { display: none !important; }
+.gate__pin-hint { font-size: 13px; line-height: 1.5; color: var(--paper-dim); margin: 0; }
+.gate__input--pin { letter-spacing: 0.35em; font-variant-numeric: tabular-nums; font-size: 18px; }
+.gate__input--pin::placeholder { letter-spacing: normal; }
+.gate__pin-links { display: flex; gap: 18px; align-items: center; }
+.gate__linkbtn { background: none; border: 0; padding: 6px 0; font: inherit; font-size: 13px; color: var(--brass); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.gate__linkbtn.hidden { display: none !important; }
+
+.gate__stats { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12.5px; letter-spacing: 0.02em; color: var(--paper-dim); margin: -10px 0 18px; animation: fadeUp 0.6s var(--ease) both; }
+.gate__stats.hidden { display: none !important; }
+.gate__stats-live { display: inline-flex; align-items: center; gap: 7px; color: var(--paper); }
+.gate__stats-live i { width: 7px; height: 7px; border-radius: 50%; background: #6fbf73; box-shadow: 0 0 0 0 rgba(111,191,115,.6); animation: livePulse 2s infinite; }
+@keyframes livePulse { 70% { box-shadow: 0 0 0 7px rgba(111,191,115,0); } 100% { box-shadow: 0 0 0 0 rgba(111,191,115,0); } }
+@media (prefers-reduced-motion: reduce) { .gate__stats-live i { animation: none; } }
+
+.skip-link { position: absolute; left: 12px; top: -60px; z-index: 10000; background: var(--brass); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; text-decoration: none; transition: top .15s; }
+.skip-link:focus { top: 10px; }
+#content:focus { outline: none; }
+.chapter-card:focus-visible, .file-card:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }

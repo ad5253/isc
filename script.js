@@ -374,6 +374,13 @@
   const gatePasswordField = $("#gatePasswordField");
   const gatePasswordInput = $("#gatePasswordInput");
   const gateBtn     = $(".gate__btn");
+  const gatePinBox = $("#gatePinBox");
+  const gatePinHint = $("#gatePinHint");
+  const gatePinInput = $("#gatePinInput");
+  const gatePinConfirmField = $("#gatePinConfirmField");
+  const gatePinConfirm = $("#gatePinConfirm");
+  const gatePinSkip = $("#gatePinSkip");
+  const gatePinForgot = $("#gatePinForgot");
   const gateError   = $("#gateError");
   const gateField   = $(".gate__field");
   const gateRequestApproval = $("#gateRequestApproval");
@@ -453,7 +460,7 @@
     let data;
     try {
       // Bounded wait + one automatic retry (second try usually hits a warm backend).
-      const url = `${endpoint}?action=getPdfToken&name=${encodeURIComponent(currentName)}&sessionId=${encodeURIComponent(sessionId)}`;
+      const url = `${endpoint}?action=getPdfToken&name=${encodeURIComponent(currentName)}&sessionId=${encodeURIComponent(sessionId)}&pt=${encodeURIComponent(getDt(currentName))}`;
       const tryOnce = async (ms) => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), ms);
@@ -475,6 +482,7 @@
       pdfTokenExpiresAt = Date.now() + 17 * 60 * 1000;
       return pdfToken;
     }
+    if (data && data.error === "pin_required") setDt(currentName, ""); // stale/missing proof — forget it so the next login asks for the PIN
     throw new Error((data && data.error) || "network");
   }
 
@@ -647,11 +655,7 @@
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return fallback;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${endpoint}?action=loginCheck&name=${encodeURIComponent(name || "")}`, { signal: controller.signal });
-      clearTimeout(timeout);
-      const data = await res.json();
+      const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}`, cacheBase() ? 3500 : 2000).catch(() => null);
       cachedLoginCheck = (data && data.ok) ? {
         blockedDeviceIds: data.blockedDeviceIds || [],
         accessHashes: data.accessHashes || [],
@@ -959,6 +963,7 @@
       if (ep && ep.indexOf("PASTE_YOUR") !== 0) fetch(`${ep}?action=ping`).catch(() => {});
     } catch (e) {}
     const saved = readSession();
+    if (!saved) loadGateStats();
     if (saved && (await isSuspended(saved))) {
       clearSession();
       gate.classList.remove("hidden");
@@ -974,7 +979,8 @@
     }
 
     nameForm.addEventListener("submit", onNameSubmit);
-    nameInput.addEventListener("input", hideGateError);
+    nameInput.addEventListener("input", () => { hideGateError(); if (pinMode) resetPinUI(); });
+    gatePinSkip.addEventListener("click", () => { pinSkipFlag = true; nameForm.requestSubmit(); });
     // Mandatory so an approval can actually be followed up on — the
     // approval queue used to have no way to tell someone their request
     // was accepted short of you personally remembering their name and
@@ -1037,6 +1043,34 @@
     });
     homeBtn.addEventListener("click", () => nav("home"));
     if (progressBtn) progressBtn.addEventListener("click", () => nav("progress"));
+
+    // Phone bottom bar
+    const tabbar = document.getElementById("tabbar");
+    if (tabbar) tabbar.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-tab]");
+      if (!b) return;
+      const t = b.dataset.tab;
+      if (t === "search") {
+        const open = document.body.classList.toggle("search-open");
+        if (open && searchInput) setTimeout(() => searchInput.focus(), 30);
+        else if (searchInput) { searchInput.value = ""; searchInput.blur(); render(); }
+        syncTabbar();
+        return;
+      }
+      document.body.classList.remove("search-open");
+      if (searchInput && searchInput.value) { searchInput.value = ""; }
+      if (t === "home") nav("home");
+      else if (t === "progress") nav("progress");
+      else if (t === "practicals") location.href = APP_BASE + "practicals/";
+      syncTabbar();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && document.body.classList.contains("search-open")) {
+        document.body.classList.remove("search-open");
+        if (searchInput) { searchInput.value = ""; render(); }
+        syncTabbar();
+      }
+    });
     logoutBtn.addEventListener("click", () => {
       // No confirmation here at all was the actual bug behind "logs
       // out suddenly if something is clicked" — this button sits
@@ -1081,7 +1115,7 @@
       $("#supportModalClose").addEventListener("click", closeSupportModal);
       $("#supportModalOverlay").addEventListener("click", closeSupportModal);
     }
-    if (searchInput) searchInput.addEventListener("input", () => render());
+    if (searchInput) searchInput.addEventListener("input", () => { render(); if (searchInput.value.trim()) window.scrollTo({ top: 0 }); });
     document.addEventListener("visibilitychange", () => {
       if (!currentViewId) return;
       if (document.hidden) {
@@ -1118,6 +1152,10 @@
       showToast(on ? "Marked as done \u2713" : "Unmarked");
       buzz();
     });
+    if (viewerPageTotal) {
+      viewerPageTotal.title = "Jump to the last page";
+      viewerPageTotal.addEventListener("click", () => { if (currentPdf) scrollToPage(currentPdf.numPages); });
+    }
     if (viewerShareBtn) viewerShareBtn.addEventListener("click", () => {
       if (currentPdfPath) shareFile(currentPdfPath, viewerName.textContent || "Document");
     });
@@ -1215,6 +1253,115 @@
   }
 
   // ── Name Gate ──────────────────────────────────────────
+  // ── Student PIN ─────────────────────────────────────────
+  // Optional 4–6 digit PIN. State machine for the gate:
+  //   pinMode null      → not asked yet (first submit asks the server)
+  //   pinMode "create"  → name has no PIN: offer to make one (can skip)
+  //   pinMode "enter"   → name has a PIN: must type it (unless this device is trusted)
+  // Network trouble NEVER blocks login here (fails open) — the server
+  // still refuses PDF tokens for PIN-protected names without proof.
+  let pinMode = null;
+  let pinSkipFlag = false;
+  const dtKey = (name) => "c12_dt_" + normalizeName(name);
+  function getDt(name) { try { return localStorage.getItem(dtKey(name)) || ""; } catch { return ""; } }
+  function setDt(name, v) { try { if (v) localStorage.setItem(dtKey(name), v); else localStorage.removeItem(dtKey(name)); } catch {} }
+
+  async function pinApi(body) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return null;
+    const attempt = async (ms) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(Object.assign({ type: "pin" }, body)),
+          signal: controller.signal
+        });
+        return await res.json();
+      } finally { clearTimeout(timer); }
+    };
+    try { return await attempt(10000); } catch {
+      try { return await attempt(10000); } catch { return null; }
+    }
+  }
+
+  function resetPinUI() {
+    pinMode = null;
+    pinSkipFlag = false;
+    gatePinBox.classList.add("hidden");
+    gatePinInput.value = "";
+    gatePinConfirm.value = "";
+    gatePinConfirmField.classList.add("hidden");
+    gatePinSkip.classList.add("hidden");
+    gatePinForgot.classList.add("hidden");
+  }
+
+  function showPinUI(mode, name) {
+    pinMode = mode;
+    gatePinBox.classList.remove("hidden");
+    gatePinInput.value = "";
+    gatePinConfirm.value = "";
+    const create = mode === "create";
+    gatePinConfirmField.classList.toggle("hidden", !create);
+    gatePinSkip.classList.toggle("hidden", !create);
+    gatePinForgot.classList.toggle("hidden", create);
+    gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my PIN for the Class 12 portal. My name: " + name);
+    gatePinHint.textContent = create
+      ? "Create a 4–6 digit PIN so nobody else can use your name. You'll only be asked on new devices."
+      : "Enter your PIN to continue.";
+    gatePinInput.focus();
+  }
+
+  // Returns "ok" to carry on logging in, or "wait" when the gate is
+  // now showing a PIN box and the person must act.
+  async function runPinStep(name) {
+    if (pinMode === null) {
+      const st = await pinApi({ op: "state", name, dt: getDt(name) });
+      if (!st || !st.ok || !st.state) return "ok"; // also covers an older backend that doesn't know PINs yet
+      if (st.state === "trusted") return "ok";
+      if (st.state === "none") {
+        let skippedAt = 0;
+        try { skippedAt = Number(localStorage.getItem("c12_pinskip_" + normalizeName(name))) || 0; } catch {}
+        if (Date.now() - skippedAt < 7 * 86400000) return "ok";
+        showPinUI("create", name);
+        return "wait";
+      }
+      showPinUI("enter", name);
+      return "wait";
+    }
+
+    if (pinMode === "create") {
+      if (pinSkipFlag) {
+        try { localStorage.setItem("c12_pinskip_" + normalizeName(name), String(Date.now())); } catch {}
+        resetPinUI();
+        return "ok";
+      }
+      const pin = gatePinInput.value.trim();
+      if (!/^\d{4,6}$/.test(pin)) { showGateError("PIN must be 4 to 6 digits."); gatePinInput.focus(); return "wait"; }
+      if (pin !== gatePinConfirm.value.trim()) { showGateError("The two PINs don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
+      const r = await pinApi({ op: "set", name, pin });
+      if (!r) return "ok"; // couldn't reach the server — let them in, they'll be asked again next time
+      if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
+      if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a PIN — enter it."); return "wait"; }
+      if (r.error === "bad_pin") { showGateError("PIN must be 4 to 6 digits."); return "wait"; }
+      return "ok";
+    }
+
+    // enter
+    const pin = gatePinInput.value.trim();
+    if (!pin) { gatePinInput.focus(); return "wait"; }
+    const r = await pinApi({ op: "check", name, pin });
+    if (!r || !r.ok) { showGateError("Couldn't check your PIN — check your connection and try again."); return "wait"; }
+    if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
+    gatePinInput.value = "";
+    gatePinInput.focus();
+    if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot PIN.`);
+    else showGateError(`Wrong PIN.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);
+    return "wait";
+  }
+
   async function onNameSubmit(e) {
     e.preventDefault();
     const name = nameInput.value.trim();
@@ -1360,6 +1507,11 @@
       // is both what was actually asked for and doesn't have that
       // failure mode.
 
+      if (!credentialsVerified) {
+        hideGateError();
+        if ((await runPinStep(name)) === "wait") return;
+      }
+
       hideGateError();
       const sid = makeId();
       saveSession(name, sid);
@@ -1453,15 +1605,51 @@
   // there — so this runs in the background after the home screen is
   // already visible, and showApp() just calls render() again once
   // this settles, to pick up anything new.
+  // Public read-only requests (catalog / login lists / gate stats) go
+  // through the optional API-cache Worker when config-extra.js gives
+  // its address; otherwise (or if it fails) straight to Apps Script.
+  function cacheBase() {
+    const u = SITE_CONFIG.apiCache && SITE_CONFIG.apiCache.url;
+    return (u && /^https:\/\//.test(u)) ? u.replace(/\/+$/, "") : "";
+  }
+  async function fetchPublic(action, extraQuery, timeoutMs) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
+    const once = async (base, q) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(`${base}?action=${action}${q || ""}`, { signal: controller.signal });
+        const data = await res.json();
+        if (!data || data.ok !== true) throw new Error("bad");
+        return data;
+      } finally { clearTimeout(timer); }
+    };
+    const cb = cacheBase();
+    if (cb) { try { return await once(cb, ""); } catch {} }
+    return once(endpoint, extraQuery);
+  }
+
+  async function loadGateStats() {
+    const box = $("#gateStats");
+    if (!box) return;
+    try {
+      const d = await fetchPublic("stats", "", 6000);
+      const parts = [];
+      if (d.files >= 10) parts.push(`${d.files} files`);
+      parts.push("3 subjects", "Practicals");
+      let html = `<span>${parts.join(" · ")}</span>`;
+      if (d.studiedToday >= 3) html += `<span class="gate__stats-live"><i aria-hidden="true"></i>${d.studiedToday} studied today</span>`;
+      box.innerHTML = html;
+      box.classList.remove("hidden");
+    } catch { /* line stays hidden */ }
+  }
+
   async function fetchAndApplyCatalog() {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(`${endpoint}?action=catalog`, { signal: controller.signal });
-      clearTimeout(timeout);
-      const data = await res.json();
+      const data = await fetchPublic("catalog", "", 6000);
       if (data && data.ok) liveAnnouncement = data.announcement || null;
       fileSubjectMap = null;
       if (!data || !data.ok || !data.catalog) return;
@@ -1765,6 +1953,7 @@
     updateCrumbs();
     applyAccent();
     render();
+    syncTabbar();
 
     if (historyMode !== "none") {
       const target = urlForView(view, curSubject);
@@ -1786,8 +1975,20 @@
     }
   }
 
+  function syncTabbar() {
+    const bar = document.getElementById("tabbar");
+    if (!bar) return;
+    const searching = document.body.classList.contains("search-open");
+    const active = searching ? "search" : (curView === "progress" ? "progress" : "home");
+    bar.querySelectorAll("[data-tab]").forEach((b) => {
+      const on = b.dataset.tab === active;
+      b.classList.toggle("tabbar__btn--on", on);
+      if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
+  }
+
   function updateCrumbs() {
-    let h = `<button class="crumb ${curView === 'home' ? 'crumb--active' : ''}" onclick="window.__nav('home')">Home</button>`;
+    let h = `<button class="crumb ${curView === 'home' ? 'crumb--active' : ''}" ${curView === 'home' ? 'aria-current="page"' : ''} onclick="window.__nav('home')">Home</button>`;
     if (curView === "progress") {
       h += `<span class="crumb-sep">/</span>`;
       h += `<button class="crumb crumb--active">My Progress</button>`;
@@ -1816,7 +2017,7 @@
     if (query) { renderSearchResults(query); return; }
     switch (curView) {
       case "home":      renderSubjects(); break;
-      case "subject":   renderFolders();  break;
+      case "subject":   renderSubjectView(); break;
       case "subfolder": renderFiles();    break;
       case "progress":  renderProgress(); break;
       case "feedback":  renderFeedback(); break;
@@ -2394,19 +2595,6 @@
       content.appendChild(banner);
     }
 
-    if (currentName) {
-      const feedbackBanner = el("button", "feedback-banner fade-up");
-      feedbackBanner.innerHTML = `${ICONS.star}<span>Help us improve — leave a quick review</span>`;
-      feedbackBanner.addEventListener("click", () => nav("feedback"));
-      content.appendChild(feedbackBanner);
-
-      const reqBanner = el("button", "req-banner fade-up");
-      reqBanner.type = "button";
-      reqBanner.innerHTML = `${ICON_PLUS}<span>Missing a chapter or topic? Request a file</span>`;
-      reqBanner.addEventListener("click", () => openRequestBox());
-      content.appendChild(reqBanner);
-    }
-
     const others = recent.slice(1);
     if (others.length) {
       const rLabel = el("p", "section-label", "Recently opened");
@@ -2480,12 +2668,26 @@
     grid.appendChild(pr);
 
     content.append(label, grid);
+
+    if (currentName) {
+      const help = el("div", "help-row fade-up");
+      const reqBtn = el("button", "help-btn");
+      reqBtn.type = "button";
+      reqBtn.innerHTML = `${ICON_PLUS}<span>Request a file</span>`;
+      reqBtn.addEventListener("click", () => openRequestBox());
+      const fbBtn = el("button", "help-btn");
+      fbBtn.type = "button";
+      fbBtn.innerHTML = `${ICONS.star}<span>Leave feedback</span>`;
+      fbBtn.addEventListener("click", () => nav("feedback"));
+      help.append(reqBtn, fbBtn);
+      content.appendChild(help);
+    }
   }
 
   // ── Subfolders ─────────────────────────────────────────
-  function renderFolders() {
+  function renderFolders(headless) {
     if (!curSubject) return;
-    const label = el("p", "section-label", curSubject.name);
+    const label = headless ? null : el("p", "section-label", curSubject.name);
     const list = el("div", "subfolders stagger");
     const doneSet = getRevisedSet();
 
@@ -2508,7 +2710,114 @@
       list.appendChild(row);
     });
 
-    content.append(label, list);
+    if (label) content.append(label, list); else content.appendChild(list);
+  }
+
+  // ── Subject page: by chapter (default) or by type ──────
+  const TYPE_ORDER = ["Notes", "Formulas", "Solutions", "Numericals", "Revision", "Questions", "PDF"];
+  function subjectMode() { try { return localStorage.getItem("c12_subjmode") === "type" ? "type" : "chapter"; } catch { return "chapter"; } }
+
+  function buildChapters(subject) {
+    const groups = new Map();
+    const others = [];
+    subject.subfolders.forEach((folder) => folder.files.forEach((file) => {
+      const meta = fileMeta(file, folder);
+      const item = { file, folder, meta };
+      if (meta.chapter == null) { others.push(item); return; }
+      let g = groups.get(meta.chapter);
+      if (!g) { g = { chapter: meta.chapter, items: [] }; groups.set(meta.chapter, g); }
+      g.items.push(item);
+    }));
+    const chapters = Array.from(groups.values()).sort((a, b) => a.chapter - b.chapter);
+    chapters.forEach((g) => {
+      g.items.sort((a, b) => TYPE_ORDER.indexOf(a.meta.type) - TYPE_ORDER.indexOf(b.meta.type));
+      const primary = g.items.find((i) => i.meta.type === "Notes") || g.items[0];
+      g.title = primary.meta.title;
+      const seen = {};
+      g.items.forEach((i) => { seen[i.meta.type] = (seen[i.meta.type] || 0) + 1; i.label = seen[i.meta.type] > 1 ? `${i.meta.type} ${seen[i.meta.type]}` : i.meta.type; });
+    });
+    return { chapters, others };
+  }
+
+  function chapterChip(item, doneSet) {
+    const chip = el("button", "chapter-chip" + (doneSet.has(item.file.path) ? " chapter-chip--done" : ""));
+    chip.type = "button";
+    chip.dataset.path = item.file.path;
+    chip.title = item.file.name;
+    chip.innerHTML = `<span class="chapter-chip__tick">${ICON_CHECK}</span><span class="chapter-chip__label"></span>${item.file.n ? '<span class="chapter-chip__new">new</span>' : ""}`;
+    chip.querySelector(".chapter-chip__label").textContent = item.label || item.meta.type;
+    chip.addEventListener("click", (e) => { e.stopPropagation(); openViewer(item.file.path, item.file.name); });
+    return chip;
+  }
+
+  function renderSubjectView() {
+    if (!curSubject) return;
+    const mode = subjectMode();
+    const doneSet = getRevisedSet();
+    const all = curSubject.subfolders.flatMap((f) => f.files);
+    const doneN = all.filter((f) => doneSet.has(f.path)).length;
+
+    const head = el("div", "subject-head fade-up");
+    head.innerHTML = `<div class="subject-head__text"><p class="section-label"></p>${currentName && all.length ? `<span class="subject-head__stat"><b>${doneN}</b> of ${all.length} done</span>` : ""}</div>
+      <div class="seg" role="tablist" aria-label="How to browse">
+        <button type="button" class="seg__btn${mode === "chapter" ? " seg__btn--on" : ""}" data-mode="chapter" role="tab" aria-selected="${mode === "chapter"}">By chapter</button>
+        <button type="button" class="seg__btn${mode === "type" ? " seg__btn--on" : ""}" data-mode="type" role="tab" aria-selected="${mode === "type"}">By type</button>
+      </div>`;
+    head.querySelector(".section-label").textContent = curSubject.name;
+    head.querySelector(".seg").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-mode]");
+      if (!b || b.dataset.mode === mode) return;
+      try { localStorage.setItem("c12_subjmode", b.dataset.mode); } catch { /* fine */ }
+      render();
+    });
+    content.appendChild(head);
+    if (currentName && all.length) {
+      const bar = el("div", "mini-progress mini-progress--wide");
+      bar.innerHTML = `<span style="width:${Math.round(doneN / all.length * 100)}%"></span>`;
+      content.appendChild(bar);
+    }
+
+    if (mode === "type") { renderFolders(true); return; }
+
+    const { chapters, others } = buildChapters(curSubject);
+    if (!chapters.length && !others.length) { renderFolders(true); return; }
+    const list = el("div", "chapters stagger");
+    chapters.forEach((g) => {
+      const done = g.items.filter((i) => doneSet.has(i.file.path)).length;
+      const card = el("div", "chapter-card fade-up" + (done === g.items.length ? " chapter-card--done" : ""));
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Chapter ${g.chapter}: ${g.title}, ${g.items.length} file${g.items.length === 1 ? "" : "s"}${done === g.items.length ? ", all revised" : ""}`);
+      card.innerHTML = `<div class="chapter-card__num"><span></span></div>
+        <div class="chapter-card__main"><div class="chapter-card__title"></div><div class="chapter-card__chips"></div></div>
+        <div class="chapter-card__state">${done === g.items.length ? `<span class="chapter-card__all">${ICON_CHECK}</span>` : `<span class="chapter-card__count">${done}/${g.items.length}</span>`}</div>`;
+      card.querySelector(".chapter-card__num span").textContent = g.chapter;
+      card.querySelector(".chapter-card__title").textContent = g.title;
+      const chips = card.querySelector(".chapter-card__chips");
+      g.items.forEach((i) => chips.appendChild(chapterChip(i, doneSet)));
+      const open = () => { const first = g.items[0]; openViewer(first.file.path, first.file.name); };
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === card) { e.preventDefault(); open(); } });
+      list.appendChild(card);
+    });
+    if (others.length) {
+      list.appendChild(el("p", "chapters__sub", "More material"));
+      others.forEach((i) => {
+        const card = el("div", "chapter-card chapter-card--plain fade-up" + (doneSet.has(i.file.path) ? " chapter-card--done" : ""));
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", i.file.name);
+        card.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === card) { e.preventDefault(); openViewer(i.file.path, i.file.name); } });
+        card.innerHTML = `<div class="chapter-card__num chapter-card__num--icon">${ICONS.doc}</div>
+          <div class="chapter-card__main"><div class="chapter-card__title"></div><div class="chapter-card__chips"></div></div>`;
+        card.querySelector(".chapter-card__title").textContent = i.file.name;
+        i.label = i.meta.type;
+        card.querySelector(".chapter-card__chips").appendChild(chapterChip(i, doneSet));
+        card.addEventListener("click", () => openViewer(i.file.path, i.file.name));
+        list.appendChild(card);
+      });
+    }
+    content.appendChild(list);
   }
 
   // One file card — used by folders and by search results.
@@ -2860,6 +3169,7 @@
   let currentPdfIsDedicated = false; // true only when currentPdf is its own full-download copy, not the shared thumbnail document
   let currentPdfPath = null; // tracks which file's loading task to evict from cache once this document is destroyed
 
+  let lastFocusBeforeViewer = null;
   function openViewer(path, name) {
     endCurrentView(); // in case a different PDF was already open — close out its timer first
     currentPdfPath = path;
@@ -2867,6 +3177,9 @@
     viewerName.textContent = name;
     viewer.classList.remove("hidden");
     document.body.style.overflow = "hidden";
+    document.body.classList.add("viewer-open");
+    lastFocusBeforeViewer = document.activeElement;
+    setTimeout(() => { const d = document.getElementById("viewerDoneBtn"); if (d && !viewer.classList.contains("hidden")) d.focus({ preventScroll: true }); }, 60);
     syncViewerViewport();
     currentViewId = makeId();
     currentViewName = name;
@@ -2983,6 +3296,9 @@
         canRetry = false;
       } else if (reason === "unauthorized") {
         statusText.textContent = "You're not authorized to view this file.";
+        canRetry = false;
+      } else if (reason === "pin_required") {
+        statusText.textContent = "Please sign out and sign in again with your PIN.";
         canRetry = false;
       } else {
         statusText.textContent = "Couldn't load this PDF.";
@@ -3720,6 +4036,9 @@
     viewerPages.innerHTML = "";
     viewerPages.scrollTop = 0;
     document.body.style.overflow = "";
+    document.body.classList.remove("viewer-open");
+    try { if (lastFocusBeforeViewer && document.contains(lastFocusBeforeViewer)) lastFocusBeforeViewer.focus({ preventScroll: true }); } catch {}
+    lastFocusBeforeViewer = null;
   }
 
   // Ends the currently-open PDF's timer (if any) and logs how long it
@@ -3869,7 +4188,7 @@
 
   const ACTION_LABELS = {
     approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
-    unsuspendIdentity: "Unsuspended", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    unsuspendIdentity: "Unsuspended", resetPin: "PIN reset", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
     sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
     archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
     testEmail: "Test email", emailFailed: "Email failed"
@@ -4723,6 +5042,7 @@
     const tags = [
       live ? '<span class="adm-tag adm-tag--good">online now</span>' : "",
       person.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : "",
+      person.hasPin ? '<span class="adm-tag">PIN set</span>' : '<span class="adm-tag">no PIN yet</span>',
       person.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(person.expiresAt).toLocaleDateString())}</span>` : "",
       ...(person.aliases || []).map((a) => `<span class="adm-tag">also ${esc(a)}</span>`)
     ].join(" ");
@@ -4742,6 +5062,7 @@
       <div class="adm-bar" style="margin-top:14px">
         <button type="button" class="adm-btn adm-btn--sm ${person.suspended ? "adm-btn--good" : "adm-btn--danger-ghost"}" data-dact="suspend">${person.suspended ? "Unsuspend" : "Suspend"}</button>
         <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="expiry">${person.expiresAt ? "Change expiry" : "Set expiry"}</button>
+        ${person.hasPin ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="resetpin">Reset PIN</button>` : ""}
         ${live ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="message">Message</button><button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-dact="logout">Log out</button>` : ""}
       </div>
       <div class="adm-facts">
@@ -4759,6 +5080,12 @@
       const k = b.dataset.dact;
       if (k === "suspend") { if (await onToggleSuspend(name, !!person.suspended)) closeAdminDetail(); }
       else if (k === "expiry") { if (await onSetExpiry(name, person.expiresAt)) closeAdminDetail(); }
+      else if (k === "resetpin") {
+        if (await showConfirm(`Remove ${name}'s PIN? They can create a new one next time they sign in.`, { ok: "Reset PIN", danger: true })) {
+          const r = await act("resetPin", { name }, `PIN removed for ${name}.`, `Couldn't reset PIN for ${name}`);
+          if (r) { person.hasPin = false; refreshAdmin(); closeAdminDetail(); }
+        }
+      }
       else if (k === "message" && live) sendAdminMessage(live.sessionId, name);
       else if (k === "logout" && live) forceLogoutUser(live.sessionId, name);
     };

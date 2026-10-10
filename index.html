@@ -2,7 +2,7 @@
 <html lang="en-IN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>ISC Class 12 Study Portal — Notes, Formulas & Solutions</title>
     <meta name="description" content="Free ISC (CISCE) Class 12 study material — chapter notes, formula sheets, and fully worked solutions for Maths, Physics and Chemistry. Built for Vapi Public School students; useful for CBSE Class 12 too.">
     <meta name="theme-color" content="#121218">
@@ -31,7 +31,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=42">
+    <link rel="stylesheet" href="style.css?v=44">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -85,22 +85,38 @@
             <p class="gate__eyebrow">Welcome to</p>
             <h1 class="gate__title">Class 12</h1>
             <div class="gate__divider"></div>
+            <p class="gate__stats hidden" id="gateStats" aria-live="polite"></p>
             <p class="gate__subtitle">Please enter your name</p>
             <form id="nameForm" class="gate__form">
                 <div class="gate__field">
-                    <input type="text" id="nameInput" class="gate__input" placeholder="Your name" required autocomplete="off" minlength="2" enterkeyhint="go">
+                    <input type="text" id="nameInput" class="gate__input" placeholder="Your name" aria-label="Your name" required autocomplete="off" minlength="2" enterkeyhint="go">
                     <span class="gate__field-line"></span>
                 </div>
                 <div class="gate__field gate__field--password hidden" id="gatePasswordField">
-                    <input type="password" id="gatePasswordInput" class="gate__input" placeholder="Password" autocomplete="current-password" enterkeyhint="go">
+                    <input type="password" id="gatePasswordInput" class="gate__input" placeholder="Password" aria-label="Password" autocomplete="current-password" enterkeyhint="go">
                     <span class="gate__field-line"></span>
+                </div>
+                <div class="gate__pin hidden" id="gatePinBox">
+                    <p class="gate__pin-hint" id="gatePinHint" role="status" aria-live="polite"></p>
+                    <div class="gate__field">
+                        <input type="password" id="gatePinInput" class="gate__input gate__input--pin" placeholder="PIN" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" enterkeyhint="go" aria-label="PIN">
+                        <span class="gate__field-line"></span>
+                    </div>
+                    <div class="gate__field hidden" id="gatePinConfirmField">
+                        <input type="password" id="gatePinConfirm" class="gate__input gate__input--pin" placeholder="Repeat PIN" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" enterkeyhint="go" aria-label="Repeat PIN">
+                        <span class="gate__field-line"></span>
+                    </div>
+                    <div class="gate__pin-links">
+                        <button type="button" id="gatePinSkip" class="gate__linkbtn hidden">Not now</button>
+                        <a id="gatePinForgot" class="gate__linkbtn hidden" href="https://wa.me/917405806352" target="_blank" rel="noopener">Forgot PIN?</a>
+                    </div>
                 </div>
                 <button type="submit" class="gate__btn">
                     <span class="gate__btn-label">Continue</span>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
                 </button>
             </form>
-            <p id="gateError" class="gate__error hidden"></p>
+            <p id="gateError" class="gate__error hidden" role="alert"></p>
 
             <!-- Shown only after an explicit tap on "Send my name for
                  approval" below — never automatically on a failed
@@ -156,6 +172,7 @@
 
     <!-- ═══ MAIN APP ═══ -->
     <div id="app" class="app hidden">
+        <a class="skip-link" href="#content">Skip to content</a>
 
         <nav class="nav">
             <div class="nav__inner">
@@ -194,7 +211,7 @@
 
         <div class="shell">
             <nav id="breadcrumb" class="crumbs"></nav>
-            <main id="content" class="content"></main>
+            <main id="content" class="content" tabindex="-1"></main>
         </div>
 
         <footer class="foot">
@@ -225,6 +242,26 @@
                 </div>
             </div>
         </footer>
+
+        <!-- Phone-only bottom bar (hidden on wider screens by CSS) -->
+        <nav class="tabbar" id="tabbar" aria-label="Main">
+            <button type="button" class="tabbar__btn tabbar__btn--on" data-tab="home">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>
+                <span>Home</span>
+            </button>
+            <button type="button" class="tabbar__btn" data-tab="search">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+                <span>Search</span>
+            </button>
+            <button type="button" class="tabbar__btn" data-tab="practicals">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3"/><path d="M7.5 15h9"/></svg>
+                <span>Practicals</span>
+            </button>
+            <button type="button" class="tabbar__btn" data-tab="progress">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>
+                <span>Progress</span>
+            </button>
+        </nav>
     </div>
 
     <!-- ═══ SUPPORT / UPI MODAL ═══ -->
@@ -246,7 +283,7 @@
     </div>
 
     <!-- ═══ PDF VIEWER ═══ -->
-    <div id="viewer" class="viewer hidden">
+    <div id="viewer" class="viewer hidden" role="dialog" aria-modal="true" aria-label="PDF viewer">
         <div class="viewer__overlay" id="viewerOverlay"></div>
         <div class="viewer__shell">
             <div class="viewer__bar">
@@ -579,7 +616,8 @@
 
 
     <script defer src="config.js?v=6"></script>
-    <script defer src="script.js?v=42"></script>
+    <script defer src="config-extra.js?v=1"></script>
+    <script defer src="script.js?v=44"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {
