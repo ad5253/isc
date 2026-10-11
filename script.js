@@ -398,6 +398,7 @@
   const gatePinConfirmField = $("#gatePinConfirmField");
   const gatePinConfirm = $("#gatePinConfirm");
   const gatePinForgot = $("#gatePinForgot");
+  const gatePinAsk = $("#gatePinAsk");
   const gateError   = $("#gateError");
   const gateField   = $(".gate__field");
   const gateRequestApproval = $("#gateRequestApproval");
@@ -1336,6 +1337,7 @@
     gatePinConfirm.value = "";
     gatePinConfirmField.classList.add("hidden");
     gatePinForgot.classList.add("hidden");
+    if (gatePinAsk) { gatePinAsk.classList.add("hidden"); gatePinAsk.disabled = false; gatePinAsk.textContent = "Ask admin to reset it"; }
   }
 
   function showPinUI(mode, name) {
@@ -1348,12 +1350,29 @@
     gatePinInput.autocomplete = create ? "new-password" : "current-password";
     gatePinInput.placeholder = "Password";
     gatePinForgot.classList.toggle("hidden", create);
+    if (gatePinAsk) { gatePinAsk.classList.toggle("hidden", create); gatePinAsk.dataset.name = name; }
     gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my password for the Class 12 portal. My name: " + name);
     gatePinHint.textContent = create
-      ? "Choose a password (4–32 characters) — you need it every time you sign in, so nobody else can use your name. You'll be asked for it each time you sign in."
+      ? "Choose a password (4–32 characters) — you need it every time you sign in, so nobody else can use your name. The admin can also see which files you tick as revised."
       : "Enter your password to continue.";
     gatePinInput.focus();
   }
+
+  if (gatePinAsk) gatePinAsk.addEventListener("click", async () => {
+    const nm = gatePinAsk.dataset.name || "";
+    if (!nm) return;
+    gatePinAsk.disabled = true;
+    gatePinAsk.textContent = "Sending…";
+    const r = await pinApi({ type: "pinReset", op: "x", name: nm });
+    if (r && r.ok) {
+      gatePinAsk.textContent = "Request sent";
+      gatePinHint.textContent = "Request sent. The admin will confirm it is you and reset your password — then sign in again and choose a new one.";
+    } else {
+      gatePinAsk.disabled = false;
+      gatePinAsk.textContent = "Ask admin to reset it";
+      gatePinHint.textContent = "Couldn't send the request right now. Use \"Forgot password?\" (WhatsApp) instead.";
+    }
+  });
 
   // Returns "ok" to carry on logging in, or "wait" when the gate is
   // now showing a PIN box and the person must act.
@@ -1969,6 +1988,23 @@
       duration: (extra && extra.duration !== undefined && extra.duration !== null) ? extra.duration : ""
     });
   }
+
+
+  // ── Quietly record real browser errors (so the admin can spot problems) ──
+  const errSeen = new Set();
+  function recordClientError(msg, where) {
+    try {
+      msg = String(msg || "").replace(/\s+/g, " ").slice(0, 160);
+      if (!msg || errSeen.size >= 5) return;
+      if (/ResizeObserver|^Script error|Network|Failed to fetch|Load failed|AbortError|aborted|RenderingCancelled|cancelled|NetworkError/i.test(msg)) return;
+      if (errSeen.has(msg)) return;
+      errSeen.add(msg);
+      if (!currentName) return;
+      logEvent("client_error", currentName, msg, String(where || location.pathname).slice(0, 200));
+    } catch (e) {}
+  }
+  window.addEventListener("error", (e) => recordClientError(e.message, (e.filename || "").split("/").pop() + ":" + (e.lineno || 0)));
+  window.addEventListener("unhandledrejection", (e) => recordClientError(e.reason && (e.reason.message || e.reason), "promise"));
 
   function logEvent(type, name, detail, pageOverride, extra) {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
@@ -3750,9 +3786,11 @@
     ctx.rotate(-Math.PI / 6);
     const stepX = canvas.width * 0.6;
     const stepY = canvas.height * 0.22;
-    for (let y = -canvas.height; y < canvas.height; y += stepY) {
+    const who = (currentName || "").trim().slice(0, 30);
+    let row = 0;
+    for (let y = -canvas.height; y < canvas.height; y += stepY, row++) {
       for (let x = -canvas.width; x < canvas.width; x += stepX) {
-        ctx.fillText(label, x, y);
+        ctx.fillText(who && row % 2 ? who : label, x, y);
       }
     }
     ctx.restore();
@@ -4792,6 +4830,55 @@
     renderBanners();
   }
 
+
+  // ── Round 7: reset requests, class progress, browser errors ──
+  async function loadResetRequests() {
+    const host = $id("admResetList"); if (!host) return;
+    const d = await adminFetch("resetRequests");
+    if (!d) return;
+    S.resets = d.requests || [];
+    const c = $id("admResetCount"); if (c) c.textContent = S.resets.length ? `· ${S.resets.length} open` : "";
+    host.innerHTML = S.resets.length ? S.resets.map((r) => `
+      <div class="adm-req" data-name="${esc(r.name)}">
+        <div class="adm-row__main"><div class="adm-row__title">${esc(r.name)}</div><div class="adm-row__meta"><span>${whenHtml(r.timestamp)}</span></div></div>
+        <div class="adm-req__actions">
+          <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-reset="go">Reset now</button>
+          <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-reset="no">Dismiss</button>
+        </div></div>`).join("") : emptyMsg("No reset requests.");
+  }
+  async function loadClassProgress() {
+    const host = $id("admClassProgress"); if (!host) return;
+    const d = await adminFetch("classProgress");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    S.classProg = d;
+    const total = allFilesFlat().length || 1;
+    const st = d.students || [];
+    const sum = $id("admClassSummary");
+    if (sum) sum.textContent = st.length ? `${st.length} students synced` : "";
+    if (!st.length) { host.innerHTML = emptyMsg("Nobody has ticked a file yet."); return; }
+    const files = Object.keys(d.perPath || {}).map((p) => { const hit = findFileByPath(p); return hit ? { name: hit.file.name, n: d.perPath[p] } : null; }).filter(Boolean).sort((a, b) => a.n - b.n);
+    const top = st.slice(0, 5).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${x.revised} of ${total} revised</span></div>`).join("");
+    const least = files.slice(0, 5).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${x.n} student${x.n === 1 ? "" : "s"}</span></div>`).join("");
+    host.innerHTML = `<div class="adm-row__meta">Most revised</div>${top}<div class="adm-row__meta" style="margin-top:10px">Least revised files</div>${least || emptyMsg("—")}`;
+  }
+  async function loadClientErrors() {
+    const host = $id("admErrList"); if (!host) return;
+    const d = await adminFetch("clientErrors");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.errors || [];
+    host.innerHTML = l.length ? l.map((e) => `<div class="adm-row" style="display:block"><div class="adm-row__title">${esc(e.message)}</div><div class="adm-row__meta"><span>${e.count}× · ${e.people} student${e.people === 1 ? "" : "s"}</span><span>${esc(e.page)}</span><span>${whenHtml(e.last)}</span></div></div>`).join("") : emptyMsg("No browser errors recorded. 🎉");
+  }
+  document.addEventListener("click", async (ev) => {
+    const b = ev.target.closest && ev.target.closest("[data-reset]");
+    if (b) {
+      const nm = b.closest("[data-name]").dataset.name;
+      if (b.dataset.reset === "go") await act("resetPin", { name: nm }, "Password reset — they can choose a new one.", "Couldn't reset");
+      else await act("dismissReset", { name: nm }, "Dismissed.", "Couldn't dismiss");
+      loadResetRequests();
+    }
+    if (ev.target.id === "admErrReload") loadClientErrors();
+  });
+
   async function refreshAdmin() {
     bannerState.error = ""; bannerState.partial = "";
     const btn = $id("adminRefreshBtn");
@@ -4829,6 +4916,7 @@
     bannerState.legacy = S.keyMode === "legacy";
     if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
     renderAll();
+    loadResetRequests(); loadClassProgress(); loadClientErrors();
   }
 
   function renderAll() {
@@ -5484,7 +5572,7 @@
 
   function closeAdminDetail() { $id("adminDetail").classList.add("hidden"); }
 
-  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out" };
+  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out", client_error: "Browser error" };
 
   function renderAdminDetail(name, events, totals) {
     const subjectMap = getFileSubjectMap();

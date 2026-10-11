@@ -25,13 +25,12 @@
     <meta name="twitter:image" content="https://ad5253.github.io/isc/og-image.png">
 
     <link rel="manifest" href="manifest.json">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
     <link rel="preconnect" href="https://class12-pdf-gate.merchantadnan052.workers.dev" crossorigin>
     <link rel="dns-prefetch" href="https://script.google.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=46">
+    <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="style.css?v=47">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -106,6 +105,7 @@
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__pin-links">
+                        <button type="button" id="gatePinAsk" class="gate__linkbtn hidden">Ask admin to reset it</button>
                         <a id="gatePinForgot" class="gate__linkbtn hidden" href="https://wa.me/917405806352" target="_blank" rel="noopener">Forgot password?</a>
                     </div>
                 </div>
@@ -414,6 +414,13 @@
                 </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
+                        <h2 class="adm-card__title">Class revision progress</h2>
+                        <span id="admClassSummary" class="adm-card__sub"></span>
+                    </div>
+                    <div id="admClassProgress" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
                         <h2 class="adm-card__title">Recent admin actions</h2>
                         <button type="button" class="adm-link" data-goto="security">See all</button>
                     </div>
@@ -423,6 +430,13 @@
 
             <!-- Approvals -->
             <section class="adm-panel" data-panel="approvals">
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Password reset requests <span id="admResetCount" class="adm-card__sub"></span></h2>
+                    </div>
+                    <p class="adm-note">Check it really is them (WhatsApp / in person) before pressing Reset now.</p>
+                    <div id="admResetList" class="adm-list"></div>
+                </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Waiting for approval</h2>
@@ -483,6 +497,13 @@
 
             <!-- Security -->
             <section class="adm-panel" data-panel="security">
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Browser errors students hit</h2>
+                        <button type="button" id="admErrReload" class="adm-btn adm-btn--ghost adm-btn--sm">Reload</button>
+                    </div>
+                    <div id="admErrList" class="adm-list"></div>
+                </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Flagged activity</h2>
@@ -644,7 +665,7 @@
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="script.js?v=46"></script>
+    <script defer src="script.js?v=47"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

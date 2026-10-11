@@ -1,3 +1,8 @@
+/* Fonts served from this site (no third-party request before the login screen can appear). Latin only. */
+@font-face { font-family: "Fraunces"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("fonts/fraunces-normal.woff2") format("woff2"); }
+@font-face { font-family: "Fraunces"; font-style: italic; font-weight: 100 900; font-display: swap; src: url("fonts/fraunces-italic.woff2") format("woff2"); }
+@font-face { font-family: "Archivo"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("fonts/archivo.woff2") format("woff2"); }
+
 /* ═══════════════════════════════════════════════════════════════
    CLASS 12 — STUDY INDEX
    Apple-style pass: Liquid-Glass materials on the floating chrome
@@ -3516,3 +3521,17 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 .viewer__hits:empty { display: none; }
 .viewer__hit { flex: 0 0 auto; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--ink-raised); color: var(--paper); font: 600 12.5px var(--sans); cursor: pointer; }
 .viewer__hit:hover, .viewer__hit--on { border-color: var(--brass); color: var(--brass); }
+
+/* Round 7 */
+.adm-card__sub{font-size:.8rem;font-weight:500;opacity:.7}
+.adm-note{margin:0 0 8px;font-size:.85rem;opacity:.75}
+#gatePinAsk{background:none;border:0;cursor:pointer;font:inherit;margin-right:12px}
+@media (max-width:359px){
+  .gate__card,.gate__box{padding-left:14px;padding-right:14px}
+  .today-row{grid-template-columns:1fr}
+  .adm-req{flex-wrap:wrap}
+  .viewer__bar{gap:4px}
+}
+@media (max-height:480px) and (orientation:landscape){
+  .gate{align-items:flex-start;overflow-y:auto}
+}
