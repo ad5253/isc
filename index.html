@@ -30,7 +30,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=47">
+    <link rel="stylesheet" href="style.css?v=48">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -414,6 +414,13 @@
                 </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
+                        <h2 class="adm-card__title">Who needs a hand</h2>
+                        <span id="admStuckCount" class="adm-card__sub"></span>
+                    </div>
+                    <div id="admStuckList" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
                         <h2 class="adm-card__title">Class revision progress</h2>
                         <span id="admClassSummary" class="adm-card__sub"></span>
                     </div>
@@ -665,7 +672,7 @@
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="script.js?v=47"></script>
+    <script defer src="script.js?v=48"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

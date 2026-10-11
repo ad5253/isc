@@ -4846,6 +4846,19 @@
           <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-reset="no">Dismiss</button>
         </div></div>`).join("") : emptyMsg("No reset requests.");
   }
+  async function loadStuck() {
+    const host = $id("admStuckList"); if (!host) return;
+    const d = await adminFetch("stuckList");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.stuck || [];
+    const c = $id("admStuckCount"); if (c) c.textContent = l.length ? `· ${l.length}` : "";
+    host.innerHTML = l.length ? l.map((x) => `
+      <div class="adm-req" data-name="${esc(x.name)}">
+        <div class="adm-row__main"><div class="adm-row__title">${esc(x.name)}</div>
+        <div class="adm-row__meta">${x.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</div></div>
+        <div class="adm-req__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-stuck="reset">Reset password</button></div>
+      </div>`).join("") : emptyMsg("Nobody is stuck right now. 🎉");
+  }
   async function loadClassProgress() {
     const host = $id("admClassProgress"); if (!host) return;
     const d = await adminFetch("classProgress");
@@ -4877,6 +4890,13 @@
       loadResetRequests();
     }
     if (ev.target.id === "admErrReload") loadClientErrors();
+    const sb = ev.target.closest && ev.target.closest("[data-stuck]");
+    if (sb) {
+      const nm = sb.closest("[data-name]").dataset.name;
+      if (!confirm(`Reset the password for ${nm}? Only do this once you are sure it is them.`)) return;
+      await act("resetPin", { name: nm }, "Password reset — they can choose a new one.", "Couldn't reset");
+      loadStuck(); loadResetRequests();
+    }
   });
 
   async function refreshAdmin() {
@@ -4916,7 +4936,7 @@
     bannerState.legacy = S.keyMode === "legacy";
     if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
     renderAll();
-    loadResetRequests(); loadClassProgress(); loadClientErrors();
+    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck();
   }
 
   function renderAll() {
