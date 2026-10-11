@@ -46,6 +46,41 @@ window.PHYSICS_EXPERIMENTS = [
     title: "Potential Fall along a Potentiometer Wire",
     blurb: "Set up a potentiometer, slide the jockey along the wire and measure the fall of potential to find the potential gradient.",
     tag: "3D"
+  },
+  {
+    slug: "convex-lens-uv",
+    num: 6,
+    title: "Focal Length of a Convex Lens (u–v Method)",
+    blurb: "Place the object, lens and screen on an optical bench, remove parallax and find the focal length from u and v readings.",
+    tag: "3D"
+  },
+  {
+    slug: "convex-lens-displacement",
+    num: 7,
+    title: "Convex Lens by the Displacement Method",
+    blurb: "Move the lens between two positions that both give a sharp image, then find the focal length from the displacement.",
+    tag: "3D"
+  },
+  {
+    slug: "two-convex-lenses",
+    num: 8,
+    title: "Convex Lens Combined with Another Convex Lens",
+    blurb: "Combine two convex lenses (not in contact) on the bench to find the focal length of the second lens.",
+    tag: "3D"
+  },
+  {
+    slug: "concave-lens",
+    num: 9,
+    title: "Concave Lens Combined with a Convex Lens",
+    blurb: "Use a convex lens to form a real image, add the concave lens and work out its focal length.",
+    tag: "3D"
+  },
+  {
+    slug: "concave-mirror",
+    num: 10,
+    title: "Focal Length of a Concave Mirror (u–v Method)",
+    blurb: "Use two pins on an optical bench, remove parallax and find the focal length of a concave mirror.",
+    tag: "3D"
   }
-  // , { slug: "...", num: 6, title: "...", blurb: "...", tag: "3D" }
+  // , { slug: "...", num: 11, title: "...", blurb: "...", tag: "3D" }
 ];
