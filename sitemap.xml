@@ -36,6 +36,31 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/convex-lens-uv/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/convex-lens-displacement/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/two-convex-lenses/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/concave-lens/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/concave-mirror/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>https://ad5253.github.io/isc/practicals/physics/internal-resistance/</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
@@ -54,5 +79,25 @@
     <loc>https://ad5253.github.io/isc/practicals/physics/combination-of-resistances/</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/kmno4-vs-fas/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/impure-kmno4/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/impure-fas/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
   </url>
 </urlset>
