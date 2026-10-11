@@ -468,6 +468,7 @@
   // again" to someone who's been blocked — the old version discarded
   // the server's actual reason and made every failure look like a
   // network blip, which is actively misleading for that case.
+  let busyRetryPath = "";
   async function fetchPdfToken() {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     const workerUrl = SITE_CONFIG.pdfWorker && SITE_CONFIG.pdfWorker.url;
@@ -511,7 +512,12 @@
   function ensurePdfToken() {
     if (pdfToken && Date.now() < pdfTokenExpiresAt) return Promise.resolve(pdfToken);
     if (!pdfTokenPromise) {
-      pdfTokenPromise = fetchPdfToken().finally(() => { pdfTokenPromise = null; });
+      pdfTokenPromise = fetchPdfToken().catch((err) => {
+        // Server busy / slow: a token that expired a moment ago is usually still accepted, so keep the person reading.
+        const m = err && err.message;
+        if (pdfToken && Date.now() < pdfTokenExpiresAt + 150000 && m !== "suspended" && m !== "unauthorized" && m !== "pin_required") return pdfToken;
+        throw err;
+      }).finally(() => { pdfTokenPromise = null; });
     }
     return pdfTokenPromise;
   }
@@ -1380,7 +1386,7 @@
     if (pinMode === null) {
       const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
       pinStateP = null;
-      if (!st) { showGateError("Couldn't reach the server — check your connection and try again."); return "wait"; }
+      if (!st) { showGateError("The server is busy or your connection is weak — please try again in a moment."); return "wait"; }
       if (!st.ok || !st.state) return "ok"; // an older backend that doesn't know passwords yet
       if (st.state === "trusted") return "ok";
       if (st.state === "none") {
@@ -1396,7 +1402,7 @@
       if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
       if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
       const r = await pinApi({ op: "set", name, pin });
-      if (!r) { showGateError("Couldn't reach the server — check your connection and try again."); return "wait"; }
+      if (!r) { showGateError("The server is busy or your connection is weak — please try again in a moment."); return "wait"; }
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
       if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
       if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
@@ -1407,7 +1413,7 @@
     const pin = gatePinInput.value;
     if (!pin) { gatePinInput.focus(); return "wait"; }
     const r = await pinApi({ op: "check", name, pin });
-    if (!r || !r.ok) { showGateError("Couldn't check your password — check your connection and try again."); return "wait"; }
+    if (!r || !r.ok) { showGateError("Couldn't check your password right now (server busy or weak connection) — please try again."); return "wait"; }
     if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
@@ -1420,6 +1426,7 @@
     e.preventDefault();
     const name = nameInput.value.trim();
     if (!name) return;
+    const loginT0 = performance.now();
 
     // Instant feedback the moment Continue is tapped/clicked — before
     // any of the network-bound checks below even start. Those checks
@@ -1482,7 +1489,7 @@
           // password is deliberately NOT cleared: whatever they typed
           // was never actually verified either way, so there's no
           // reason to make them retype it.
-          showGateError("Couldn't verify your password — check your connection and try again.");
+          showGateError("Couldn't verify your password right now (server busy or weak connection) — please try again.");
           return;
         }
         credentialsVerified = true;
@@ -1570,7 +1577,7 @@
       hideGateError();
       const sid = makeId();
       saveSession(name, sid);
-      logEvent("login", name, "authorized", trace);
+      logEvent("login", name, "authorized", `${trace} || loginMs:${Math.round(performance.now() - loginT0)}`);
       gatePasswordField.classList.add("hidden");
       gatePasswordInput.value = "";
       gate.classList.add("fade-out");
@@ -1900,9 +1907,10 @@
   function applyCommand(data) {
     if (!data) return;
     if (data.forceLogout) {
+      const other = data.message && /another device/i.test(data.message);
       showAdminNotice(
-        "You've been signed out by the admin.",
-        () => performLogout("admin_logout")
+        data.message || "You've been signed out by the admin.",
+        () => performLogout(other ? "other_device" : "admin_logout")
       );
       return;
     }
@@ -2548,7 +2556,8 @@
       recent: lsJSON("c12_recent_" + n, []),
       days: lsJSON("c12_days_" + n, []),
       pos: lsJSON("c12_pos_" + n, {}),
-      focus: Number(localStorage.getItem("c12_focusmin_" + n)) || 0
+      focus: Number(localStorage.getItem("c12_focusmin_" + n)) || 0,
+      labs: lsJSON("c12_labs_" + n, [])
     };
   }
   function applyProgress(p) {
@@ -2560,6 +2569,7 @@
       localStorage.setItem("c12_days_" + n, JSON.stringify((p.days || []).slice(-400)));
       localStorage.setItem("c12_pos_" + n, JSON.stringify(p.pos || {}));
       localStorage.setItem("c12_focusmin_" + n, String(p.focus || 0));
+      localStorage.setItem("c12_labs_" + n, JSON.stringify(p.labs || []));
     } catch {}
   }
   function mergeProgress(a, b) {
@@ -2572,7 +2582,8 @@
       recent: byPath(a.recent || [], b.recent || []).sort((x, y) => (y.ts || 0) - (x.ts || 0)).slice(0, 5),
       days: Array.from(new Set([...(a.days || []), ...(b.days || [])])).sort(),
       pos,
-      focus: Math.max(a.focus || 0, b.focus || 0)
+      focus: Math.max(a.focus || 0, b.focus || 0),
+      labs: Array.from(new Set([...(a.labs || []), ...(b.labs || [])]))
     };
   }
   function hashStr(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return String(h); }
@@ -3104,6 +3115,10 @@
     pr.style.setProperty("--subject-color", "#c9a34e");
     pr.setAttribute("role", "link");
     pr.tabIndex = 0;
+    function labsMeta() {
+      const n = lsJSON("c12_labs_" + nk(), []).length;
+      return n ? `Physics &amp; Chemistry labs &middot; ${n} done` : "Physics &amp; Chemistry virtual labs";
+    }
     const goPracticals = () => { location.href = APP_BASE + "practicals/"; };
     pr.onclick = goPracticals;
     pr.addEventListener("keydown", (e) => { if (e.key === "Enter") goPracticals(); });
@@ -3111,7 +3126,7 @@
       <span class="subject__icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3"/><path d="M7.5 15h9"/></svg></span>
       <div class="subject__text">
         <h2 class="subject__name">Practicals</h2>
-        <p class="subject__meta">3D virtual labs &middot; Physics experiments</p>
+        <p class="subject__meta">${labsMeta()}</p>
       </div>
       <span class="subject__arrow">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
@@ -3759,7 +3774,15 @@
         statusText.textContent = "Please sign out and sign in again to enter or set your password.";
         canRetry = false;
       } else {
-        statusText.textContent = "Couldn't load this PDF.";
+        // Most likely the server is just busy (exam rush): say so and try once more by itself.
+        if (busyRetryPath !== path) {
+          busyRetryPath = path;
+          statusText.textContent = "The server is busy right now. Trying again in a moment\u2026";
+          setTimeout(() => { if (myToken === viewerLoadToken) openViewer(path, name); }, 6000);
+          return;
+        }
+        busyRetryPath = "";
+        statusText.textContent = "The server is busy or your connection is weak. Please try again.";
       }
       track.remove();
       skPages.remove();
@@ -4788,7 +4811,7 @@
     $$(".adm-tab", adminTabs).forEach((btn) => btn.classList.toggle("adm-tab--active", btn.dataset.tab === tabName));
     $$(".adm-panel").forEach((p) => p.classList.toggle("adm-panel--active", p.dataset.panel === tabName));
     if (tabName === "overview") renderChart();
-    if (tabName === "content") { refreshDigestUI(); refreshBackupUI(); }
+    if (tabName === "content") { refreshDigestUI(); refreshBackupUI(); refreshTidyUI(); }
     window.scrollTo(0, 0);
     adminApp.scrollTop = 0;
   }
@@ -4899,6 +4922,45 @@
     }
   });
 
+
+  // ── Round 8: shared accounts, login speed, automatic tidy-up ──
+  async function loadSharedAccounts() {
+    const host = $id("admShared"); if (!host) return;
+    const d = await adminFetch("sharedAccounts");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.accounts || [];
+    host.innerHTML = l.length ? l.map((x) => `<div class="adm-req" data-name="${esc(x.name)}"><div class="adm-row__main"><div class="adm-row__title">${esc(x.name)}</div><div class="adm-row__meta"><span>${x.day} switch${x.day === 1 ? "" : "es"} today</span><span>${x.week} this week</span><span>${whenHtml(x.last)}</span></div></div><div class="adm-req__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-stuck="reset">Reset password</button></div></div>`).join("") : emptyMsg("No account is being switched between many devices.");
+  }
+  async function loadLoginSpeed() {
+    const host = $id("admLoginSpeed"); if (!host) return;
+    const d = await adminFetch("loginSpeed");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    if (!d.count) { host.innerHTML = emptyMsg("No timed logins yet. They appear after students sign in with the new site."); return; }
+    const sec = (ms) => (ms / 1000).toFixed(1) + " s";
+    const rows = (d.days || []).slice(-7).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.day)}</span><span class="adm-row__meta">${x.count} logins &middot; typical ${sec(x.median)}</span></div>`).join("");
+    host.innerHTML = `<div class="adm-row"><span class="adm-row__title">Typical login</span><span class="adm-row__meta"><b>${sec(d.median)}</b></span></div><div class="adm-row"><span class="adm-row__title">Slowest 1 in 10</span><span class="adm-row__meta">${sec(d.p90)}</span></div><div class="adm-row"><span class="adm-row__title">Slowest ever (7 days)</span><span class="adm-row__meta">${sec(d.slowest)}</span></div>${rows}`;
+  }
+  async function refreshTidyUI() {
+    const st = $id("admTidyState"); if (!st) return;
+    const r = await adminFetch("tidyStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    const last = r.last ? ` Last run: ${relTime(r.last.at)}, ${r.last.archived} old rows archived.` : "";
+    st.textContent = (r.on ? "ON — runs every Monday at 3 am." : "OFF.") + last + ` Activity rows now: ${Number(r.logRows).toLocaleString()}.`;
+    $id("admTidyToggle").textContent = r.on ? "Turn off" : "Turn on";
+    $id("admTidyToggle").dataset.on = r.on ? "1" : "0";
+  }
+  async function onTidyToggle() {
+    const turnOn = $id("admTidyToggle").dataset.on !== "1";
+    const res = await act("setAutoTidy", { on: turnOn ? "1" : "0" }, turnOn ? "Automatic tidy-up turned on." : "Automatic tidy-up turned off.", "Couldn't change the tidy-up");
+    if (res) refreshTidyUI();
+  }
+  async function onTidyNow() {
+    const btn = $id("admTidyNow"); btn.disabled = true;
+    const res = await act("autoTidyNow", {}, "Tidy-up done.", "Couldn't run the tidy-up");
+    btn.disabled = false;
+    if (res) refreshTidyUI();
+  }
+
   async function refreshAdmin() {
     bannerState.error = ""; bannerState.partial = "";
     const btn = $id("adminRefreshBtn");
@@ -4936,7 +4998,7 @@
     bannerState.legacy = S.keyMode === "legacy";
     if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
     renderAll();
-    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck();
+    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck(); loadSharedAccounts(); loadLoginSpeed();
   }
 
   function renderAll() {
@@ -5592,7 +5654,7 @@
 
   function closeAdminDetail() { $id("adminDetail").classList.add("hidden"); }
 
-  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out", client_error: "Browser error" };
+  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out", client_error: "Browser error", device_kick: "Other device signed out" };
 
   function renderAdminDetail(name, events, totals) {
     const subjectMap = getFileSubjectMap();
@@ -6099,6 +6161,8 @@
     $id("admDigestNow").addEventListener("click", onDigestNow);
     $id("admBackupToggle").addEventListener("click", onBackupToggle);
     $id("admBackupNow").addEventListener("click", onBackupNow);
+    $id("admTidyToggle").addEventListener("click", onTidyToggle);
+    $id("admTidyNow").addEventListener("click", onTidyNow);
     $id("admAnnClear").addEventListener("click", onClearAnnouncement);
     $id("admRequestList").addEventListener("click", (e) => {
       const b = e.target.closest("[data-done]");

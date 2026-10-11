@@ -30,7 +30,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=48">
+    <link rel="stylesheet" href="style.css?v=49">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -414,6 +414,12 @@
                 </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
+                        <h2 class="adm-card__title">Login speed (last 7 days)</h2>
+                    </div>
+                    <div id="admLoginSpeed" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
                         <h2 class="adm-card__title">Who needs a hand</h2>
                         <span id="admStuckCount" class="adm-card__sub"></span>
                     </div>
@@ -506,6 +512,13 @@
             <section class="adm-panel" data-panel="security">
                 <div class="adm-card">
                     <div class="adm-card__head">
+                        <h2 class="adm-card__title">Accounts used on many devices</h2>
+                    </div>
+                    <p class="adm-note">One account can only be signed in on one device. If someone keeps switching, the password is probably being shared.</p>
+                    <div id="admShared" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
                         <h2 class="adm-card__title">Browser errors students hit</h2>
                         <button type="button" id="admErrReload" class="adm-btn adm-btn--ghost adm-btn--sm">Reload</button>
                     </div>
@@ -574,6 +587,14 @@
                         </select>
                         <button type="button" id="admAnnPublish" class="adm-btn adm-btn--sm">Publish</button>
                         <button type="button" id="admAnnClear" class="adm-btn adm-btn--ghost adm-btn--sm">Remove banner</button>
+                    </div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Automatic tidy-up</h2></div>
+                    <p class="adm-muted">Every Monday at 3 am the site moves activity older than 90 days into the archive and clears old leftovers, so the admin page stays fast. Nothing in use is touched. Status: <b id="admTidyState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admTidyToggle" class="adm-btn adm-btn--sm">Turn on</button>
+                        <button type="button" id="admTidyNow" class="adm-btn adm-btn--ghost adm-btn--sm">Run it now</button>
                     </div>
                 </div>
                 <div class="adm-card">
@@ -672,7 +693,7 @@
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="script.js?v=48"></script>
+    <script defer src="script.js?v=49"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {
