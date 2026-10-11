@@ -66,3 +66,9 @@ a.subfolder .subfolder__icon.exp-num { background: rgba(201, 161, 90, 0.12); }
 button.pill-btn { background: none; cursor: pointer; font-family: var(--sans); }
 .pill-btn--gold { background: rgba(201, 161, 90, 0.14); border-color: var(--brass); color: var(--brass); }
 .pill-btn--gold:hover { background: rgba(201, 161, 90, 0.24); }
+
+/* Lab "done" tick */
+.lab-tick{flex:none;width:30px;height:30px;margin-right:8px;border-radius:50%;border:1px solid var(--border,rgba(255,255,255,.18));background:transparent;color:transparent;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;touch-action:manipulation}
+.lab-tick:hover{border-color:var(--brass,#c9a15a)}
+.lab-tick--on{background:var(--brass,#c9a15a);border-color:var(--brass,#c9a15a);color:#1a1a1f}
+.lab-summary{margin:0 0 10px}
