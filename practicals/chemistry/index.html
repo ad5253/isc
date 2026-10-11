@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>ISC Class 12 Chemistry Practicals: Coming Soon</title>
-    <meta name="description" content="The ISC Class 12 Chemistry virtual lab is not ready yet. The Physics virtual labs are live.">
+    <title>ISC Class 12 Chemistry Practicals: Virtual Titration Labs</title>
+    <meta name="description" content="Interactive virtual titration labs for ISC Class 12 Chemistry practicals. Set up the burette, titrate, take readings and calculate, then practise for the exam.">
     <meta name="theme-color" content="#121218">
     <meta name="author" content="Adnan Merchant">
     <link rel="canonical" href="https://ad5253.github.io/isc/practicals/chemistry/">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="ISC Class 12 Chemistry Practicals: Coming Soon">
-    <meta property="og:description" content="The ISC Class 12 Chemistry virtual lab is not ready yet. The Physics virtual labs are live.">
+    <meta property="og:title" content="ISC Class 12 Chemistry Practicals: Virtual Titration Labs">
+    <meta property="og:description" content="Interactive virtual titration labs for ISC Class 12 Chemistry practicals. Set up the burette, titrate, take readings and calculate, then practise for the exam.">
     <meta property="og:url" content="https://ad5253.github.io/isc/practicals/chemistry/">
     <meta property="og:image" content="https://ad5253.github.io/isc/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
@@ -64,24 +64,10 @@
         <nav class="crumbs" aria-label="Breadcrumb"><a class="crumb" href="../../">Home</a><span class="crumb-sep">/</span><a class="crumb" href="../">Practicals</a><span class="crumb-sep">/</span><span class="crumb crumb--active">Chemistry</span></nav>
         <main class="content">
             <p class="section-label">Chemistry</p>
-            <div class="closed fade-up">
-                <span class="closed__flask" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h5"/><path d="M10.3 2.5v6.4L4.6 18.8a1.6 1.6 0 0 0 1.4 2.4h12a1.6 1.6 0 0 0 1.4-2.4L13.7 8.9V2.5"/><path d="M7.6 15.3h8.8"/></svg></span>
-                <h2 class="closed__title">Closed for now</h2>
-                <p class="closed__text">Sadly, due to <strong>insufficient funding</strong>, the Chemistry lab could not be built. The beakers were ready. The budget was not.</p>
-                <div class="closed__receipt" aria-label="A very official budget report">
-                    <div><span>Beakers</span><span>imagined</span></div>
-                    <div><span>Bunsen burner</span><span>imagined</span></div>
-                    <div><span>Safety goggles</span><span>virtual</span></div>
-                    <div><span>Funding</span><span class="closed__bad">not found</span></div>
-                </div>
-                <p class="closed__text closed__text--dim">No acid was spilled in the making of this page. The Physics labs are open and fully working.</p>
-                <p class="closed__text closed__text--help">Want to help fund the Chemistry lab? Tap the <span class="closed__heart" aria-label="heart icon">&#9825;</span> icon at the top of any page, or use the button below. Completely optional.</p>
-                <div class="closed__actions">
-                    <button type="button" class="pill-btn pill-btn--gold" data-support="1">&#9825; Support the Chemistry lab</button>
-                    <a class="pill-btn pill-btn--brass" href="../physics/">Open the Physics labs</a>
-                    <a class="pill-btn" href="../../chemistry/">Chemistry notes</a>
-                </div>
-            </div>
+            <p class="page-lede">Pick an experiment. Each one is a hands-on virtual titration: set up the apparatus, run the titration, record the burette readings and work out the result.</p>
+            <div class="subfolders stagger" id="expList"></div>
+            <noscript><p class="page-note">Turn on JavaScript to see the list of experiments.</p></noscript>
+            <p class="page-note">Best on Chrome or Safari. A lab can take a few seconds to load the first time. Labs are still being finished, so tell me if something looks wrong.</p>
         </main>
     </div>
     <footer class="foot">
@@ -108,6 +94,29 @@
         </div>
     </div>
 
+<script src="../chem-experiments.js"></script>
+<script>
+(function () {
+  var list = document.getElementById("expList");
+  var exps = (window.CHEMISTRY_EXPERIMENTS || []).slice().sort(function (a, b) { return a.num - b.num; });
+  var CHEV = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
+  exps.forEach(function (e) {
+    var a = document.createElement("a");
+    a.className = "subfolder fade-up"; a.href = e.slug + "/";
+    var ic = document.createElement("div"); ic.className = "subfolder__icon exp-num"; ic.textContent = e.num;
+    var info = document.createElement("div"); info.className = "subfolder__info";
+    var nm = document.createElement("div"); nm.className = "subfolder__name"; nm.textContent = e.title;
+    if (e.tag) { var t = document.createElement("span"); t.className = "exp-tag"; t.textContent = e.tag; nm.appendChild(t); }
+    var ds = document.createElement("div"); ds.className = "subfolder__count"; ds.textContent = e.blurb || "";
+    info.appendChild(nm); info.appendChild(ds);
+    var ch = document.createElement("span"); ch.className = "subfolder__chevron"; ch.innerHTML = CHEV;
+    a.appendChild(ic); a.appendChild(info); a.appendChild(ch); list.appendChild(a);
+  });
+  var more = document.createElement("div");
+  more.className = "exp-more"; more.textContent = "More titrations are on the way.";
+  list.appendChild(more);
+})();
+</script>
 <script>
 (function () {
   var modal = document.getElementById("supportModal"); if (!modal) return;
