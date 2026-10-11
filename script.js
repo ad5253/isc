@@ -982,6 +982,7 @@
       logEventBeacon("session_end", currentName, reason || "logout", undefined, { duration: seconds });
     }
     stopHeartbeat();
+    try { sessionStorage.removeItem("c12_tm"); } catch (e) {}
     clearSession();
     location.reload();
   }
@@ -1738,6 +1739,7 @@
     currentName = name;
     sessionId = readSessionId() || makeId(); // reuses the one saved at login — a plain reload must NOT look like a different device logging in, or claimActiveSession below would kick out its own just-abandoned previous instance every single time
     sessionStart = Date.now();
+    tmStart();
     app.classList.remove("hidden");
     greeting.textContent = `Hi, ${name}`;
     focusRefresh();
@@ -1984,8 +1986,58 @@
   // type keeps this a "simple request" (no preflight), and the sheet
   // still gets the row even though we can't read the response — same
   // fire-and-forget shape as the old Formspree call.
+  // ── Time tracker: "open", "active" and "reading" seconds for this visit ──
+  //  open   = how long the site has been open since sign-in
+  //  active = seconds the tab was visible AND the person touched/scrolled/typed within the last 2.5 min
+  //  read   = the part of "active" that was spent inside a PDF
+  const TM = { active: 0, read: 0, lastTick: 0, lastInput: 0, timer: null, wired: false };
+  const TM_IDLE_MS = 150000;
+  function tmSave() {
+    try { sessionStorage.setItem("c12_tm", JSON.stringify({ sid: sessionId, start: sessionStart, active: TM.active, read: TM.read })); } catch (e) {}
+  }
+  function tmTick() {
+    const now = Date.now();
+    let dt = now - TM.lastTick;
+    TM.lastTick = now;
+    if (dt < 0 || dt > 5000) return; // computer slept / tab was frozen: don't guess
+    if (document.hidden || now - TM.lastInput > TM_IDLE_MS) return;
+    TM.active += dt;
+    if (currentViewId) TM.read += dt;
+    if (!tmTick.n) tmTick.n = 0;
+    if (++tmTick.n % 5 === 0) tmSave();
+  }
+  function tmStart() {
+    let prev = null;
+    try { const o = JSON.parse(sessionStorage.getItem("c12_tm") || "null"); if (o && o.sid === sessionId) prev = o; } catch (e) {}
+    if (prev) { sessionStart = prev.start || sessionStart; TM.active = prev.active || 0; TM.read = prev.read || 0; }
+    else { TM.active = 0; TM.read = 0; }
+    TM.lastTick = Date.now(); TM.lastInput = Date.now();
+    if (!TM.wired) {
+      TM.wired = true;
+      const touch = () => { TM.lastInput = Date.now(); };
+      ["pointerdown", "keydown", "touchstart", "wheel", "scroll", "mousemove"].forEach((ev) => window.addEventListener(ev, touch, { passive: true, capture: true }));
+      document.addEventListener("visibilitychange", () => {
+        TM.lastTick = Date.now();
+        if (document.hidden) {
+          tmSave();
+          // Phones often kill a hidden page without warning — hand over the latest totals now.
+          if (sessionId && currentName) logEventBeacon("heartbeat", currentName, "hidden");
+        }
+      });
+      window.addEventListener("pagehide", tmSave);
+    }
+    if (!TM.timer) TM.timer = setInterval(tmTick, 1000);
+  }
+  function tmNumbers() {
+    return {
+      openSec: sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : 0,
+      activeSec: Math.round(TM.active / 1000),
+      readSec: Math.round(TM.read / 1000)
+    };
+  }
+
   function buildLogPayload(type, name, detail, pageOverride, extra) {
-    return JSON.stringify({
+    return JSON.stringify(Object.assign({ openSec: 0, activeSec: 0, readSec: 0 }, (type === "heartbeat" || type === "session_end") ? tmNumbers() : {}, {
       type,
       name: name || "",
       detail: detail || "",
@@ -1994,7 +2046,7 @@
       sessionId: sessionId || "",
       viewId: (extra && extra.viewId) || "",
       duration: (extra && extra.duration !== undefined && extra.duration !== null) ? extra.duration : ""
-    });
+    }));
   }
 
 
@@ -2672,6 +2724,7 @@
     if (!currentPdf) return;
     const { box, input } = vsEls();
     box.classList.remove("hidden");
+    const sb = document.getElementById("viewerSearchBtn"); if (sb) sb.classList.add("viewer__btn--on");
     input.focus(); input.select();
   }
   function closeViewerSearch() {
@@ -2679,6 +2732,7 @@
     if (!box) return;
     vsToken++;
     box.classList.add("hidden");
+    const sb = document.getElementById("viewerSearchBtn"); if (sb) sb.classList.remove("viewer__btn--on");
     input.value = ""; status.textContent = ""; hits.innerHTML = "";
   }
   async function pageText(pdf, n) {
@@ -2744,6 +2798,7 @@
     if (v) v.dataset.read = m;
     const b = document.getElementById("viewerModeBtn");
     if (b) {
+      b.dataset.mode = m;
       const label = (READ_MODES.find((x) => x[0] === m) || READ_MODES[0])[1];
       b.title = "Reading mode: " + label; b.setAttribute("aria-label", "Reading mode: " + label + ". Tap to change");
       if (announce) { b.dataset.tip = label; b.classList.add("viewer__btn--tip"); setTimeout(() => b.classList.remove("viewer__btn--tip"), 1300); }
@@ -3639,7 +3694,25 @@
   let currentPdfPath = null; // tracks which file's loading task to evict from cache once this document is destroyed
 
   let lastFocusBeforeViewer = null;
+  // Small legend that explains the toolbar icons — shown on the first few opens only.
+  function maybeShowViewerHint() {
+    let n = 0;
+    try { n = Number(localStorage.getItem("c12_vhint") || 0); } catch {}
+    const shell = document.querySelector("#viewer .viewer__shell");
+    if (!shell || n >= 3 || shell.querySelector(".viewer__hint")) return;
+    try { localStorage.setItem("c12_vhint", String(n + 1)); } catch {}
+    const items = [["viewerThumbToggle", "Pages — jump to any page"], ["viewerDoneBtn", "Mark this chapter as revised"], ["viewerSearchBtn", "Find words inside this PDF"], ["viewerModeBtn", "Reading mode — tap to switch light / dark / sepia / dim"], ["viewerShareBtn", "Copy a link to this PDF"]];
+    const box = document.createElement("div");
+    box.className = "viewer__hint"; box.setAttribute("role", "note");
+    box.innerHTML = `<p class="viewer__hint-title">What the buttons do</p><ul>${items.map(([id, t]) => { const b = document.getElementById(id); return `<li><span class="ic">${b ? b.querySelector("svg").outerHTML : ""}</span><span>${t}</span></li>`; }).join("")}</ul><button type="button">Got it</button>`;
+    const close = () => { box.remove(); try { localStorage.setItem("c12_vhint", "9"); } catch {} };
+    box.querySelector("button").addEventListener("click", close);
+    shell.appendChild(box);
+    setTimeout(() => box.remove(), 12000);
+  }
+
   function openViewer(path, name) {
+    maybeShowViewerHint();
     endCurrentView(); // in case a different PDF was already open — close out its timer first
     currentPdfPath = path;
     startStuckPageWatchdog();
@@ -4536,8 +4609,8 @@
       currentViewResumedAt = null;
     }
     const seconds = Math.round(currentViewActiveMs / 1000);
-    // Only PDFs that really opened, and stayed open at least 3 seconds.
-    if (currentViewLogged && seconds >= 3) {
+    // Only PDFs that really opened (every second counts).
+    if (currentViewLogged && seconds >= 1) {
       logEventBeacon("view_end", currentName, currentViewName, undefined, { viewId: currentViewId, duration: seconds });
     }
     currentViewLogged = false;
@@ -4647,11 +4720,14 @@
   }
   function fullTime(ts) { const d = new Date(ts); return isNaN(d) ? "" : d.toLocaleString(); }
   function whenHtml(ts) { return `<span title="${esc(fullTime(ts))}">${esc(relTime(ts))}</span>`; }
-  function fmtMins(sec) {
-    const m = Math.round((sec || 0) / 60);
-    if (m < 60) return `${m}m`;
-    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  // Exact to the second: 8s, 4m 05s, 1h 02m 09s
+  function fmtDur(sec) {
+    sec = Math.max(0, Math.round(sec || 0));
+    const hh = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), ss = sec % 60;
+    const p2 = (n) => String(n).padStart(2, "0");
+    return hh ? `${hh}h ${p2(mm)}m ${p2(ss)}s` : mm ? `${mm}m ${p2(ss)}s` : `${ss}s`;
   }
+  const fmtMins = fmtDur;
   function normName(n) { return String(n || "").trim().replace(/\s+/g, " ").toLowerCase(); }
   function isEmail(v) { return /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(String(v || "").trim()); }
   function sameDay(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
@@ -4924,6 +5000,56 @@
 
 
   // ── Round 8: shared accounts, login speed, automatic tidy-up ──
+  async function loadTimeStats() {
+    const d = await adminFetch("timeStats");
+    if (!d) return;
+    S.times = d.people || [];
+    S.timeMap = {};
+    S.times.forEach((t) => (t.norms || []).forEach((n) => { S.timeMap[n] = t; }));
+    renderPeople();
+    renderTimeToday();
+  }
+  function timeFor(p) {
+    if (!S.timeMap) return null;
+    let t = S.timeMap[normName(p.name)];
+    if (!t) (p.aliases || []).some((a) => (t = S.timeMap[normName(a)]));
+    return t || null;
+  }
+  function renderTimeToday() {
+    const host = $id("admTimeToday"); if (!host) return;
+    const list = S.times || [];
+    const sum = (k) => list.reduce((a, t) => a + (t[k] || 0), 0);
+    const top = list.filter((t) => t.tActive > 0).sort((a, b) => b.tActive - a.tActive).slice(0, 5);
+    host.innerHTML = `
+      <div class="adm-row"><span class="adm-row__title">Site open (everyone, today)</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tOpen")))}</b></span></div>
+      <div class="adm-row"><span class="adm-row__title">Actually active</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tActive")))}</b></span></div>
+      <div class="adm-row"><span class="adm-row__title">Reading PDFs</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tRead")))}</b></span></div>
+      ${top.length ? `<div class="adm-row__meta" style="margin-top:10px">Most active today</div>${top.map((t) => `<div class="adm-row"><span class="adm-row__title">${esc(t.name)}</span><span class="adm-row__meta">active ${esc(fmtDur(t.tActive))} &middot; reading ${esc(fmtDur(t.tRead))}</span></div>`).join("")}` : emptyMsg("Nobody has been active today yet.")}`;
+  }
+  function timeTable(o, a, r) {
+    return `<table class="adm-ttable"><thead><tr><th></th><th>Site open</th><th>Active</th><th>Reading</th></tr></thead><tbody>${[["Today", o.tOpen, o.tActive, o.tRead], ["Last 7 days", o.wOpen, o.wActive, o.wRead], ["All time", o.open, o.active, o.read]].map((x) => `<tr><th>${x[0]}</th><td>${esc(fmtDur(x[1]))}</td><td><b>${esc(fmtDur(x[2]))}</b></td><td>${esc(fmtDur(x[3]))}</td></tr>`).join("")}</tbody></table>`;
+  }
+  async function fillPersonTimes(name, person) {
+    const box = $id("admTimeBox"); if (!box) return;
+    const t = timeFor(person.name ? person : { name, aliases: [] }) || { open: 0, active: 0, read: 0, tOpen: 0, tActive: 0, tRead: 0, wOpen: 0, wActive: 0, wRead: 0, sessions: 0, logins: 0 };
+    const d = await adminFetch("personTimes", { name });
+    if (!$id("admTimeBox")) return;
+    if (!d) { box.innerHTML = emptyMsg("Couldn't load time details."); return; }
+    const tot = d.totals || {};
+    const avg = tot.sessions ? tot.active / tot.sessions : 0;
+    const maxH = Math.max(1, ...(d.hours || [0]));
+    const hours = (d.hours || []).map((v, i) => `<span class="adm-hour" title="${i}:00 \u2014 ${esc(fmtDur(v))} active" style="height:${Math.max(3, Math.round(v / maxH * 100))}%"></span>`).join("");
+    box.innerHTML = `${timeTable(t)}
+      <div class="adm-facts" style="margin-top:10px">
+        <div class="adm-fact"><div class="adm-fact__num">${t.logins || 0}</div><div class="adm-fact__label">logins</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${tot.sessions || 0}</div><div class="adm-fact__label">visits</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtDur(avg))}</div><div class="adm-fact__label">active per visit</div></div>
+      </div>
+      <p class="adm-h">When they study (hour of day)</p><div class="adm-hours">${hours}</div><div class="adm-hours__ax"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span></div>
+      <p class="adm-h">Day by day</p>${(d.days || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.day)}</span><span class="adm-row__meta">${x.visits} visit${x.visits === 1 ? "" : "s"} &middot; open ${esc(fmtDur(x.open))} &middot; active <b>${esc(fmtDur(x.active))}</b> &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("") || emptyMsg("No timed visits yet.")}
+      <p class="adm-h">Recent visits</p>${(d.recent || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${x.start ? esc(new Date(x.start).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })) : ""}</span><span class="adm-row__meta">open ${esc(fmtDur(x.open))} &middot; active ${esc(fmtDur(x.active))} &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("")}`;
+  }
+
   async function loadSharedAccounts() {
     const host = $id("admShared"); if (!host) return;
     const d = await adminFetch("sharedAccounts");
@@ -4998,7 +5124,7 @@
     bannerState.legacy = S.keyMode === "legacy";
     if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
     renderAll();
-    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck(); loadSharedAccounts(); loadLoginSpeed();
+    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck(); loadSharedAccounts(); loadLoginSpeed(); loadTimeStats();
   }
 
   function renderAll() {
@@ -5482,6 +5608,7 @@
           </div>
           ${aka}
           <div class="adm-person__stats"><span>${esc(fmtMins(p.totalSessionSeconds))} on site</span><span>${p.sessionCount || 0} visit${p.sessionCount === 1 ? "" : "s"}</span><span>${p.filesTouched || 0}/${p.totalKnownFiles || 0} files</span></div>
+          ${(() => { const t = timeFor(p); return t ? `<div class="adm-person__stats adm-person__times"><span>open ${esc(fmtDur(t.open))}</span><span>active <b>${esc(fmtDur(t.active))}</b></span><span>reading ${esc(fmtDur(t.read))}</span><span>${t.logins} login${t.logins === 1 ? "" : "s"}</span></div>` : ""; })()}
           <div class="adm-person__seen">Last seen ${whenHtml(p.lastSeen)}</div>
         </div>
         <input type="checkbox" class="adm-row__check adm-person__check" data-act="select" ${sel ? "checked" : ""} aria-label="Select ${esc(p.name)}">
@@ -5708,12 +5835,14 @@
         <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalViewSeconds))}</div><div class="adm-fact__label">inside PDFs</div></div>
         <div class="adm-fact"><div class="adm-fact__num">${totals.sessionCount || 0}</div><div class="adm-fact__label">visits</div></div>
       </div>
+      <p class="adm-h">Time (exact to the second)</p><div id="admTimeBox"><span class="adm-muted">Loading\u2026</span></div>
       <p class="adm-h">Password</p><div id="admPwBox" class="adm-pw"><span class="adm-muted">Loading…</span></div>
       <p class="adm-h">Time by subject</p>${bars(subjectSeconds, subjectColor)}
       <p class="adm-h">Most-read files</p>${bars(fileSeconds, (k) => subjectColor(subjectOfFile(k, subjectMap)))}
       <p class="adm-h">Recent activity</p>${timeline || emptyMsg("No activity yet.")}`;
 
     loadPasswordBox(name, person);
+    fillPersonTimes(name, person);
 
     $id("adminDetailBody").onclick = async (e) => {
       const b = e.target.closest("[data-dact]");

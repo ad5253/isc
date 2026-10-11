@@ -30,7 +30,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=49">
+    <link rel="stylesheet" href="style.css?v=50">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -298,15 +298,19 @@
                 <div class="viewer__actions">
                     <button id="viewerDoneBtn" class="viewer__btn viewer__btn--done" aria-label="Mark as done" title="Mark as done" aria-pressed="false">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    <span class="viewer__lbl">Done</span>
                     </button>
                     <button id="viewerSearchBtn" class="viewer__btn" aria-label="Find in this PDF" title="Find in this PDF (press /)">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+                    <span class="viewer__lbl">Find</span>
                     </button>
                     <button id="viewerModeBtn" class="viewer__btn" aria-label="Reading mode" title="Reading mode">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg>
+                    <span class="viewer__lbl">Mode</span>
                     </button>
                     <button id="viewerShareBtn" class="viewer__btn" aria-label="Share link" title="Share link">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7"/></svg>
+                    <span class="viewer__lbl">Link</span>
                     </button>
                     <button id="viewerClose" class="viewer__btn viewer__btn--close" aria-label="Close">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -411,6 +415,12 @@
                         <button type="button" class="adm-link" data-goto="content">All files</button>
                     </div>
                     <div id="admTopChapters" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Time spent today</h2>
+                    </div>
+                    <div id="admTimeToday" class="adm-list"></div>
                 </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
@@ -693,7 +703,7 @@
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="script.js?v=49"></script>
+    <script defer src="script.js?v=50"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

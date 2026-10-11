@@ -3535,3 +3535,44 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 @media (max-height:480px) and (orientation:landscape){
   .gate{align-items:flex-start;overflow-y:auto}
 }
+
+
+/* ── Round 9: viewer toolbar — every button clearly visible, in every reading mode ── */
+.viewer__actions .viewer__btn {
+  background: rgba(255,255,255,.04); color: var(--paper, #f2efe8);
+  border: 1px solid var(--line-strong, rgba(255,255,255,.28));
+  box-shadow: none;
+}
+.viewer__actions .viewer__btn svg { width: 17px; height: 17px; stroke: currentColor; }
+.viewer__actions .viewer__btn:hover { border-color: var(--brass, #c9a15a); color: var(--brass, #c9a15a); }
+.viewer__actions .viewer__btn--done[aria-pressed="true"] { background: var(--good, #4f8f62); border-color: var(--good, #4f8f62); color: #fff; }
+.viewer__actions .viewer__btn--close:hover { color: var(--chemistry, #b06349); border-color: rgba(176,99,73,.6); }
+#viewerModeBtn[data-mode]:not([data-mode="normal"]) { color: var(--brass, #c9a15a); border-color: var(--brass, #c9a15a); background: rgba(201,161,90,.14); }
+#viewerSearchBtn.viewer__btn--on { color: var(--brass, #c9a15a); border-color: var(--brass, #c9a15a); background: rgba(201,161,90,.14); }
+.viewer__lbl { display: none; }
+@media (min-width: 760px) {
+  .viewer__actions .viewer__btn:not(.viewer__btn--close), .viewer__actions #viewerShareBtn { width: auto; height: 34px; padding: 0 13px 0 10px; gap: 7px; }
+  .viewer__actions .viewer__lbl { display: inline; font-size: 12.5px; font-weight: 600; letter-spacing: .1px; }
+}
+/* the reading-mode filters only ever touch the pages, never the toolbar */
+.viewer[data-read] .viewer__bar, .viewer[data-read] .viewer__zoom { filter: none; }
+
+/* first-visits legend for the toolbar icons */
+.viewer__hint { position: absolute; z-index: 30; top: 54px; right: 10px; left: 10px; max-width: 420px; margin-left: auto; background: var(--ink-raised-2, #1d1d24); color: var(--paper, #f2efe8); border: 1px solid var(--line-strong, rgba(255,255,255,.28)); border-radius: 14px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+.viewer__hint-title { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--brass, #c9a15a); margin: 0 0 8px; }
+.viewer__hint ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.viewer__hint li { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+.viewer__hint li span.ic { flex: none; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong, rgba(255,255,255,.28)); display: inline-flex; align-items: center; justify-content: center; }
+.viewer__hint li span.ic svg { width: 15px; height: 15px; }
+.viewer__hint button { margin-top: 10px; background: var(--brass, #c9a15a); color: #1a1a1f; border: 0; border-radius: 999px; padding: 7px 16px; font-weight: 700; font-size: 13px; cursor: pointer; }
+.viewer__actions #viewerShareBtn { color: var(--paper, #f2efe8); background: rgba(255,255,255,.04); border-color: var(--line-strong, rgba(255,255,255,.28)); }
+.viewer__actions #viewerShareBtn:hover { color: var(--brass, #c9a15a); border-color: var(--brass, #c9a15a); }
+
+/* time tables / charts in admin */
+.adm-ttable{width:100%;border-collapse:collapse;font-size:13.5px}
+.adm-ttable th,.adm-ttable td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line,rgba(255,255,255,.12))}
+.adm-ttable thead th{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;opacity:.7}
+.adm-person__times{margin-top:2px}
+.adm-hours{display:flex;align-items:flex-end;gap:2px;height:54px}
+.adm-hour{flex:1;background:var(--brass,#c9a15a);border-radius:2px 2px 0 0;opacity:.85;min-height:3px}
+.adm-hours__ax{display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-top:3px}
