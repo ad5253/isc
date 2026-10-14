@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>Experiment 10: Focal Length of a Concave Mirror (u-v Method) | ISC Class XII Physics Virtual Lab</title>
+<title>Experiment 11: Focal Length of a Concave Mirror (u-v Method) | ISC Class XII Physics Virtual Lab</title>
 <meta name="description" content="Interactive 3D virtual lab for ISC Class XII Physics: find the focal length of a concave mirror by the u-v method with two pins, with real parallax removal on an optical bench. Works offline on phones and computers.">
 <meta name="theme-color" content="#090e1a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Experiment 10">
+<meta name="apple-mobile-web-app-title" content="Experiment 11">
 <meta name="format-detection" content="telephone=no">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cpath d='M6 32h52' stroke='%2364748b' stroke-width='3' stroke-dasharray='4 4'/%3E%3Cellipse cx='32' cy='32' rx='7' ry='22' fill='%2338bdf8' fill-opacity='.35' stroke='%2338bdf8' stroke-width='4'/%3E%3Cpath d='M12 44V32M52 20v12' stroke='%23f8fafc' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cpath d='M6 32h52' stroke='%2364748b' stroke-width='3' stroke-dasharray='4 4'/%3E%3Cellipse cx='32' cy='32' rx='7' ry='22' fill='%2338bdf8' fill-opacity='.35' stroke='%2338bdf8' stroke-width='4'/%3E%3Cpath d='M12 44V32M52 20v12' stroke='%23f8fafc' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -1796,7 +1796,7 @@
 <body>
 <div id="boot-screen" role="status" aria-live="polite">
   <div class="boot-spinner"></div>
-  <div class="boot-title">Experiment 10: Focal Length of a Concave Mirror (u-v Method)</div>
+  <div class="boot-title">Experiment 11: Focal Length of a Concave Mirror (u-v Method)</div>
   <div class="boot-sub">Loading virtual lab…</div>
 </div>
 <div id="fatal-screen" style="display:none;" role="alert">
@@ -1815,12 +1815,12 @@
     <div class="lab-brand">
       <span class="lab-badge">ISC CLASS XII</span>
       <div class="lab-title-group">
-        <span class="lab-title">Experiment 10: Focal Length of a Concave Mirror (u-v Method)</span>
+        <span class="lab-title">Experiment 11: Focal Length of a Concave Mirror (u-v Method)</span>
         <span class="lab-subtitle">ISC Class XII Physics · Virtual Laboratory</span>
       </div>
     </div>
 
-    <div class="mobile-title">Experiment 10: Concave Mirror — u-v Method</div>
+    <div class="mobile-title">Experiment 11: Concave Mirror — u-v Method</div>
     <div class="proc-tabs">
       <button class="proc-tab" id="tab-proc-a" style="display:none" onclick="switchProcedure('A')"><span class="pt-full">Step 1: Rough f (Distant Object)</span><span class="pt-short">A · Rough f</span></button>
       <button class="proc-tab active" id="tab-proc-b" onclick="switchProcedure('B')"><span class="pt-full">u-v Method (two pins and parallax)</span><span class="pt-short">u-v · two pins</span></button>
@@ -1859,7 +1859,7 @@
     </div>
     <div class="window-body">
       <div class="formula-card" style="border-color: rgba(56, 189, 248, 0.4); margin-bottom: 10px;">
-        <div class="formula-title">AIM (Experiment 10):</div>
+        <div class="formula-title">AIM (Experiment 11):</div>
         <div style="font-size: 11.5px; color: var(--text-primary); line-height: 1.45;">
           To determine the focal length (<strong style="color:var(--accent-emerald);">f</strong>) of the concave mirror by using two pins (u-v method).
         </div>
@@ -2232,7 +2232,7 @@ const AudioSys = {
 
 // =========================================================================
 // 2. CORE PHYSICS CONSTANTS (EXPERIMENT 10: CONCAVE MIRROR, u-v METHOD WITH TWO PINS)
-//    Book: ISC Physics Lab Manual, Experiment No. 7. Class order: Experiment 10.
+//    Book: ISC Physics Lab Manual, Experiment No. 7. Class order: Experiment 11.
 //    Book figure, left to right: object pin O, image pin I, concave mirror M at the end of the bench.
 //    u = OM, v = MI (both positive: real object, real image). The eye is on the OBJECT side, behind pin O.
 // =========================================================================
@@ -4793,7 +4793,7 @@ window.exportCSV = function() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'ISC_Physics_Exp10_Concave_Mirror_Readings.csv'; a.click();
+  a.href = url; a.download = 'ISC_Physics_Exp11_Concave_Mirror_Readings.csv'; a.click();
   URL.revokeObjectURL(url);
   showToast('Exported CSV successfully.', 'success');
 };
@@ -5214,7 +5214,7 @@ function animate() {
     var f = document.getElementById('fatal-screen');
     if (f) {
       document.getElementById('fatal-title').textContent = 'This is the SOURCE template, not the playable lab';
-      document.getElementById('fatal-text').textContent = 'The 3D engine (three.js) is not inside this file. To play, open the finished lab file (Experiment_10_Concave_Mirror.html). To make a playable lab from this file, run build_lab.py (see 00_README_HOW_TO_SET_UP.md).';
+      document.getElementById('fatal-text').textContent = 'The 3D engine (three.js) is not inside this file. To play, open the finished lab file (Experiment_11_Concave_Mirror.html). To make a playable lab from this file, run build_lab.py (see 00_README_HOW_TO_SET_UP.md).';
       var btn = f.querySelector('button'); if (btn) btn.style.display = 'none';
       f.style.display = 'flex';
     }
