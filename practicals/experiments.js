@@ -76,11 +76,18 @@ window.PHYSICS_EXPERIMENTS = [
     tag: "3D"
   },
   {
-    slug: "concave-mirror",
+    slug: "refractive-index-water",
     num: 10,
+    title: "Refractive Index of Water (Convex Lens and Plane Mirror)",
+    blurb: "Use a convex lens and a plane mirror with a water layer to find the focal lengths and work out the refractive index of water.",
+    tag: "3D"
+  },
+  {
+    slug: "concave-mirror",
+    num: 11,
     title: "Focal Length of a Concave Mirror (u–v Method)",
     blurb: "Use two pins on an optical bench, remove parallax and find the focal length of a concave mirror.",
     tag: "3D"
   }
-  // , { slug: "...", num: 11, title: "...", blurb: "...", tag: "3D" }
+  // , { slug: "...", num: 12, title: "...", blurb: "...", tag: "3D" }
 ];

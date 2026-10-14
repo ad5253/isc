@@ -10,6 +10,10 @@
   cfg.src = new URL("../config.js", base).href;
   cfg.onload = start;
   document.head.appendChild(cfg);
+  // Same site guard as every other page (keeps the sign-in alive, blocks developer tools).
+  var gd = document.createElement("script");
+  gd.src = new URL("../guard.js", base).href;
+  document.head.appendChild(gd);
 
   function start() {
     var endpoint, who;

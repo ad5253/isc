@@ -22,5 +22,26 @@ window.CHEMISTRY_EXPERIMENTS = [
     title: "Purity of Impure Ferrous Ammonium Sulphate",
     blurb: "Find the percentage purity of an impure ferrous ammonium sulphate sample by titration.",
     tag: "Titration"
+  },
+  {
+    slug: "oxalic-acid-x",
+    num: 4,
+    title: "Value of x in Oxalic Acid (Hot Titration)",
+    blurb: "Heat the oxalic acid solution, titrate it against KMnO\u2084 and find the number of water molecules of crystallisation, x.",
+    tag: "Hot titration"
+  },
+  {
+    slug: "purity-kmno4",
+    num: 5,
+    title: "Purity of KMnO\u2084 (Hot Titration)",
+    blurb: "Find the percentage purity of a KMnO\u2084 sample by a hot titration against oxalic acid.",
+    tag: "Hot titration"
+  },
+  {
+    slug: "purity-oxalic-acid",
+    num: 6,
+    title: "Purity of Oxalic Acid (Hot Titration)",
+    blurb: "Find the percentage purity of an oxalic acid sample by a hot titration against KMnO\u2084.",
+    tag: "Hot titration"
   }
 ];
