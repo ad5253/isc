@@ -1014,6 +1014,18 @@
       app.classList.add("hidden");
     }
 
+    // Signed out by the developer-tools guard (see guard.js): explain why.
+    try {
+      const gm = JSON.parse(localStorage.getItem("c12_guard_msg") || "null");
+      if (gm) {
+        localStorage.removeItem("c12_guard_msg");
+        if (Date.now() - gm.t < 15 * 60 * 1000 && !gate.classList.contains("hidden")) {
+          showGateError(gm.strike >= 2
+            ? "Developer tools were detected again. Your ID has been recorded and your account may now be suspended."
+            : "Developer tools were detected, so you have been signed out. Your ID has been recorded. If you try this again, your account will be suspended.");
+        }
+      }
+    } catch (e) {}
     nameForm.addEventListener("submit", onNameSubmit);
     nameInput.addEventListener("input", () => { hideGateError(); if (pinMode) resetPinUI(); });
     // Mandatory so an approval can actually be followed up on — the
@@ -1770,14 +1782,21 @@
     const requestedSubject = qs.get("subject");
     const requestedFile = qs.get("file"); // a shared link to one PDF
     const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
+    const requestedView = qs.get("view");   // coming back from the Practicals pages: ?view=progress
+    const requestedQuery = qs.get("q");     // ... or a search typed up there
     let openedShared = false;
     if (requestedFile) openedShared = openRequestedFile(requestedFile);
     if (!openedShared) {
       if (subjectMatch) {
         nav("subject", subjectMatch.id, null, "replace"); // also rewrites ?subject=x into /x/
+      } else if (requestedView === "progress") {
+        nav("progress", null, null, "replace");
       } else {
         nav("home", null, null, "replace");
+        if (requestedQuery && searchInput) { searchInput.value = requestedQuery.slice(0, 80); render(); }
+        else if (requestedView === "search" && searchInput) { document.body.classList.add("search-open"); setTimeout(() => searchInput.focus(), 200); }
       }
+      if (requestedView || requestedQuery) { try { history.replaceState(history.state, "", location.pathname); } catch (e) {} }
     }
     fetchAndApplyCatalog().then(() => {
       // The page is already on screen — redraw quietly (no second intro animation).
@@ -4782,6 +4801,8 @@
 
   // ── Enter / exit / timers ───────────────────────────────
   function enterAdmin() {
+    window.__c12Admin = true;
+    try { localStorage.setItem("c12_admin_ok", "1"); } catch (e) {} // the developer-tools guard never bothers the admin's own browser
     gate.classList.add("hidden");
     app.classList.add("hidden");
     adminApp.classList.remove("hidden");
@@ -5050,6 +5071,13 @@
       <p class="adm-h">Recent visits</p>${(d.recent || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${x.start ? esc(new Date(x.start).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })) : ""}</span><span class="adm-row__meta">open ${esc(fmtDur(x.open))} &middot; active ${esc(fmtDur(x.active))} &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("")}`;
   }
 
+  async function loadDevtools() {
+    const host = $id("admDevtools"); if (!host) return;
+    const d = await adminFetch("devtoolsList");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.list || [];
+    host.innerHTML = l.length ? l.map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)} ${x.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : ""}</span><span class="adm-row__meta">${x.count}\u00D7 &middot; ${whenHtml(x.last)}</span></div>`).join("") : emptyMsg("Nobody has tried.");
+  }
   async function loadSharedAccounts() {
     const host = $id("admShared"); if (!host) return;
     const d = await adminFetch("sharedAccounts");
@@ -5124,7 +5152,7 @@
     bannerState.legacy = S.keyMode === "legacy";
     if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
     renderAll();
-    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck(); loadSharedAccounts(); loadLoginSpeed(); loadTimeStats();
+    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck(); loadSharedAccounts(); loadLoginSpeed(); loadTimeStats(); loadDevtools();
   }
 
   function renderAll() {
@@ -5781,7 +5809,7 @@
 
   function closeAdminDetail() { $id("adminDetail").classList.add("hidden"); }
 
-  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out", client_error: "Browser error", device_kick: "Other device signed out" };
+  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out", client_error: "Browser error", device_kick: "Other device signed out", security: "Developer tools opened" };
 
   function renderAdminDetail(name, events, totals) {
     const subjectMap = getFileSubjectMap();

@@ -100,4 +100,24 @@
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/refractive-index-water/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/oxalic-acid-x/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/purity-kmno4/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/purity-oxalic-acid/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
 </urlset>

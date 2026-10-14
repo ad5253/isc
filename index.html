@@ -522,6 +522,13 @@
             <section class="adm-panel" data-panel="security">
                 <div class="adm-card">
                     <div class="adm-card__head">
+                        <h2 class="adm-card__title">Developer-tools attempts</h2>
+                    </div>
+                    <p class="adm-note">Opening the browser's developer tools signs the student out and records it. A second time suspends the account automatically.</p>
+                    <div id="admDevtools" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
                         <h2 class="adm-card__title">Accounts used on many devices</h2>
                     </div>
                     <p class="adm-note">One account can only be signed in on one device. If someone keeps switching, the password is probably being shared.</p>
@@ -703,7 +710,8 @@
     <script defer src="config.js?v=6"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="script.js?v=50"></script>
+    <script defer src="guard.js?v=1"></script>
+    <script defer src="script.js?v=51"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {
