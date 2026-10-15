@@ -667,8 +667,11 @@
   // same philosophy as everything else here: a hiccup reaching the
   // sheet should never lock out someone who's actually fine.
   let cachedLoginCheck = null;
+  let cachedLoginCheckAt = 0;
   let loginCheckInFlight = null;
   function fetchLoginCheck(name) {
+    // Kept for 40 s only, so a person who was just approved isn't told "not yet" from an old copy.
+    if (cachedLoginCheck && Date.now() - cachedLoginCheckAt > 40000) cachedLoginCheck = null;
     if (cachedLoginCheck) return Promise.resolve(cachedLoginCheck);
     if (!loginCheckInFlight) loginCheckInFlight = fetchLoginCheckNow(name).finally(() => { loginCheckInFlight = null; });
     return loginCheckInFlight;
@@ -687,6 +690,7 @@
           suspendedHashes: data.suspendedHashes || [],
           active: !!data.active
         };
+        cachedLoginCheckAt = Date.now();
       } else {
         return fallback; // not cached — the next attempt asks again
       }
@@ -1328,25 +1332,49 @@
   function getDt(name) { try { return localStorage.getItem(dtKey(name)) || ""; } catch { return ""; } }
   function setDt(name, v) { try { if (v) localStorage.setItem(dtKey(name), v); else localStorage.removeItem(dtKey(name)); } catch {} }
 
+  // Talks to the password endpoint. A slow answer is NOT treated as a failure:
+  // the same request is quietly sent again after 2.5 s and 6 s while the first
+  // is still running, and whichever answers first wins. Checking a password
+  // carries an id, so the server never counts one wrong try twice. Creating a
+  // password is sent once (plus one retry) because it must not run twice.
   async function pinApi(body) {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return null;
-    const attempt = async (ms) => {
+    const payload = JSON.stringify(Object.assign({ type: "pin", rid: body.op === "check" ? makeId() : "" }, body));
+    const send = async (ms) => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), ms);
       try {
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8" },
-          body: JSON.stringify(Object.assign({ type: "pin" }, body)),
+          body: payload,
           signal: controller.signal
         });
         return await res.json();
       } finally { clearTimeout(timer); }
     };
-    try { return await attempt(7000); } catch {
-      try { return await attempt(9000); } catch { return null; }
+    if (body.op !== "state" && body.op !== "check") {
+      try { return await send(12000); } catch { try { return await send(12000); } catch { return null; } }
     }
+    return new Promise((resolve) => {
+      let finished = false, running = 0, launched = 0, lastBad = null;
+      const done = (v) => { if (!finished) { finished = true; resolve(v); } };
+      const fire = (ms) => {
+        if (finished) return;
+        launched++; running++;
+        send(ms).then((j) => {
+          if (j && j.ok) done(j); else if (j) lastBad = j;
+        }).catch(() => {}).finally(() => {
+          running--;
+          if (!finished && running === 0 && launched >= 3) done(lastBad);
+        });
+      };
+      fire(15000);
+      setTimeout(() => fire(12000), 2500);
+      setTimeout(() => fire(9000), 6000);
+      setTimeout(() => done(lastBad), 16500);
+    });
   }
 
   function resetPinUI() {
@@ -1399,7 +1427,7 @@
     if (pinMode === null) {
       const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
       pinStateP = null;
-      if (!st) { showGateError("The server is busy or your connection is weak — please try again in a moment."); return "wait"; }
+      if (!st) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
       if (!st.ok || !st.state) return "ok"; // an older backend that doesn't know passwords yet
       if (st.state === "trusted") return "ok";
       if (st.state === "none") {
@@ -1415,7 +1443,7 @@
       if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
       if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
       const r = await pinApi({ op: "set", name, pin });
-      if (!r) { showGateError("The server is busy or your connection is weak — please try again in a moment."); return "wait"; }
+      if (!r) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
       if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
       if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
@@ -1426,7 +1454,7 @@
     const pin = gatePinInput.value;
     if (!pin) { gatePinInput.focus(); return "wait"; }
     const r = await pinApi({ op: "check", name, pin });
-    if (!r || !r.ok) { showGateError("Couldn't check your password right now (server busy or weak connection) — please try again."); return "wait"; }
+    if (!r || !r.ok) { showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
     if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
@@ -1609,10 +1637,14 @@
   // for a couple of seconds.
   const gateBtnLabel = gateBtn.querySelector(".gate__btn-label");
   const gateBtnLabelText = gateBtnLabel ? gateBtnLabel.textContent : "";
+  let gateBusyTimer = null;
   function setGateBusy(isBusy) {
     gateBtn.disabled = isBusy;
     gateBtn.classList.toggle("is-busy", isBusy);
-    if (gateBtnLabel) gateBtnLabel.textContent = isBusy ? "Please wait…" : gateBtnLabelText;
+    if (gateBtnLabel) gateBtnLabel.textContent = isBusy ? "Signing in…" : gateBtnLabelText;
+    clearTimeout(gateBusyTimer);
+    // If the server is slow, say so instead of looking frozen.
+    if (isBusy && gateBtnLabel) gateBusyTimer = setTimeout(() => { if (gateBtn.disabled) gateBtnLabel.textContent = "Still working — hang on…"; }, 3500);
   }
 
   function showGateError(msg) {
@@ -5119,7 +5151,15 @@
     bannerState.error = ""; bannerState.partial = "";
     const btn = $id("adminRefreshBtn");
     if (btn) btn.disabled = true;
-    const data = await adminFetch("adminDashboard");
+    let data = await adminFetch("adminDashboard");
+    if (!data && /too long/.test(lastAdminError)) {
+      // The server is still working on it in the background. Give it a moment,
+      // then ask again — the finished copy is waiting for us by then.
+      bannerState.error = "The server is slow right now — still trying…";
+      renderBanners();
+      await new Promise((r) => setTimeout(r, 8000));
+      data = await adminFetch("adminDashboard", { stale: 1 });
+    }
     if (btn) btn.disabled = false;
     if (!data) {
       bannerState.error = adminErrText();
@@ -5152,7 +5192,20 @@
     bannerState.legacy = S.keyMode === "legacy";
     if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
     renderAll();
-    loadResetRequests(); loadClassProgress(); loadClientErrors(); loadStuck(); loadSharedAccounts(); loadLoginSpeed(); loadTimeStats(); loadDevtools();
+    runSecondaryLoaders();
+  }
+
+  // The extra cards used to all ask the server at the same moment, which piled
+  // up heavy requests (and slowed students' logins). Now one after another.
+  let secondaryRun = 0;
+  async function runSecondaryLoaders() {
+    const my = ++secondaryRun;
+    const steps = [loadStuck, loadResetRequests, loadTimeStats, loadClassProgress, loadSharedAccounts, loadLoginSpeed, loadClientErrors, loadDevtools];
+    for (const fn of steps) {
+      if (my !== secondaryRun || !adminPresenceTimer) return; // a newer refresh started, or admin was closed
+      try { await fn(); } catch {}
+      await new Promise((r) => setTimeout(r, 250));
+    }
   }
 
   function renderAll() {
