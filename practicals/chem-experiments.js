@@ -43,5 +43,19 @@ window.CHEMISTRY_EXPERIMENTS = [
     title: "Purity of Oxalic Acid (Hot Titration)",
     blurb: "Find the percentage purity of an oxalic acid sample by a hot titration against KMnO\u2084.",
     tag: "Hot titration"
+  },
+  {
+    slug: "kinetics-thiosulphate",
+    num: 7,
+    title: "Chemical Kinetics \u2013 Sodium Thiosulphate and HCl",
+    blurb: "Study how concentration affects the rate of the sodium thiosulphate\u2013hydrochloric acid reaction and find the order of reaction.",
+    tag: "Kinetics"
+  },
+  {
+    slug: "glucose-tests",
+    num: 8,
+    title: "Characteristic Tests of Glucose",
+    blurb: "Carry out the characteristic tests for glucose and observe what each one shows.",
+    tag: "Qualitative tests"
   }
 ];
