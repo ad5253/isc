@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>ISC Class 12 Chemistry Practicals: Virtual Titration Labs</title>
-    <meta name="description" content="Interactive virtual titration labs for ISC Class 12 Chemistry practicals. Set up the burette, titrate, take readings and calculate, then practise for the exam.">
+    <title>ISC Class 12 Chemistry Practicals: Virtual Labs</title>
+    <meta name="description" content="Interactive virtual labs (titrations, kinetics and tests) for ISC Class 12 Chemistry practicals. Set up the burette, titrate, take readings and calculate, then practise for the exam.">
     <meta name="theme-color" content="#121218">
     <meta name="author" content="Adnan Merchant">
     <link rel="canonical" href="https://ad5253.github.io/isc/practicals/chemistry/">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="ISC Class 12 Chemistry Practicals: Virtual Titration Labs">
-    <meta property="og:description" content="Interactive virtual titration labs for ISC Class 12 Chemistry practicals. Set up the burette, titrate, take readings and calculate, then practise for the exam.">
+    <meta property="og:title" content="ISC Class 12 Chemistry Practicals: Virtual Labs">
+    <meta property="og:description" content="Interactive virtual labs (titrations, kinetics and tests) for ISC Class 12 Chemistry practicals. Set up the burette, titrate, take readings and calculate, then practise for the exam.">
     <meta property="og:url" content="https://ad5253.github.io/isc/practicals/chemistry/">
     <meta property="og:image" content="https://ad5253.github.io/isc/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
@@ -76,7 +76,7 @@
         <nav class="crumbs" aria-label="Breadcrumb"><a class="crumb" href="../../">Home</a><span class="crumb-sep">/</span><a class="crumb" href="../">Practicals</a><span class="crumb-sep">/</span><span class="crumb crumb--active">Chemistry</span></nav>
         <main class="content">
             <p class="section-label">Chemistry</p>
-            <p class="page-lede">Pick an experiment. Each one is a hands-on virtual titration: set up the apparatus, run the titration, record the burette readings and work out the result.</p>
+            <p class="page-lede">Pick an experiment. Each one is a hands-on virtual lab: set up the apparatus, run the experiment, record your readings and work out the result.</p>
             <div class="subfolders stagger" id="expList"></div>
             <noscript><p class="page-note">Turn on JavaScript to see the list of experiments.</p></noscript>
             <p class="page-note">Best on Chrome or Safari. A lab can take a few seconds to load the first time. Labs are still being finished, so tell me if something looks wrong.</p>
@@ -163,9 +163,6 @@
     var ch = document.createElement("span"); ch.className = "subfolder__chevron"; ch.innerHTML = CHEV;
     a.appendChild(ic); a.appendChild(info); a.appendChild(ch); list.appendChild(a);
   });
-  var more = document.createElement("div");
-  more.className = "exp-more"; more.textContent = "More titrations are on the way.";
-  list.appendChild(more);
 })();
 </script>
 <script>
