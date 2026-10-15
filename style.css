@@ -3576,3 +3576,18 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 .adm-hours{display:flex;align-items:flex-end;gap:2px;height:54px}
 .adm-hour{flex:1;background:var(--brass,#c9a15a);border-radius:2px 2px 0 0;opacity:.85;min-height:3px}
 .adm-hours__ax{display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-top:3px}
+
+
+/* ── Login page: keep-signed-in, eye icon, progress line (Round 10) ── */
+.gate__keep { display: flex; align-items: center; gap: 9px; flex-basis: 100%; margin: 2px 2px 0; font-size: 13px; color: var(--paper-dim, var(--paper-faint)); cursor: pointer; text-align: left; }
+.gate__keep input { width: 17px; height: 17px; accent-color: var(--brass); flex: none; }
+.gate__field--eye .gate__input { padding-right: 48px; }
+.gate__eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 38px; height: 38px; border: 0; background: none; color: var(--paper-faint); border-radius: 50%; display: grid; place-items: center; cursor: pointer; }
+.gate__eye:hover, .gate__eye:focus-visible { color: var(--brass); }
+.gate__eye svg { width: 20px; height: 20px; }
+.gate__progress { height: 3px; margin: 12px auto 0; width: min(320px, 100%); border-radius: 3px; background: rgba(201, 161, 90, 0.14); overflow: hidden; opacity: 0; transition: opacity 0.2s; }
+.gate__progress.on { opacity: 1; }
+.gate__progress i { display: block; height: 100%; width: 38%; border-radius: 3px; background: var(--brass); animation: gateProg 1.15s ease-in-out infinite; }
+@keyframes gateProg { 0% { transform: translateX(-110%); } 100% { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) { .gate__progress i { animation: none; width: 100%; opacity: .5; } }
+#gateRetry { display: block; margin: 8px auto 0; }

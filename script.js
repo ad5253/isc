@@ -614,6 +614,20 @@
   // password, when the real password was never actually checked.
   // One quiet retry with a longer timeout now happens automatically
   // before ever surfacing an error to the person typing.
+  // The fast-login Worker (Cloudflare): answers a CORRECT password in ~0.1 s.
+  // Anything else — or any trouble — returns null and the normal (Apps Script) check decides.
+  async function authFast(body) {
+    const cb = cacheBase();
+    if (!cb) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    try {
+      const res = await fetch(cb + "/auth", { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body), signal: controller.signal });
+      const d = await res.json();
+      return d && d.ok ? d : null;
+    } catch { return null; } finally { clearTimeout(timer); }
+  }
+
   async function checkCredentialsRemote(username, password) {
     const cred = SITE_CONFIG.protectedAccounts;
     if (!cred) return "error";
@@ -621,6 +635,8 @@
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return "error";
     const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
     const url = `${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`;
+    const fast = await authFast({ op: "cred", username, credHash });
+    if (fast && fast.valid) return "valid";
 
     // Asked up to three times in parallel (now, after 1.5 s, after 3.5 s) — a
     // slow or sleeping server answers whichever request it reaches first.
@@ -995,6 +1011,7 @@
     }
     stopHeartbeat();
     try { sessionStorage.removeItem("c12_tm"); } catch (e) {}
+    try { localStorage.removeItem("c12_keep"); } catch (e) {}
     clearSession();
     location.reload();
   }
@@ -1006,7 +1023,15 @@
       const ep = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
       if (ep && ep.indexOf("PASTE_YOUR") !== 0) fetch(`${ep}?action=ping`).catch(() => {});
     } catch (e) {}
-    const saved = readSession();
+    let saved = readSession();
+    if (!saved) {
+      // "Keep me signed in" ticked earlier on this device: pick the session back up.
+      try {
+        const k = JSON.parse(localStorage.getItem("c12_keep") || "null");
+        if (k && k.name && k.until > Date.now()) { saveSession(k.name, makeId()); saved = readSession(); }
+        else if (k) localStorage.removeItem("c12_keep");
+      } catch (e) {}
+    }
     if (!saved) {
       // The moment someone starts typing their name, wake the server again.
       try {
@@ -1024,6 +1049,7 @@
       getDeviceId().catch(() => {}); getClientIp().catch(() => {}); fetchLoginCheck("").catch(() => {});
     }
     if (saved && (await isSuspended(saved))) {
+      try { localStorage.removeItem("c12_keep"); } catch (e) {}
       clearSession();
       gate.classList.remove("hidden");
       app.classList.add("hidden");
@@ -1050,7 +1076,21 @@
       }
     } catch (e) {}
     nameForm.addEventListener("submit", onNameSubmit);
-    nameInput.addEventListener("input", () => { hideGateError(); if (pinMode) resetPinUI(); });
+    nameInput.addEventListener("input", () => {
+      hideGateError();
+      if (pinMode && normalizeName(nameInput.value) !== previewName) resetPinUI();
+      schedulePreview();
+    });
+    nameInput.addEventListener("change", schedulePreview);
+    // Remembered name + "stay signed in" choice, and the eye buttons.
+    try {
+      const ln = localStorage.getItem("c12_lastname");
+      if (ln && !nameInput.value) nameInput.value = ln;
+      if (gateKeep && localStorage.getItem("c12_keep") !== null) gateKeep.checked = true;
+    } catch (e) {}
+    [gatePasswordInput, gatePinInput, gatePinConfirm].forEach(addEyeButton);
+    fetchLoginCheck("").then(schedulePreview).catch(() => {});
+    schedulePreview();
     // Mandatory so an approval can actually be followed up on — the
     // approval queue used to have no way to tell someone their request
     // was accepted short of you personally remembering their name and
@@ -1406,7 +1446,7 @@
     if (gatePinAsk) { gatePinAsk.classList.add("hidden"); gatePinAsk.disabled = false; gatePinAsk.textContent = "Ask admin to reset it"; }
   }
 
-  function showPinUI(mode, name) {
+  function showPinUI(mode, name, opts) {
     pinMode = mode;
     gatePinBox.classList.remove("hidden");
     gatePinInput.value = "";
@@ -1421,7 +1461,7 @@
     gatePinHint.textContent = create
       ? "Choose a password (4–32 characters) — you need it every time you sign in, so nobody else can use your name. The admin can also see which files you tick as revised."
       : "Enter your password to continue.";
-    gatePinInput.focus();
+    if (!(opts && opts.noFocus)) gatePinInput.focus();
   }
 
   if (gatePinAsk) gatePinAsk.addEventListener("click", async () => {
@@ -1442,6 +1482,12 @@
 
   // Returns "ok" to carry on logging in, or "wait" when the gate is
   // now showing a PIN box and the person must act.
+  let lastLoginPw = "";   // kept only until the browser has been offered "save password"
+  let gateLoginT0 = 0;
+  function noteLoginFail(name, what) {
+    try { logEvent("login", name, what, `${location.href} || loginMs:${Math.round(performance.now() - (gateLoginT0 || performance.now()))}`); } catch (e) {}
+  }
+
   async function runPinStep(name) {
     if (pinMode === null) {
       // Fast path: the list of password-holders already arrived with the login
@@ -1470,6 +1516,7 @@
       const pin = gatePinInput.value;
       if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
       if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
+      lastLoginPw = pin;
       const r = await pinApi({ op: "set", name, pin });
       if (!r) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
@@ -1481,8 +1528,13 @@
     // enter
     const pin = gatePinInput.value;
     if (!pin) { gatePinInput.focus(); return "wait"; }
-    const r = await pinApi({ op: "check", name, pin });
-    if (!r || !r.ok) { showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
+    lastLoginPw = pin;
+    let r = null;
+    const fast = await authFast({ op: "check", name, pin });
+    if (fast && fast.valid && fast.dt) r = fast;
+    else if (fast && fast.locked) r = { ok: true, valid: false, locked: fast.locked };
+    else r = await pinApi({ op: "check", name, pin });
+    if (!r || !r.ok) { noteLoginFail(name, "check_failed"); showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
     if (r.valid && !r.dt) {
       // The server has no password for this name (it was just reset) — choose a new one.
       showPinUI("create", name);
@@ -1497,11 +1549,63 @@
     return "wait";
   }
 
+  // ── One-step form (like Instagram) ──────────────────────────────
+  // As soon as a name is typed, the password box appears under it — no extra
+  // "Continue" first. It needs no server call: the list of password-holders
+  // arrives with the login check. The browser's password manager sees one
+  // normal username + password form, so it can fill and offer to save.
+  let previewName = "", previewTimer = null;
+  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 220); }
+  async function previewPasswordBox() {
+    const raw = nameInput.value.trim();
+    const norm = normalizeName(raw);
+    if (norm.length < 2) { if (pinMode) resetPinUI(); previewName = ""; if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden"); return; }
+    const protectedList = (SITE_CONFIG.protectedAccounts && SITE_CONFIG.protectedAccounts.usernames) || [];
+    if (protectedList.includes(norm)) {
+      if (pinMode) resetPinUI();
+      previewName = norm;
+      gatePasswordField.classList.remove("hidden");
+      return;
+    }
+    if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden");
+    const lc = cachedLoginCheck;
+    if (!lc || !lc.pinPrefixes) return;               // not loaded yet: the Continue button still handles it
+    const h = await hashName(raw);
+    if (normalizeName(nameInput.value) !== norm) return; // they kept typing
+    const list = SITE_CONFIG.accessList;
+    const allowed = !list || !list.enabled || (list.hashes || []).includes(h) || (lc.accessHashes || []).includes(h);
+    if (!allowed) { if (pinMode) resetPinUI(); previewName = ""; return; }
+    const mode = lc.pinPrefixes.indexOf(h.slice(0, 12)) !== -1 ? "enter" : "create";
+    if (pinMode === mode && previewName === norm) return;
+    previewName = norm;
+    showPinUI(mode, raw, { noFocus: true });
+  }
+
+  const EYE_ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A16.6 16.6 0 0 0 2 12s3.6 7 10 7a10 10 0 0 0 4.4-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+  function addEyeButton(input) {
+    if (!input || !input.parentElement || input.parentElement.querySelector(".gate__eye")) return;
+    const wrap = input.parentElement;
+    wrap.classList.add("gate__field--eye");
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "gate__eye"; b.setAttribute("aria-label", "Show password"); b.innerHTML = EYE_ON;
+    b.addEventListener("click", () => {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      b.innerHTML = show ? EYE_OFF : EYE_ON;
+      b.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      input.focus();
+    });
+    wrap.appendChild(b);
+  }
+
   async function onNameSubmit(e) {
     e.preventDefault();
     const name = nameInput.value.trim();
     if (!name) return;
     const loginT0 = performance.now();
+    gateLoginT0 = loginT0;
+    try { localStorage.setItem("c12_lastname", name); } catch (e) {}
 
     // Instant feedback the moment Continue is tapped/clicked — before
     // any of the network-bound checks below even start. Those checks
@@ -1564,10 +1668,12 @@
           // password is deliberately NOT cleared: whatever they typed
           // was never actually verified either way, so there's no
           // reason to make them retype it.
-          showGateError("Couldn't verify your password right now (server busy or weak connection) — please try again.");
+          noteLoginFail(name, "check_failed");
+          showGateError("The server didn't answer in time. Nothing was lost — just press Continue again.");
           return;
         }
         credentialsVerified = true;
+        lastLoginPw = password;
       } else if (!gatePasswordField.classList.contains("hidden")) {
         // They'd triggered the password field for an earlier name,
         // then changed the name field to something that isn't
@@ -1653,6 +1759,17 @@
       const sid = makeId();
       saveSession(name, sid);
       logEvent("login", name, "authorized", `${trace} || loginMs:${Math.round(performance.now() - loginT0)}`);
+      // Stay signed in (only if ticked), and offer the browser's "save password" prompt.
+      try {
+        if (gateKeep && gateKeep.checked) localStorage.setItem("c12_keep", JSON.stringify({ name, until: Date.now() + 12 * 3600 * 1000 }));
+        else localStorage.removeItem("c12_keep");
+      } catch (e) {}
+      try {
+        if (lastLoginPw && window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
+          navigator.credentials.store(new PasswordCredential({ id: name, password: lastLoginPw, name })).catch(() => {});
+        }
+      } catch (e) {}
+      lastLoginPw = "";
       gatePasswordField.classList.add("hidden");
       gatePasswordInput.value = "";
       gate.classList.add("fade-out");
@@ -1671,8 +1788,18 @@
   // for a couple of seconds.
   const gateBtnLabel = gateBtn.querySelector(".gate__btn-label");
   const gateBtnLabelText = gateBtnLabel ? gateBtnLabel.textContent : "";
-  let gateBusyTimer = null;
+  let gateBusyTimer = null, gateRetryTimer = null;
+  const gateProgress = document.getElementById("gateProgress");
+  const gateRetry = document.getElementById("gateRetry");
+  const gateKeep = document.getElementById("gateKeep");
+  if (gateRetry) gateRetry.addEventListener("click", () => location.reload());
   function setGateBusy(isBusy) {
+    if (gateProgress) gateProgress.classList.toggle("on", isBusy);
+    clearTimeout(gateRetryTimer);
+    if (gateRetry) {
+      if (isBusy) gateRetryTimer = setTimeout(() => { if (gateBtn.disabled) gateRetry.classList.remove("hidden"); }, 8000);
+      else gateRetry.classList.add("hidden");
+    }
     gateBtn.disabled = isBusy;
     gateBtn.classList.toggle("is-busy", isBusy);
     if (gateBtnLabel) gateBtnLabel.textContent = isBusy ? "Signing in…" : gateBtnLabelText;
@@ -1879,7 +2006,7 @@
   // ── Heartbeat ("who's on the site right now") ───────────
   function startHeartbeat() {
     stopHeartbeat();
-    heartbeatTimer = setInterval(sendHeartbeat, 60000);
+    heartbeatTimer = setInterval(sendHeartbeat, 120000);
     sendHeartbeat(); // so Presence shows them immediately, not after 45s
   }
 
@@ -5155,10 +5282,11 @@
     const host = $id("admLoginSpeed"); if (!host) return;
     const d = await adminFetch("loginSpeed");
     if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
-    if (!d.count) { host.innerHTML = emptyMsg("No timed logins yet. They appear after students sign in with the new site."); return; }
+    if (!d.count && !d.failsToday) { host.innerHTML = emptyMsg("No timed logins yet. They appear after students sign in with the new site."); return; }
     const sec = (ms) => (ms / 1000).toFixed(1) + " s";
     const rows = (d.days || []).slice(-7).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.day)}</span><span class="adm-row__meta">${x.count} logins &middot; typical ${sec(x.median)}</span></div>`).join("");
-    host.innerHTML = `<div class="adm-row"><span class="adm-row__title">Typical login</span><span class="adm-row__meta"><b>${sec(d.median)}</b></span></div><div class="adm-row"><span class="adm-row__title">Slowest 1 in 10</span><span class="adm-row__meta">${sec(d.p90)}</span></div><div class="adm-row"><span class="adm-row__title">Slowest ever (7 days)</span><span class="adm-row__meta">${sec(d.slowest)}</span></div>${rows}`;
+    const slow = (d.slowToday || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${sec(x.ms)} &middot; ${whenHtml(x.at)}</span></div>`).join("");
+    host.innerHTML = `<div class="adm-row"><span class="adm-row__title">Typical login</span><span class="adm-row__meta"><b>${sec(d.median)}</b></span></div><div class="adm-row"><span class="adm-row__title">Slowest 1 in 10</span><span class="adm-row__meta">${sec(d.p90)}</span></div><div class="adm-row"><span class="adm-row__title">Slowest ever (7 days)</span><span class="adm-row__meta">${sec(d.slowest)}</span></div><div class="adm-row"><span class="adm-row__title">Today</span><span class="adm-row__meta">${d.loginsToday || 0} logins &middot; <b>${d.failsToday || 0}</b> where the check didn't finish</span></div>${slow ? `<p class="adm-note" style="margin:10px 0 4px">Slowest logins today</p>${slow}` : ""}<p class="adm-note" style="margin:10px 0 4px">Last 7 days</p>${rows}`;
   }
   async function refreshTidyUI() {
     const st = $id("admTidyState"); if (!st) return;
@@ -5173,6 +5301,21 @@
     const turnOn = $id("admTidyToggle").dataset.on !== "1";
     const res = await act("setAutoTidy", { on: turnOn ? "1" : "0" }, turnOn ? "Automatic tidy-up turned on." : "Automatic tidy-up turned off.", "Couldn't change the tidy-up");
     if (res) refreshTidyUI();
+  }
+  async function refreshAuthUI() {
+    const st = $id("admAuthState"); if (!st) return;
+    const r = await adminFetch("authStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    if (!r.configured) { st.textContent = "NOT SET UP yet — fill in AUTH_WORKER_URL and AUTH_SYNC_SECRET at the top of the Apps Script."; return; }
+    st.textContent = r.last ? `ON — last sync ${relTime(r.last.at)}: ${r.last.count} passwords, ${r.last.accounts} special accounts.` : "Set up, but never synced — press the button.";
+  }
+  async function onAuthSync() {
+    const btn = $id("admAuthSync"); btn.disabled = true;
+    const res = await adminFetch("syncAuth");
+    btn.disabled = false;
+    if (res && res.ok) showToast(`Synced ${res.count} passwords and ${res.accounts} special accounts.`);
+    else showToast("Couldn't sync: " + ((res && res.error) || adminErrText()), true);
+    refreshAuthUI();
   }
   async function onTidyNow() {
     const btn = $id("admTidyNow"); btn.disabled = true;
@@ -5234,7 +5377,7 @@
   let secondaryRun = 0;
   async function runSecondaryLoaders() {
     const my = ++secondaryRun;
-    const steps = [loadStuck, loadResetRequests, loadTimeStats, loadClassProgress, loadSharedAccounts, loadLoginSpeed, loadClientErrors, loadDevtools];
+    const steps = [loadStuck, loadResetRequests, loadTimeStats, loadClassProgress, loadSharedAccounts, loadLoginSpeed, refreshAuthUI, loadClientErrors, loadDevtools];
     for (const fn of steps) {
       if (my !== secondaryRun || !adminPresenceTimer) return; // a newer refresh started, or admin was closed
       try { await fn(); } catch {}
@@ -5800,7 +5943,7 @@
     S.online = live.online || [];
     const targets = onlineSessionsFor(names);
     if (!targets.length) { showToast("None of the selected people are online right now.", true); return; }
-    const message = await showPrompt(`Message for ${targets.length} online ${targets.length === 1 ? "person" : "people"} (pops up on their screen within about 45 seconds):`);
+    const message = await showPrompt(`Message for ${targets.length} online ${targets.length === 1 ? "person" : "people"} (pops up on their screen within about 2 minutes):`);
     if (!message || !message.trim()) return;
     let ok = 0;
     for (const t of targets) {
@@ -5836,14 +5979,14 @@
   }
 
   async function sendAdminMessage(sessionId, name) {
-    const message = await showPrompt(`Message to send ${name} (pops up on their screen within about 45 seconds):`);
+    const message = await showPrompt(`Message to send ${name} (pops up on their screen within about 2 minutes):`);
     if (!message || !message.trim()) return;
     await act("sendMessage", { sessionId, message: message.trim() }, `Message sent to ${name}.`, `Couldn't message ${name}`);
   }
 
   async function forceLogoutUser(sessionId, name) {
     if (!(await showConfirm(`Sign ${name} out now? They'll see a notice and be returned to the login screen.`, { ok: "Sign out", danger: true }))) return;
-    const res = await act("forceLogout", { sessionId }, `${name} will be signed out within about 45 seconds.`, `Couldn't sign ${name} out`);
+    const res = await act("forceLogout", { sessionId }, `${name} will be signed out within about 2 minutes.`, `Couldn't sign ${name} out`);
     if (res) refreshLive();
   }
 
@@ -6407,6 +6550,7 @@
     $id("admBackupNow").addEventListener("click", onBackupNow);
     $id("admTidyToggle").addEventListener("click", onTidyToggle);
     $id("admTidyNow").addEventListener("click", onTidyNow);
+    $id("admAuthSync").addEventListener("click", onAuthSync);
     $id("admAnnClear").addEventListener("click", onClearAnnouncement);
     $id("admRequestList").addEventListener("click", (e) => {
       const b = e.target.closest("[data-done]");

@@ -76,6 +76,7 @@
         }
         sessionStorage.removeItem("c12_name");
         sessionStorage.removeItem("c12_tm");
+        localStorage.removeItem("c12_keep");
         localStorage.setItem("c12_guard_msg", JSON.stringify({ t: Date.now(), strike: strike }));
       } catch (e) {}
       location.replace(ROOT);

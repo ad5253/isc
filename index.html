@@ -30,7 +30,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=50">
+    <link rel="stylesheet" href="style.css?v=52">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -87,21 +87,21 @@
             <p class="gate__subtitle">Please enter your name</p>
             <form id="nameForm" class="gate__form">
                 <div class="gate__field">
-                    <input type="text" id="nameInput" class="gate__input" placeholder="Your name" aria-label="Your name" required autocomplete="off" minlength="2" enterkeyhint="go">
+                    <input type="text" id="nameInput" name="username" class="gate__input" placeholder="Your name" aria-label="Your name" required autocomplete="username" autocapitalize="words" autocorrect="off" spellcheck="false" minlength="2" enterkeyhint="go">
                     <span class="gate__field-line"></span>
                 </div>
                 <div class="gate__field gate__field--password hidden" id="gatePasswordField">
-                    <input type="password" id="gatePasswordInput" class="gate__input" placeholder="Password" aria-label="Password" autocomplete="current-password" enterkeyhint="go">
+                    <input type="password" id="gatePasswordInput" name="password" class="gate__input" placeholder="Password" aria-label="Password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
                     <span class="gate__field-line"></span>
                 </div>
                 <div class="gate__pin hidden" id="gatePinBox">
                     <p class="gate__pin-hint" id="gatePinHint" role="status" aria-live="polite"></p>
                     <div class="gate__field">
-                        <input type="password" id="gatePinInput" class="gate__input" placeholder="Password" maxlength="32" autocomplete="current-password" enterkeyhint="go" aria-label="Password">
+                        <input type="password" id="gatePinInput" name="password" class="gate__input" placeholder="Password" maxlength="32" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Password">
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__field hidden" id="gatePinConfirmField">
-                        <input type="password" id="gatePinConfirm" class="gate__input" placeholder="Repeat password" maxlength="32" autocomplete="new-password" enterkeyhint="go" aria-label="Repeat password">
+                        <input type="password" id="gatePinConfirm" name="confirm-password" class="gate__input" placeholder="Repeat password" maxlength="32" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Repeat password">
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__pin-links">
@@ -109,11 +109,14 @@
                         <a id="gatePinForgot" class="gate__linkbtn hidden" href="https://wa.me/917405806352" target="_blank" rel="noopener">Forgot password?</a>
                     </div>
                 </div>
+                <label class="gate__keep"><input type="checkbox" id="gateKeep"><span>Keep me signed in on this device for 12 hours</span></label>
                 <button type="submit" class="gate__btn">
                     <span class="gate__btn-label">Continue</span>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
                 </button>
             </form>
+            <div class="gate__progress" id="gateProgress" aria-hidden="true"><i></i></div>
+            <button type="button" id="gateRetry" class="gate__linkbtn hidden">Taking long? Tap to retry</button>
             <p id="gateError" class="gate__error hidden" role="alert"></p>
 
             <!-- Shown only after an explicit tap on "Send my name for
@@ -607,6 +610,13 @@
                     </div>
                 </div>
                 <div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Fast login (Cloudflare)</h2></div>
+                    <p class="adm-muted">Lets the Cloudflare Worker check a correct password in a split second. New and changed passwords are sent over automatically; press the button once after setting it up, and any time you want to repair it. Status: <b id="admAuthState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admAuthSync" class="adm-btn adm-btn--sm">Sync passwords now</button>
+                    </div>
+                </div>
+                <div class="adm-card">
                     <div class="adm-card__head"><h2 class="adm-card__title">Automatic tidy-up</h2></div>
                     <p class="adm-muted">Every Monday at 3 am the site moves activity older than 90 days into the archive and clears old leftovers, so the admin page stays fast. Nothing in use is touched. Status: <b id="admTidyState">…</b></p>
                     <div class="adm-bar">
@@ -711,7 +721,7 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=1"></script>
-    <script defer src="script.js?v=51"></script>
+    <script defer src="script.js?v=52"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {
