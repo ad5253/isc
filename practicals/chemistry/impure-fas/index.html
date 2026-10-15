@@ -4291,14 +4291,21 @@ function buildWallThings(g) {
   // wall clock
   const ck = new THREE.Group(); ck.position.set(-4.2, 13.2, -9.9); g.add(ck);
   const face = document.createElement('canvas'); face.width = face.height = 256; const f = face.getContext('2d');
+  function drawClockFace() {
+  f.clearRect(0, 0, 256, 256);
   f.fillStyle = '#fbfbf8'; f.beginPath(); f.arc(128, 128, 126, 0, 7); f.fill();
   f.fillStyle = '#111'; f.font = '700 26px Arial'; f.textAlign = 'center'; f.textBaseline = 'middle';
   for (let i = 1; i <= 12; i++) { const a = i / 12 * Math.PI * 2; f.fillText(String(i), 128 + Math.sin(a) * 96, 128 - Math.cos(a) * 96); }
   for (let i = 0; i < 60; i++) { const a = i / 60 * Math.PI * 2, r0 = i % 5 ? 116 : 110; f.strokeStyle = '#222'; f.lineWidth = i % 5 ? 1.5 : 3; f.beginPath(); f.moveTo(128 + Math.sin(a) * r0, 128 - Math.cos(a) * r0); f.lineTo(128 + Math.sin(a) * 122, 128 - Math.cos(a) * 122); f.stroke(); }
-  const now = new Date(), hr = (now.getHours() % 12 + now.getMinutes() / 60) / 12 * Math.PI * 2, mn = now.getMinutes() / 60 * Math.PI * 2;
+  const now = new Date(), sc = now.getSeconds() + now.getMilliseconds() / 1000, mi = now.getMinutes() + sc / 60, hr = (now.getHours() % 12 + mi / 60) / 12 * Math.PI * 2, mn = mi / 60 * Math.PI * 2, sa = sc / 60 * Math.PI * 2;
   [[hr, 58, 7], [mn, 88, 4.5]].forEach(([a, l, w]) => { f.strokeStyle = '#111'; f.lineWidth = w; f.lineCap = 'round'; f.beginPath(); f.moveTo(128, 128); f.lineTo(128 + Math.sin(a) * l, 128 - Math.cos(a) * l); f.stroke(); });
+  f.strokeStyle = '#b91c1c'; f.lineWidth = 2; f.lineCap = 'round'; f.beginPath(); f.moveTo(128 - Math.sin(sa) * 22, 128 + Math.cos(sa) * 22); f.lineTo(128 + Math.sin(sa) * 100, 128 - Math.cos(sa) * 100); f.stroke();
   f.fillStyle = '#b91c1c'; f.beginPath(); f.arc(128, 128, 6, 0, 7); f.fill();
-  const faceM = new THREE.Mesh(new THREE.CircleGeometry(1.0, 64), new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(face), roughness: 0.6 }));
+  clockTex.needsUpdate = true;
+  }
+  const clockTex = new THREE.CanvasTexture(face);
+  drawClockFace(); setInterval(drawClockFace, 1000);
+  const faceM = new THREE.Mesh(new THREE.CircleGeometry(1.0, 64), new THREE.MeshStandardMaterial({ map: clockTex, roughness: 0.6 }));
   faceM.position.z = 0.06; ck.add(faceM);
   const rim = new THREE.Mesh(new THREE.TorusGeometry(1.04, 0.08, 16, 64), new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.35, metalness: 0.3, envMap: envTex, envMapIntensity: 0.7 })); rim.position.z = 0.08; ck.add(rim);
   const glassC = new THREE.Mesh(new THREE.CircleGeometry(1.0, 64), new THREE.MeshPhysicalMaterial({ color: 0x000000, roughness: 0.02, transparent: true, opacity: 0.12, envMap: envTex, envMapIntensity: 1.2 })); glassC.position.z = 0.13; glassC.userData.noBack = true; ck.add(glassC);
@@ -4489,12 +4496,12 @@ let lastLanding = 0, lastStreamRip = 0;
 
 // One drop: the tap turns a little, a drop forms at the tip, falls, and lands.
 let dropAnimOn = false;
-function oneDrop() {
+function oneDrop(fast) {
   if (!canRun() || dropAnimOn) return;
-  SFX.cock(true);
+  if (!fast) SFX.cock(true);
   dropAnimOn = true;
   const y0 = H(BUR.tip - 0.45), y1 = receiverSurfaceY();
-  runAnim(0.42, k => dropFX_form(k), () => {
+  runAnim(fast ? 0.15 : 0.42, k => dropFX_form(k), () => {
     hangDrop.visible = false;
     const hcm = (y0 - y1) / CU, tSec = Math.max(0.08, Math.sqrt(2 * Math.max(0.01, hcm / 100) / 9.8));   // free fall under gravity
     dropMesh.position.set(0, y0, 0);
@@ -4700,18 +4707,32 @@ function updateFlaskSurface(lvl) {
 
 // Teacher's warning: a clear alert (with sound) when the titration is close to the end point
 let alertTimer = null;
-function showAlert(title, text, level) {
+function showAlert(title, text, level, ms) {
   const el = document.getElementById('alert-banner'); if (!el) return;
   el.className = 'on' + (level === 2 ? ' warn2' : '');
   const ap = document.getElementById('auto-panel'), tb = document.getElementById('top-bar');
   el.style.top = ((ap && ap.classList.contains('on') ? ap.getBoundingClientRect().bottom : (tb ? tb.getBoundingClientRect().bottom : 60)) + 6) + 'px';
   el.innerHTML = `<b>${title}</b>${text}`;
-  clearTimeout(alertTimer); alertTimer = setTimeout(() => { el.className = ''; }, 7000);
+  clearTimeout(alertTimer); alertTimer = setTimeout(() => { el.className = ''; }, ms || 7000);
   SFX.alert && SFX.alert(level);
   try { if (navigator.vibrate) navigator.vibrate(level === 2 ? [60, 40, 60] : [120, 60, 120]); } catch (e) {}
 }
+// a mistake the student may make: allowed, but a warning pops up at once (once per titration)
+function warnOnce(key, title, text) {
+  if (typeof autoRun !== 'undefined' && autoRun) return;
+  const w = T ? (T.warned = T.warned || {}) : (warnOnce.g = warnOnce.g || {});
+  if (w[key]) return; w[key] = true;
+  showAlert('⚠ Mistake: ' + title, text, 1, 10000);
+}
+function warnMistake(key, title, text) { flagMistake(key, text); warnOnce(key, title, text); }
+// a step that must not be skipped: the lab stops and says what was forgotten
+function blockAlert(title, text) { AudioSys.playClick(); showAlert('⛔ ' + title, text, 2, 8000); }
+function forgotAcid() { blockAlert('You forgot the acid!', 'Add <b style="display:inline;font-size:inherit">20 mL of dilute H₂SO₄</b> to the flask first. Without acid, KMnO₄ turns into brown MnO₂ and there is no end point.'); }
+function needSwirl() { return S.receiver === 'flask' && T && T.initR !== null && T.finalR === null && !S.swirl; }
+function swirlAlert() { blockAlert('Swirl the flask!', 'Turn on <b style="display:inline;font-size:inherit">⟳ Swirl</b> first. The flask is swirled all the time while KMnO₄ is added, so each drop mixes and you can see the true end point.'); }
 function endPointWatch() {
   if (!T || T.initR === null || T.finalR !== null || S.receiver !== 'flask' || F.acid <= 0 || F.mno2 > 0) return;
+  if (excessMl() >= OVERSHOOT_ML) { warnOnce('overshoot', 'past the end point', 'The pink is dark: too much KMnO₄ went in, so this titre will be too high. Record this reading, then repeat the titration going drop by drop near the end.'); return; }
   const left = (feLeft() / 5 - F.plume) / S.M1eff;                 // mL of C-11 still needed
   if (left <= 1.0 && left > 0.25 && !T.alert1) {
     T.alert1 = true;
@@ -5154,7 +5175,8 @@ window.recordObservation = function () {
   if (readWhat === 'init') {
     if (v > BUR_START_MAX + 1e-6) return refuse(`Refill to 0 before you start: you need about 24 mL of C-11 and this ${BUR_ML} mL burette only has ${(BUR_ML - v).toFixed(1)} mL left below ${v.toFixed(1)}. Tap <b>🟣 Refill to 0</b>.`);
     T.initR = v; T.funnelAtInit = S.funnelOn; T.bubbleAtInit = S.bubble;
-    if (S.funnelOn) flagMistake('funnel', 'The funnel was left in the burette. C-11 left in it dripped in after the initial reading, so the level rose a little and the titre came out low.');
+    if (S.bubble) warnOnce('bubble', 'air bubble in the jet', 'The air bubble is still in the burette jet. It will escape during the titration, so the titre will come out too high. Next time run some liquid out fast to clear it before setting zero.');
+    if (S.funnelOn) warnMistake('funnel', 'funnel left in', 'The funnel was left in the burette. C-11 left in it dripped in after the initial reading, so the level rose a little and the titre came out low.');
     showToast(`Initial reading ${v.toFixed(1)} mL recorded.`, 'success');
     exitReadView();
     afterInitialReading();
@@ -5684,8 +5706,8 @@ function stepCam(key) {
 // =========================================================================
 // Each button: [id, label, kind('tap'|'hold'|'toggle'), handler, style]
 function stepActions(key) {
-  const run = ['act-run', '▶ Run <span class="sub">hold</span>', 'hold', on => { S.running = on; }, 'pink'];
-  const drop = ['act-drop', '💧 1 drop', 'tap', oneDrop];
+  const run = ['act-run', '▶ Run <span class="sub">hold</span>', 'hold', on => { if (on && needSwirl()) { swirlAlert(); return; } S.running = on; }, 'pink'];
+  const drop = ['act-drop', '💧 1 drop', 'tap', () => { if (needSwirl()) return swirlAlert(); oneDrop(); }];
   const read = ['act-read', '👁 Read burette', 'tap', () => enterReadView('bur'), 'main'];
   const restart = ['act-restart', '↻ Start again', 'tap', nextTitration, 'main'];
   const swirl = ['act-swirl', S.swirl ? '⟳ Swirling' : '⟳ Swirl', 'toggle', () => { S.swirl = !S.swirl; AudioSys.playClick(); refreshAll(); }, S.swirl ? 'on' : ''];
@@ -5700,7 +5722,7 @@ function stepActions(key) {
     case 'rinsePip': return [['act-pip-water', '💧 Rinse with water', 'tap', () => rinsePipette('water')], ['act-pip-c11', 'Rinse with C-10', 'tap', () => rinsePipette('c11'), 'main']];
     case 'pipette': return [['act-pip-fill', '🧪 Fill the pipette', 'tap', startPipetting, 'main']];
     case 'transfer': return [['act-transfer', '⤵ Run into the flask', 'tap', transferPipette, 'main']];
-    case 'acid': return [['act-acid', '🧴 Add 20 mL dil. H₂SO₄', 'tap', addAcid, 'main'], ['act-place', 'Put flask under burette', 'tap', placeFlask]];
+    case 'acid': return [['act-acid', '🧴 Add 20 mL dil. H₂SO₄', 'tap', addAcid, 'main'], ['act-place', 'Put flask under burette', 'tap', forgotAcid]];
     case 'titrate': return T.ranOut ? [restart] : [run, drop, swirl, read];
     case 'readFinal': return T.ranOut ? [restart] : [read, drop, swirl];
     case 'repeat': return concordant() ? [['act-partb', '🧮 Go to B · Calculate', 'tap', () => switchProcedure('B'), 'main'], ['act-next', '↻ Another titration', 'tap', nextTitration]] : [['act-next', '↻ Next titration', 'tap', nextTitration, 'main']];
@@ -5817,7 +5839,7 @@ function fillBurette() {
   actionCam('fill');
   if (!S.funnelOn) { funnelOnBurette(); S.funnelOn = true; }
   AudioSys.playClick();
-  if (S.burRinse !== 'kmno4') { S.M1eff = M1_TRUE * 0.98; flagMistake('burWet', 'The burette was filled while still wet with water (not rinsed with C-11). The KMnO₄ was diluted by about 2 %, so more of it was needed: the titre came out about 0.4 mL too high.'); }
+  if (S.burRinse !== 'kmno4') { S.M1eff = M1_TRUE * 0.98; warnMistake('burWet', 'burette not rinsed', 'The burette was filled while still wet with water (not rinsed with C-11). The KMnO₄ was diluted by about 2 %, so more of it was needed: the titre came out about 0.4 mL too high.'); }
   else S.M1eff = M1_TRUE;
   const start = S.burRead === null ? burEmptyAt() : S.burRead, target = -(1.45 + Math.random() * 0.4);
   pourFrom(bottleC10, funnelMouth(), 1.9, 2.4, k => { S.burRead = lerp(start, target, k); }, () => {
@@ -5851,7 +5873,7 @@ function rinseFlask(kind) {
   const fp = flaskGroup.position.clone();
   const fill = (ml, done) => runAnim(0.8, k => { F.vol = ml * Math.sin(Math.PI * k); }, done);
   const after = () => {
-    if (kind === 'c11') { F.fe = M2_TRUE * 0.5; F.vol = 0.5; flagMistake('flaskC11', 'The conical flask was rinsed with C-10. About 0.5 mL of it stayed in the flask on top of the 20 mL pipetted, so about 0.5 mL extra KMnO₄ was needed.'); T.notes.push('flask rinsed with C-10'); }
+    if (kind === 'c11') { F.fe = M2_TRUE * 0.5; F.vol = 0.5; warnMistake('flaskC11', 'flask rinsed with the solution', 'The conical flask was rinsed with C-10. About 0.5 mL of it stayed in the flask on top of the 20 mL pipetted, so about 0.5 mL extra KMnO₄ was needed.'); T.notes.push('flask rinsed with C-10'); }
     else { F.fe = 0; F.vol = 0.6; }
     wallDrops('flask', 'water', 70);
     showToast(kind === 'water' ? 'Flask rinsed with distilled water. A little water left in it does no harm.' : 'Flask rinsed with C-10… (see the Result later)', kind === 'water' ? 'success' : 'info');
@@ -5865,7 +5887,7 @@ function rinsePipette(kind) {
   AudioSys.playClick(); actionCam('pipette');
   S.pipRinse = kind;
   S.M2pip = kind === 'c11' ? M2_TRUE : M2_TRUE * 0.985;
-  if (kind === 'water') flagMistake('pipWater', 'The pipette was rinsed with water instead of C-10. Water left inside diluted the 20 mL of C-10 by about 1.5 %, so less KMnO₄ was needed (titre about 0.3 mL low).');
+  if (kind === 'water') warnMistake('pipWater', 'pipette rinsed with water', 'The pipette was rinsed with water instead of C-10. Water left inside diluted the 20 mL of C-10 by about 1.5 %, so less KMnO₄ was needed (titre about 0.3 mL low).');
   liftPipetteTo('beaker', () => {
     runAnim(1.0, k => { S.pipV = 6 * Math.sin(Math.PI * k); }, () => { S.pipV = 0; showToast(kind === 'c11' ? 'Pipette rinsed with C-10.' : 'Pipette rinsed with water: it is still wet with water.', kind === 'c11' ? 'success' : 'info'); refreshAll(); });
   });
@@ -6509,16 +6531,32 @@ async function autoTitrate() {
   await asleep(2500);
   autoCaption('Near the end point: one drop at a time', 'Now each drop, swirled, leaves a pink streak that takes <b>longer and longer</b> to fade. Wait and watch after every drop.');
   let n = 0;
+  const leftMl = () => (feLeft() / 5 - F.plume) / S.M1eff;
+  // phase 1, quick drops: tap kept just open, drops fall one after another; no waiting for the patch to fade
+  if (!endPointReached() && leftMl() > 0.25) {
+    SFX.cock(true);
+    autoCaption('Near the end point: drop by drop', 'The tap is kept just open so the drops fall quickly one after another. The purple still <b>vanishes at once</b>. Drops so far: <b id="ap-dropn">0</b>');
+    while (!endPointReached() && n < 60 && leftMl() > 0.25) {
+      oneDrop(true); n++;
+      await until(() => !dropAnimOn, 5000);
+      await asleep(80);
+      if (AUTO_FAST > 1) for (let i = 0; i < 6; i++) chemTick(0.05);
+      const dn = document.getElementById('ap-dropn'); if (dn) dn.textContent = n;
+    }
+    await until(() => { if (AUTO_FAST > 1) for (let i = 0; i < 6; i++) chemTick(0.05); return F.plume < 0.35 * DROP_ML * M1_TRUE || endPointReached(); }, 2200);
+    autoCaption('Near the end point: one drop at a time', 'Now each drop, swirled, leaves a pink streak that takes <b>longer and longer</b> to fade. Wait and watch after every drop.');
+  }
+  // phase 2, the last few drops: wait and watch each one
   while (!endPointReached() && n < 60) {
     oneDrop(); n++;
     await until(() => !dropAnimOn, 5000);
     // like a skilled student: quick drops while about 1 mL is left, then wait and watch each of the last few
     const leftNow = (feLeft() / 5 - F.plume) / S.M1eff, drop = DROP_ML * M1_TRUE;
     const near = leftNow < 0.3;
-    await until(() => { if (AUTO_FAST > 1) for (let i = 0; i < 6; i++) chemTick(0.05); return F.plume < (near ? 0.1 : 0.35) * drop || endPointReached(); }, near ? 7000 : 2200);
+    await until(() => { if (AUTO_FAST > 1) for (let i = 0; i < 6; i++) chemTick(0.05); return F.plume < (near ? 0.1 : 0.35) * drop || endPointReached(); }, near ? 3500 : 2200);
     const left = (feLeft() / 5 - F.plume) / S.M1eff;
     autoCaption('Near the end point: one drop at a time', `Drop ${n}: ${endPointReached() ? '<b>the light pink stays</b> even after swirling. That is the end point. Stop!' : (left < 0.12 ? 'the pink lingers for a long time: <b>very close</b>.' : 'the pink fades. Another drop…')}`);
-    await asleep(endPointReached() ? 2600 : (near ? 800 : 250));
+    await asleep(endPointReached() ? 2600 : (near ? 500 : 250));
   }
   await asleep(1500);
   S.swirl = false; refreshAll();
@@ -6533,7 +6571,7 @@ const AUTO_DO = {
     actionCam('drain');
     if (S.burRead < -0.4) { S.running = true; refreshAll(); await until(() => S.burRead >= -0.4 || !S.running, 15000); S.running = false; refreshAll(); }
     autoCaption('Bring the level to 0.0', 'Now drop by drop until the top edge of the liquid sits on the 0 mark.');
-    while (S.burRead < -0.02) { oneDrop(); await until(() => !dropAnimOn, 5000); await asleep(250); }
+    while (S.burRead < -0.02) { oneDrop(true); await until(() => !dropAnimOn, 5000); await asleep(80); }
     await asleep(600);
   },
   readInit: autoRead, readFinal: autoRead,
@@ -6563,6 +6601,7 @@ window.startAuto = async function () {
   document.body.classList.add('auto-on');
   updateAutoButtons();
   try {
+    if (F.mno2 > 0) { autoRun.stop = true; showAlert('⛔ This flask is spoilt', 'It turned brown because KMnO₄ went in before the acid. Reload the page to start again, then tap Auto.', 2, 9000); return; }
     autoCaption('Auto mode', 'Watch the whole experiment done the right way, step by step. C-11 is <b>pure</b> KMnO₄, so its molarity is known from its mass: it is the standard. The titre tells us how much <b>real</b> FAS is in the impure C-10. The burette is filled right to 0 because about 24 of its 25 mL are needed. You can pause or stop at any time.');
     await asleep(2000);
     let guard = 0;
