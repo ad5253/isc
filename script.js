@@ -622,24 +622,31 @@
     const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
     const url = `${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`;
 
-    async function attempt(timeoutMs) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeout);
-        const data = await res.json();
-        if (!data || !data.ok) return "error"; // the request completed but the server itself reported a problem — not a verified "wrong password"
-        return data.valid ? "valid" : "invalid";
-      } catch {
-        clearTimeout(timeout);
-        return "error";
-      }
-    }
-
-    const first = await attempt(10000); // generous — a cold Apps Script execution creating a sheet for the first time can genuinely take a few seconds
-    if (first !== "error") return first;
-    return attempt(10000); // one quiet retry before giving up; by now the server is almost always warm
+    // Asked up to three times in parallel (now, after 1.5 s, after 3.5 s) — a
+    // slow or sleeping server answers whichever request it reaches first.
+    // Reading the answer twice is harmless, so this is safe.
+    return new Promise((resolve) => {
+      let finished = false, running = 0, launched = 0;
+      const done = (v) => { if (!finished) { finished = true; resolve(v); } };
+      const fire = (ms) => {
+        if (finished) return;
+        launched++; running++;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), ms);
+        fetch(url, { signal: controller.signal })
+          .then((res) => res.json())
+          .then((data) => { if (data && data.ok) done(data.valid ? "valid" : "invalid"); })
+          .catch(() => {})
+          .finally(() => {
+            clearTimeout(timeout); running--;
+            if (!finished && running === 0 && launched >= 3) done("error");
+          });
+      };
+      fire(14000);
+      setTimeout(() => fire(11000), 1500);
+      setTimeout(() => fire(8000), 3500);
+      setTimeout(() => done("error"), 15000);
+    });
   }
 
   async function isAuthorized(name) {
@@ -688,6 +695,7 @@
           blockedDeviceIds: data.blockedDeviceIds || [],
           accessHashes: data.accessHashes || [],
           suspendedHashes: data.suspendedHashes || [],
+          pinPrefixes: Array.isArray(data.pinPrefixes) ? data.pinPrefixes : null,
           active: !!data.active
         };
         cachedLoginCheckAt = Date.now();
@@ -1000,6 +1008,17 @@
     } catch (e) {}
     const saved = readSession();
     if (!saved) {
+      // The moment someone starts typing their name, wake the server again.
+      try {
+        const ni = document.getElementById("nameInput");
+        const ep2 = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+        if (ni && ep2 && ep2.indexOf("PASTE_YOUR") !== 0) {
+          let warmed = false;
+          const warm = () => { if (warmed) return; warmed = true; fetch(`${ep2}?action=ping`).catch(() => {}); };
+          ni.addEventListener("input", warm, { once: true });
+          ni.addEventListener("focus", warm, { once: true });
+        }
+      } catch (e) {}
       loadGateStats();
       // Warm the checks while the person is still typing their name.
       getDeviceId().catch(() => {}); getClientIp().catch(() => {}); fetchLoginCheck("").catch(() => {});
@@ -1425,6 +1444,15 @@
   // now showing a PIN box and the person must act.
   async function runPinStep(name) {
     if (pinMode === null) {
+      // Fast path: the list of password-holders already arrived with the login
+      // check, so the password box can appear at once — no waiting on the server.
+      const lc = cachedLoginCheck;
+      if (lc && lc.pinPrefixes) {
+        const h = await hashName(name);
+        pinStateP = null;
+        showPinUI(lc.pinPrefixes.indexOf(h.slice(0, 12)) !== -1 ? "enter" : "create", name);
+        return "wait";
+      }
       const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
       pinStateP = null;
       if (!st) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
@@ -1455,6 +1483,12 @@
     if (!pin) { gatePinInput.focus(); return "wait"; }
     const r = await pinApi({ op: "check", name, pin });
     if (!r || !r.ok) { showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
+    if (r.valid && !r.dt) {
+      // The server has no password for this name (it was just reset) — choose a new one.
+      showPinUI("create", name);
+      showGateError("Please choose a new password to continue.");
+      return "wait";
+    }
     if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
@@ -1556,7 +1590,7 @@
       // isSuspended()/isAuthorized()/isNameActive() below just read
       // the already-resolved, cached result instead of each firing
       // their own request.
-      if (pinMode === null && !credentialsVerified) pinStateP = pinApi({ op: "state", name });
+      if (pinMode === null && !credentialsVerified && !(cachedLoginCheck && cachedLoginCheck.pinPrefixes)) pinStateP = pinApi({ op: "state", name });
       const [deviceId, ip] = await Promise.all([
         getDeviceId(),
         getClientIp(),
