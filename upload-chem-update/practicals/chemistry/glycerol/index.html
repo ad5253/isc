@@ -9154,6 +9154,50 @@ setInterval(() => { if (RP.on && typeof curTest === 'function') { if (typeof LAB
   d.querySelector('#rp-no').onclick = () => { d.remove(); rpClear(); };
 })();
 
+
+// =========================================================================
+// STEP BAR (TEST LABS v1): "Test n of N" bar under the top bar + Back to work placed above the real bottom bar. Shared by Exp 8-14.
+// =========================================================================
+const SBT = { cur: -1, el: null, t: 0, t2: 0 };
+(function sbtUI() {
+  const st = document.createElement('style');
+  st.textContent = `
+    #stepbar { position: fixed; left: 50%; transform: translateX(-50%); top: calc(var(--tb-h, 58px) + 6px); z-index: 30; display: flex; align-items: center; gap: 6px; max-width: min(540px, calc(100vw - 24px)); padding: 6px 12px; border-radius: 999px; background: rgba(15,23,42,.82); border: 1px solid rgba(148,163,184,.35); color: #e2e8f0; font: 700 13px "Plus Jakarta Sans", Arial, sans-serif; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
+    #stepbar .sb-d { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; background: rgba(100,116,139,.45); color: #cbd5e1; }
+    #stepbar .sb-d.done { background: #16a34a; color: #fff; } #stepbar .sb-d.cur { background: #0ea5e9; color: #fff; box-shadow: 0 0 0 3px rgba(14,165,233,.35); }
+    #stepbar .sb-l { margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    @media (max-width: 700px) { #stepbar { font-size: 12px; padding: 5px 10px; gap: 5px; } #stepbar .sb-d { width: 20px; height: 20px; } }
+    body.class-mode #stepbar { font-size: 18px; } body.class-mode #stepbar .sb-d { width: 30px; height: 30px; font-size: 16px; }`;
+  document.head.appendChild(st);
+  const b = document.createElement('div'); b.id = 'stepbar';
+  b.innerHTML = TESTS.map((t, i) => `<span class="sb-d" data-n="${i}">${i + 1}</span>`).join('') + '<span class="sb-l" id="sb-l"></span>';
+  document.body.appendChild(b); SBT.el = b;
+})();
+function sbtUpdate() {
+  if (!SBT.el) return;
+  const t = curTest(), N = TESTS.length, n = t ? TESTS.indexOf(t) : N;
+  const res = typeof currentProcedure !== 'undefined' && currentProcedure === 'B';
+  SBT.el.style.display = res ? 'none' : 'flex';
+  if (n === SBT.cur) return;
+  SBT.cur = n;
+  SBT.el.querySelectorAll('.sb-d').forEach(d => { const k = +d.dataset.n; d.className = 'sb-d' + (k < n ? ' done' : k === n ? ' cur' : ''); d.textContent = k < n ? '✓' : k + 1; });
+  const L = document.getElementById('sb-l'); if (L) L.textContent = t ? 'Test ' + (n + 1) + ' of ' + N + ' · ' + t.title : '✓ All ' + N + ' tests done';
+  if (t && !(typeof RP !== 'undefined' && RP.playing)) showToast('Test ' + (n + 1) + ' of ' + N + ': ' + t.title + '.', 'info');
+}
+let _sbtVT = visualTick;
+visualTick = function () {
+  _sbtVT(); const now = performance.now();
+  if (now - SBT.t > 250) { SBT.t = now; try { sbtUpdate(); } catch (e) {} }
+  if (now - SBT.t2 > 300) { SBT.t2 = now; try { sbtBackPlace(); } catch (e) {} }
+};
+// Back to work: always sits just above whatever bottom bar is really showing (laptop dock or phone tab bar)
+function sbtBackPlace() {
+  const b = document.getElementById('cd-back'); if (!b || b.style.display === 'none') return;
+  let top = window.innerHeight;
+  ['mobile-stack', 'win-controls'].forEach(id => { const e = document.getElementById(id); if (!e) return; const cs = getComputedStyle(e); if (cs.display === 'none' || cs.visibility === 'hidden') return; const r = e.getBoundingClientRect(); if (r.height > 4 && r.bottom > window.innerHeight * 0.5) top = Math.min(top, r.top); });
+  b.style.bottom = Math.round(window.innerHeight - top + 14) + 'px'; b.style.zIndex = 900;
+}
+
 </script>
 <script>
 /* Lab loader: starts the lab only when the 3D engine (three.js) is inside this file.
