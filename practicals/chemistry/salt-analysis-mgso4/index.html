@@ -5851,7 +5851,7 @@ function updateGuide() {
     updateLookBanner(); return;
   }
   const st = currentStep(), k = t ? TESTS.filter(x => !examOnly(x)).indexOf(t) + 1 : NT;
-  setText('step-badge-text', t ? `STAGE ${k} OF ${NT} · STEP ${st.i + 1} OF ${st.n}${MODE.exam ? ' · EXAM' : ''}` : 'ALL STAGES DONE');
+  setText('step-badge-text', t ? `STEP ${(typeof STEP_OF_SEC !== 'undefined' && STEP_OF_SEC[t.sec]) || 1} OF 5 · TEST ${k} OF ${NT} · ACTION ${st.i + 1} OF ${st.n}${MODE.exam ? ' · EXAM' : ''}` : 'ALL STAGES DONE');
   setText('step-title-text', st.title);
   setHTML('step-desc-text', st.desc);
   const sig = st.key + '|' + (t ? t.id + st.i : '');
@@ -6336,7 +6336,7 @@ window.switchProcedure = function (proc, quiet) {
 //   Everything is written from the student's own recorded stages (rowsT). Experiment-specific text lives in the stages (section 12s) and SALT.result.
 // =========================================================================
 const TABLE_TITLE = 'Salt analysis';
-const SECT_TITLE = { dry: 'Preliminary test: dry heating', prelim: 'Preliminary test for the anion', extract: 'Sodium carbonate extract (S.E.)', anion: 'Confirmatory tests for the anion', os: 'Original solution (O.S.)', group: 'Group analysis (cation)', cation: 'Confirmatory test for the cation' };
+const SECT_TITLE = { dry: 'Step 1 · Dry heating and flame test', prelim: 'Step 2 · Preliminary test for the anion', extract: 'Step 3 · Sodium carbonate extract (S.E.)', anion: 'Step 3 · Confirmatory tests for the anion', os: 'Step 4 · Original solution (O.S.)', group: 'Step 4 · Group analysis (cation)', cation: 'Step 5 · Confirmatory test for the cation' };
 const shownStages = () => TESTS.filter(t => !examOnly(t) && (TR[t.id].recorded || t === curTest()));
 function flowHTML() {
   const gs = shownStages().filter(t => t.row === 'flow');
@@ -8848,13 +8848,15 @@ function showEndModal() {
     [{ label: '🎓 Try Exam mode', main: true, fn: () => goMode(true) }, { label: 'Open the result', fn: () => switchProcedure('B') }, { label: 'Close' }]);
 }
 // the student names the anion, the cation and the salt (any time; in Exam it is the final answer with a score)
+const saltOf = (an, ca) => { const f = SALT_LIST.find(x => x[1] === an && x[2] === ca); return f ? f[0] : ''; };
 function openGuess(final) {
   const uniq = i => [...new Set(SALT_LIST.map(s => s[i]))];
   const sel = (id, list) => `<label>${id === 'g-an' ? 'Anion' : id === 'g-ca' ? 'Cation' : 'Salt'}<select id="${id}"><option value="">Choose…</option>${list.map(x => `<option>${x}</option>`).join('')}</select></label>`;
-  uiModal(`<h3>${final ? '🎯 Your answer' : '🎯 Guess the salt'}</h3><p>${final ? 'Name what the unknown salt is.' : 'Think about what the tests so far show, then guess. You can keep testing afterwards.'}</p>${sel('g-an', uniq(1))}${sel('g-ca', uniq(2))}${sel('g-sa', uniq(0))}`,
+  uiModal(`<h3>${final ? '🎯 Your answer' : '🎯 Guess the salt'}</h3><p>${final ? 'Choose the anion and the cation. The salt is made from them.' : 'Think about what the tests so far show, then guess. You can keep testing afterwards.'}</p>${sel('g-an', uniq(1))}${sel('g-ca', uniq(2))}<p id="g-salt" style="margin:8px 0 0;font-weight:700;color:#7dd3fc">Salt: choose the anion and the cation</p>`,
     [{ label: 'Check my answer', main: true, keep: true, fn: () => {
-      const an = document.getElementById('g-an').value, ca = document.getElementById('g-ca').value, sa = document.getElementById('g-sa').value;
-      if (!an || !ca || !sa) return showToast('Choose the anion, the cation and the salt.', 'info');
+      const an = document.getElementById('g-an').value, ca = document.getElementById('g-ca').value, sa = saltOf(an, ca);
+      if (!an || !ca) return showToast('Choose the anion and the cation.', 'info');
+      if (!sa) return showToast('No salt in this lab has this anion and this cation. Choose again.', 'info');
       const ok = [an === SALT.result.anion, ca === SALT.result.cation, sa === SALT.result.salt];
       const inf = rowsT.filter(r => r.pick), infOk = inf.filter(r => r.pick.ok).length;
       const score = ok.filter(Boolean).length + infOk;
@@ -9599,6 +9601,78 @@ setInterval(() => { if (RP.on && typeof curTest === 'function') { if (typeof LAB
   d.querySelector('#rp-yes').onclick = () => { d.remove(); rpPlay(j.log); };
   d.querySelector('#rp-no').onclick = () => { d.remove(); rpClear(); };
 })();
+// =========================================================================
+// 12z. STEP BAR (5 clear steps shown under the top bar) and Back-to-work placement
+// =========================================================================
+const STEPBAR = [
+  { n: 1, short: 'Dry heating & flame', name: 'Dry heating and flame test', intro: 'Heat a little salt in a dry tube and look at the flame colour. First clues only.' },
+  { n: 2, short: 'Anion: preliminary', name: 'Preliminary test for the anion', intro: 'Add dilute, then conc. H₂SO₄ to the salt. Gas, smell or colour hints at the anion.' },
+  { n: 3, short: 'Anion: confirm', name: 'Confirmatory test for the anion', intro: 'Make the sodium carbonate extract and prove the anion with its own test.' },
+  { n: 4, short: 'Cation: groups', name: 'Group analysis for the cation', intro: 'Dissolve the salt (original solution) and go group by group until a precipitate comes.' },
+  { n: 5, short: 'Cation: confirm', name: 'Confirmatory test for the cation', intro: 'Prove the cation with its own test. Then you can name the salt.' }
+];
+const STEP_OF_SEC = { dry: 1, prelim: 2, extract: 3, anion: 3, os: 4, group: 4, cation: 5 };
+const SB = { cur: 0, el: null, t: 0 };
+(function sbUI() {
+  const st = document.createElement('style');
+  st.textContent = `
+    #stepbar { position: fixed; left: 50%; transform: translateX(-50%); top: calc(var(--tb-h, 58px) + 6px); z-index: 30; display: flex; align-items: center; gap: 6px; max-width: min(540px, calc(100vw - 24px)); padding: 6px 12px; border-radius: 999px; background: rgba(15,23,42,.82); border: 1px solid rgba(148,163,184,.35); color: #e2e8f0; font: 700 13px "Plus Jakarta Sans", Arial, sans-serif; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
+    #stepbar .sb-d { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; background: rgba(100,116,139,.45); color: #cbd5e1; }
+    #stepbar .sb-d.done { background: #16a34a; color: #fff; } #stepbar .sb-d.cur { background: #0ea5e9; color: #fff; box-shadow: 0 0 0 3px rgba(14,165,233,.35); }
+    #stepbar .sb-l { margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    @media (max-width: 700px) { #stepbar { font-size: 12px; padding: 5px 10px; gap: 5px; } #stepbar .sb-d { width: 20px; height: 20px; } }
+    body.class-mode #stepbar { font-size: 18px; } body.class-mode #stepbar .sb-d { width: 30px; height: 30px; font-size: 16px; }`;
+  document.head.appendChild(st);
+  const b = document.createElement('div'); b.id = 'stepbar';
+  b.innerHTML = STEPBAR.map(s => `<span class="sb-d" data-n="${s.n}">${s.n}</span>`).join('') + '<span class="sb-l" id="sb-l"></span>';
+  document.body.appendChild(b); SB.el = b;
+})();
+function sbUpdate() {
+  if (!SB.el || typeof curTest !== 'function') return;
+  const t = curTest(), n = t ? (STEP_OF_SEC[t.sec] || 1) : 6;
+  const res = typeof currentProcedure !== 'undefined' && currentProcedure === 'B';
+  SB.el.style.display = res ? 'none' : 'flex';
+  if (n === SB.cur) return;
+  const first = SB.cur === 0; SB.cur = n;
+  SB.el.querySelectorAll('.sb-d').forEach(d => { const k = +d.dataset.n; d.className = 'sb-d' + (k < n ? ' done' : k === n ? ' cur' : ''); d.textContent = k < n ? '✓' : k; });
+  const L = document.getElementById('sb-l'), s = STEPBAR[n - 1];
+  if (L) L.textContent = s ? 'Step ' + n + ' of 5 · ' + s.short : '✓ All 5 steps done';
+  if (s && !(typeof RP !== 'undefined' && RP.playing)) showToast('Step ' + n + ' of 5: ' + s.name + '. ' + s.intro, 'info');
+}
+let _sbVT = visualTick;
+visualTick = function () { _sbVT(); const now = performance.now(); if (now - SB.t > 250) { SB.t = now; try { sbUpdate(); } catch (e) {} } };
+// ---- robust placement (v2): the bar always sits under the REAL top bar; on phones the title line also carries the step; Back to work never goes under a bottom bar ----
+function sbpFit() {
+  const sb = document.getElementById('stepbar'), tb = document.getElementById('top-bar'); if (!sb) return;
+  if (tb) { const r = tb.getBoundingClientRect(); if (r.bottom > 0) sb.style.top = Math.round(r.bottom + 6) + 'px'; }
+  sb.style.zIndex = 250;
+  try {
+    const mt = document.querySelector('#top-bar .mobile-title'), L = document.getElementById('sb-l');
+    if (mt && L && L.textContent) { if (!mt.dataset.base) mt.dataset.base = mt.textContent; const t = mt.dataset.base.split(':')[0] + ' · ' + L.textContent.split(' · ')[0]; if (mt.textContent !== t) mt.textContent = t; }
+  } catch (e) {}
+}
+function sbpBack() {
+  const b = document.getElementById('cd-back'); if (!b || b.style.display === 'none') return;
+  const sb = document.getElementById('stepbar'), phone = window.matchMedia('(max-width: 700px), (max-height: 500px)').matches;
+  b.style.zIndex = 900; b.style.bottom = 'auto';
+  if (phone) { // phone: just under the step bar at the top, where no bottom bar can cover it
+    const tb = document.getElementById('top-bar'); const base = sb && sb.style.display !== 'none' ? sb.getBoundingClientRect().bottom : (tb ? tb.getBoundingClientRect().bottom : 60);
+    b.style.top = Math.round(base + 8) + 'px'; return;
+  }
+  let top = window.innerHeight;
+  ['mobile-stack', 'win-controls'].forEach(id => { const e = document.getElementById(id); if (!e) return; const cs = getComputedStyle(e); if (cs.display === 'none' || cs.visibility === 'hidden') return; const r = e.getBoundingClientRect(); if (r.height > 4 && r.bottom > window.innerHeight * 0.5) top = Math.min(top, r.top); });
+  b.style.top = Math.max(60, Math.round(top - b.offsetHeight - 14)) + 'px';
+}
+let sbpcb = cdBtn; cdBtn = function (s) { sbpcb(s); try { sbpFit(); sbpBack(); } catch (e) {} };
+let sbpvt = visualTick; visualTick = function () { sbpvt(); const n = performance.now(); if (n - (window.__sbpT || 0) > 200) { window.__sbpT = n; try { sbpFit(); sbpBack(); } catch (e) {} } };
+window.addEventListener('resize', () => { try { sbpFit(); sbpBack(); } catch (e) {} });
+
+// the guess pop-up shows the salt that the chosen anion + cation make
+document.addEventListener('change', e => {
+  if (!e.target || (e.target.id !== 'g-an' && e.target.id !== 'g-ca')) return;
+  const an = document.getElementById('g-an').value, ca = document.getElementById('g-ca').value, o = document.getElementById('g-salt'); if (!o) return;
+  o.textContent = an && ca ? 'Salt: ' + (saltOf(an, ca) || 'not a salt in this lab') : 'Salt: choose the anion and the cation';
+});
 </script>
 <script>
 /* Lab loader: starts the lab only when the 3D engine (three.js) is inside this file.
