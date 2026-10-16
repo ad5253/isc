@@ -3155,7 +3155,7 @@ function liquidMat(opts) {
     uYTop: { value: opts.yTop || 0 }, uYBot: { value: opts.yBot || 0 }, uUnitCm: { value: 1 / CU },
     uCamObj: { value: new THREE.Vector3() }, uToLiq: { value: new THREE.Matrix4() }, uLiqView: { value: new THREE.Matrix3() },
     uDye: { value: new THREE.Vector4(0, 0, 0.1, 0) }, uDyeSigma: { value: new THREE.Vector3(0.25, 2.4, 0.7) }, uDyeDepth: { value: 0.1 }, uSwirl: { value: 0 },
-    uTurb: { value: new THREE.Vector4(0.36, 0.2, 0.08, 0) }, uRefr: { value: opts.refr != null ? opts.refr : 0.045 },
+    uTurb: { value: new THREE.Vector4(0.36, 0.2, 0.08, 0) }, uForm: { value: 0 }, uRefr: { value: opts.refr != null ? opts.refr : 0.045 },
     uRip: { value: [new THREE.Vector4(0, 0, 9, 0), new THREE.Vector4(0, 0, 9, 0), new THREE.Vector4(0, 0, 9, 0), new THREE.Vector4(0, 0, 9, 0)] },
     uTilt: { value: new THREE.Vector3() }, uRSurf: { value: 1 }, uGrazeDark: { value: opts.grazeDark || 0 },
     uUp: { value: new THREE.Vector3(0, 1, 0) }, uLev: { value: 1 }, uSed: { value: -1 }, uMid: { value: 1000 }, uRingW: { value: 0.03 }, uRing: { value: 0 },
@@ -3192,7 +3192,7 @@ function liquidMat(opts) {
         varying vec3 vLiqPos;
         uniform vec3 uSigma; uniform sampler2D uRadTex; uniform float uY0, uY1, uRmax, uYTop, uYBot, uUnitCm;
         uniform vec3 uCamObj; uniform mat3 uLiqView; uniform vec4 uDye; uniform vec3 uDyeSigma; uniform float uDyeDepth, uSwirl;
-        uniform vec4 uTurb; uniform float uRefr, uGrazeDark;
+        uniform vec4 uTurb; uniform float uRefr, uGrazeDark, uForm;
         uniform sampler2D uField; uniform float uFieldR, uCmax, uHmax;
         #ifdef LIQ_TUBE
         uniform vec3 uUp; uniform float uLev, uSed, uMid, uRingW, uRing, uSedK; uniform vec3 uSigma2, uSigmaR, uSedCol;
@@ -3280,7 +3280,7 @@ function liquidMat(opts) {
         #ifdef LIQ_SCAT
           float turb = 1.0 - exp(-uTurb.w * cm);                       // uTurb.w = optical density per cm of the colloid
           #ifdef LIQ_TUBE
-            turb *= clamp(0.78 + 0.5 * fbm3(ro * 70.0 + vec3(0.0, uTime * 0.7, 0.0)), 0.0, 1.0);   // drifting particles in the cloud
+            turb *= clamp(0.78 + (0.5 + 0.8 * uForm) * fbm3(ro * (70.0 - 28.0 * uForm) + vec3(0.0, uTime * (0.7 + 1.6 * uForm), 0.0)), 0.0, 1.0);   // drifting particles in the cloud
           #endif
         #else
           float turb = max(uTurb.w, turbF) * (1.0 - exp(-cm * 0.8));
@@ -5735,13 +5735,13 @@ const SFX = {
       slosh: () => DeviceLayer.phone() ? this.noiseLoop('bandpass', 900, 0.8, 0.2) : this.noiseLoop('lowpass', 520, 0.7, 0.3),
       pipette: () => this.noiseLoop('bandpass', 900, 3, 0.3),
       roar: () => this.noiseLoop('lowpass', 300, 0.6, 0.15),      // burner: a faint low breath, never a hiss (school burners are almost silent)
-      boil: () => this.noiseLoop('bandpass', 1500, 0.7, 0.35)
+      boil: () => this.noiseLoop('bandpass', 700, 0.8, 0.35)
     }[name];
     const L = this.loop(name, mk), t = this.ctx.currentTime;
     const target = this.muted ? 0 : level;
     if (Math.abs(target - L.level) > 0.0003 || tune) {
       L.level = target;
-      L.g.gain.setTargetAtTime(target, t, name === 'roar' ? 0.4 : 0.06);
+      L.g.gain.setTargetAtTime(target, t, name === 'roar' || name === 'boil' ? 0.4 : 0.06);
       if (tune) tune(L, t);
     }
   },
@@ -7952,7 +7952,7 @@ function tubeLiquidUpdate(tb) {
   if (!has) { tb.film.visible = false; return; }
   _qi.copy(g.quaternion).invert(); _U.set(0, 1, 0).applyQuaternion(_qi);
   const cosT = Math.max(0.2, _U.y), sinT = Math.sqrt(Math.max(0, 1 - _U.y * _U.y));
-  const L = tubeLookOf(st);
+  const L = tubeLookSmooth(tb, tubeLookOf(st));          // colour, cloud and sediment change gradually (not in one jump)
   const lw = lwOf(vol, cosT, sinT), lev = H(lw);
   tb.plane.constant = g.position.y + lev;
   // cap polygon: where the horizontal plane cuts the cylinder wall
@@ -7978,7 +7978,7 @@ function tubeLiquidUpdate(tb) {
     const ringLin = linOf(testOf(st.test) && testOf(st.test).ring ? testOf(st.test).ring.colour : '#5e2a86'); U.uSigmaR.value.fromArray(sigmaOfLin(ringLin));
     U.uSedCol.value.fromArray(L.sedLin.map(v => Math.pow(Math.max(0, v), 1)));
     U.uSedK.value = 22;
-    const td = L.tur * 4.5; U.uTurb.value.set(L.turLin[0], L.turLin[1], L.turLin[2], td);
+    const td = L.tur * 4.5; U.uTurb.value.set(L.turLin[0], L.turLin[1], L.turLin[2], td); U.uForm.value = L.form || 0;
   });
   // silver film
   const fu = tb.filmMat.userData.U;
@@ -7991,7 +7991,7 @@ function labSpeed(rawDt) {
   const w = waitLeft();
   let ff = 1;
   if (LAB.ffOn && !LAB.hold && w > 5 && !labBusy()) ff = (typeof autoRun !== 'undefined' && autoRun) ? 10 : (w > 15 ? 6 : 4);
-  LAB.ffNow = ff; return rawDt * ff * (window.TEST_TIME_SCALE || 1);
+  LAB.ffNow = ff; return rawDt * ff * (window.TEST_TIME_SCALE || 1) * (typeof SLOWMO !== 'undefined' ? SLOWMO.k : 1);
 }
 // lab seconds of "nothing to see" ahead (more than about 15 = worth fast-forwarding; 0 = watch at normal speed)
 function waitLeft() {
@@ -8194,7 +8194,7 @@ function testSound(dt) {
   const roar = Math.max(HEAT.bath.flameK, HEAT.direct.flameK) * 0.5 + Math.min(HEAT.bath.flameK, HEAT.direct.flameK) * 0.2;
   SFX.setLoop('roar', roar * 0.011);
   const boil = LAB.bathT > 88 ? clamp01((LAB.bathT - 88) / 11) : 0;
-  SFX.setLoop('boil', boil * 0.055 * (HEAT.bath.on || LAB.bathT > 97 ? 1 : 0.4), (L, t) => L.fl.frequency.setTargetAtTime(1200 + 400 * boil, t, 0.2));
+  SFX.setLoop('boil', boil * 0.009 * (HEAT.bath.on || LAB.bathT > 97 ? 1 : 0.4), (L, t) => L.fl.frequency.setTargetAtTime(1200 + 400 * boil, t, 0.2));
   if (LAB.popSnd) { LAB.popSnd = false; if (boil > 0.5) SFX.gurgleTick && SFX.gurgleTick(0.9, 0.2); }
 }
 
@@ -8766,10 +8766,11 @@ const TOUCH_MAIN = ['act-light', 'act-take', 'act-add', 'act-heat', 'act-bath', 
   };
   hintFor = function (key) {
     const h = oHint(key); if (!h || !TOUCH.on) return h;
-    if (touchTarget(key)) { h.btn = 'act-prompt'; TOUCH.blinkUntil = performance.now() + 6000; }
+    if (touchTarget(key)) { h.btn = 'act-prompt'; TOUCH.blinkUntil = performance.now() + 6000; TOUCH.revealUntil = performance.now() + 9000; }
     return h;
   };
 })();
+(function wrapMistake() { const oB = blockAlert; blockAlert = function () { TOUCH.revealUntil = performance.now() + 9000; return oB.apply(this, arguments); }; })();
 // ---- the glowing ring and the work view (same as the salt lab) ----
 function touchRingEnsure() {
   if (TOUCH.ring) return TOUCH.ring;
@@ -8780,7 +8781,8 @@ function touchRingEnsure() {
 const _tb3 = new THREE.Box3(), _tv3 = new THREE.Vector3();
 function touchRingTick() {
   const ring = touchRingEnsure(), now = performance.now();
-  const T = (!TOUCH.on || isAutoRun() || labBusy() || currentProcedure === 'B') ? null : touchTarget();
+  const hideX = typeof MODE !== 'undefined' && MODE.exam && now > (TOUCH.revealUntil || 0);          // exam: no glow or name tag unless Hint or a mistake
+  const T = (!TOUCH.on || isAutoRun() || labBusy() || currentProcedure === 'B' || hideX) ? null : touchTarget();
   const o = T && T.obj ? T.obj() : null;
   if (!o) { ring.visible = false; touchHaloHide(); return; }
   _tb3.setFromObject(o); if (_tb3.isEmpty()) { ring.visible = false; touchHaloHide(); return; }
@@ -8821,9 +8823,10 @@ function touchHaloTick(T, pulse, blink) {
 }
 function o0(T) { return !!(T && T.obj && T.obj()); }
 function touchWorkView(force) {
-  if (!TOUCH.on || isAutoRun() || labBusy() || currentProcedure === 'B' || (typeof lookMode !== 'undefined' && lookMode)) return;
+  if (!TOUCH.on || labBusy() || currentProcedure === 'B' || (typeof lookMode !== 'undefined' && lookMode) || (typeof CD !== 'undefined' && CD.userCam)) return;
   const tb = curTube(), T = touchTarget(); if (!T) return;
-  if (tb && tb.loc !== 'rack') return;
+  if (tb && (tb.loc === 'flame' || tb.loc === 'moving')) return;                          // the tube is travelling / in the flame: the live camera has it
+  if (typeof MODE !== 'undefined' && MODE.exam && performance.now() > (TOUCH.revealUntil || 0) && ['stand', 'side', 'jar', 'dish', 'sample'].includes(T.kind)) { actionCam('rack'); return; }       // exam: the student must find the bottle
   const key = currentStep().key + '|' + (tb ? tb.i : -1);
   if (!force && key === TOUCH.camKey) return; TOUCH.camKey = key;
   if (o0(T) && ['stand', 'side', 'jar', 'dish', 'sample'].includes(T.kind)) {            // a bottle / jar is needed: the camera flies close to it, label facing the student
@@ -8853,7 +8856,7 @@ visualTick = function () {
   if (!curTest()) { if (TOUCH.ring) TOUCH.ring.visible = false; touchHaloHide(); return; }
   const k = currentStep().key + '|' + (curTube() ? curTube().i : -1);
   if (k !== _touchKey) { _touchKey = k; _touchKeyAt = now; }
-  if (_touchKeyAt && now - _touchKeyAt > 650 && now - lastInteraction > 2500 && !labBusy()) { _touchKeyAt = 0; touchWorkView(false); }
+  if (_touchKeyAt && now - _touchKeyAt > 450 && !labBusy() && !(typeof CD !== 'undefined' && CD.userCam)) { _touchKeyAt = 0; touchWorkView(false); }
   touchRingTick();
 };
 // ---- the wait card (replaces the small fast-forward box) ----
@@ -8886,6 +8889,278 @@ function ffUI(force) {
   const b = document.getElementById('wc-ff'); if (b) b.textContent = LAB.ffOn ? '▶ Normal speed' : '⏩ Fast-forward';
 }
 
+
+// =========================================================================
+// CAMERA DIRECTOR: live tracking of whatever moves (tube, dropper, spatula, rod, bottle), flights to the next item,
+// and the "Back to work" button. Shared by the salt lab and the test labs (Exp 8-15). Needs the touch layer above it.
+//   - every frame it looks at which things moved; the camera spring-follows the most important one (tube > tool > bottle)
+//   - when everything has stopped for a moment it flies to the next thing to touch (touchWorkView)
+//   - if the student moves the camera by hand it stops (userCam) and a small button flies back to the work
+// =========================================================================
+const CD = { userCam: false, wasBusy: false, idleT: 0, follow: false, vp: new THREE.Vector3(), vt: new THREE.Vector3(), prev: new Map(), act: new Map(), btn: null, down: null, on: !/[?&]cd=0/.test(location.search) };
+const _cdp = new THREE.Vector3(), _cdb = new THREE.Box3(), _cdm = new THREE.Vector3();
+function cdMovers() {
+  const L = [];
+  TUBES.forEach(tb => L.push([tb.g, 3]));
+  if (typeof gDropper !== 'undefined' && gDropper) L.push([gDropper, 2]);
+  if (typeof spatulaG !== 'undefined' && spatulaG) L.push([spatulaG, 2]);
+  if (typeof rodG !== 'undefined' && rodG) L.push([rodG, 2]);
+  if (typeof sideBottles !== 'undefined') Object.values(sideBottles).forEach(b => { L.push([b, 1]); if (b.userData && b.userData.dropper) L.push([b.userData.dropper, 2]); });
+  if (typeof RACK !== 'undefined' && RACK.bottles) Object.values(RACK.bottles).forEach(b => L.push([b, 1]));
+  if (typeof sampleBottle !== 'undefined' && sampleBottle) L.push([sampleBottle, 1]);
+  return L;
+}
+function cdSpring(cur, tgt, vel, st, dt) {          // critically damped spring: slow start, fast middle, slow end
+  const om = 2 / st, x = om * dt, e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  ['x', 'y', 'z'].forEach(k => { const ch = cur[k] - tgt[k], tmp = (vel[k] + om * ch) * dt; vel[k] = (vel[k] - om * tmp) * e; cur[k] = tgt[k] + (ch + tmp) * e; });
+}
+function cdTubeMouthBox(tb, b) {
+  tb.g.updateMatrixWorld(true);
+  const m = _cdm.set(0, H(TUBE.L), 0).applyMatrix4(tb.g.matrixWorld);
+  b.expandByPoint(v3(m.x - H(3), m.y + H(2.5), m.z - H(2))); b.expandByPoint(v3(m.x + H(3), m.y - H(6), m.z + H(2)));
+}
+function cdFocusBox(best) {
+  const o = best.o, tb = curTube(), b = new THREE.Box3();
+  if (best.pri === 3) { const t = TUBES.find(x => x.g === o); b.copy(tubeBoxNow(t)); return b.expandByVector(v3(H(5), H(2.5), H(2))); }
+  o.updateWorldMatrix(true, false); o.getWorldPosition(_cdp);
+  b.set(v3(_cdp.x - H(7), _cdp.y - H(6), _cdp.z - H(4)), v3(_cdp.x + H(7), _cdp.y + H(6), _cdp.z + H(4)));
+  if (best.pri === 1) { _cdb.setFromObject(o); if (!_cdb.isEmpty()) b.union(_cdb); }
+  if (tb) { tb.g.updateMatrixWorld(true); const m = new THREE.Vector3(0, H(TUBE.L), 0).applyMatrix4(tb.g.matrixWorld); if (Math.hypot(m.x - _cdp.x, m.z - _cdp.z) < H(11)) cdTubeMouthBox(tb, b); }
+  return b;
+}
+function cdTick(dt) {
+  const now = performance.now();
+  // the student starting an action (something begins to move) hands the camera back to the lab
+  const busy = labBusy();
+  if (busy && !CD.wasBusy && CD.userCam) { CD.userCam = false; cdBtn(false); }
+  CD.wasBusy = busy;
+  let best = null;
+  for (const [o, pri] of cdMovers()) {
+    const p = o.position, pv = CD.prev.get(o);
+    if (!pv) { CD.prev.set(o, p.clone()); continue; }
+    if (p.distanceTo(pv) > H(0.04)) CD.act.set(o, { t: now, pri }); pv.copy(p);
+  }
+  CD.act.forEach((a, o) => { if (now - a.t > 420) { CD.act.delete(o); return; } if (!best || a.pri > best.pri || (a.pri === best.pri && a.t > best.t)) best = { o, pri: a.pri, t: a.t }; });
+  if (typeof CAMF !== 'undefined' && CAMF) best = { o: CAMF.g, pri: 3, t: now };
+  cdKeyMoment(dt, now);
+  const can = CD.on && !lookMode && !CD.userCam && now > (CD.hold || 0) && typeof curTest === 'function' && curTest();
+  if (can && best) {
+    if (!CD.follow) { CD.follow = true; CD.vp.set(0, 0, 0); CD.vt.set(0, 0, 0); }
+    CD.idleT = 0;
+    const t = fitBox(cdFocusBox(best), v3(0.12, 0.3, 1), 1.05), d = Math.min(dt, 0.05);
+    camAnim = {}; presetAnimUntil = now + 400;
+    cdSpring(camera.position, t.pos, CD.vp, 0.4, d); cdSpring(controls.target, t.look, CD.vt, 0.4, d);
+  } else if (CD.follow) {
+    CD.idleT += dt;
+    if (CD.idleT > 0.3) { CD.follow = false; if (can) { TOUCH.camKey = ''; _touchKeyAt = now - 300; } }       // everything stopped: fly to the next item
+  }
+  cdBtn(!!(CD.on && CD.userCam && !lookMode && typeof curTest === 'function' && curTest() && (typeof currentProcedure === 'undefined' || currentProcedure !== 'B')));
+}
+// ---- the student moved the camera by hand: stop following; a button flies back ----
+function cdUserMoved() { if (!CD.on || lookMode) return; CD.userCam = true; CD.follow = false; camAnim = {}; }
+(function cdListen() {
+  const cv = document.getElementById('canvas3d') || renderer.domElement;
+  cv.addEventListener('pointerdown', e => { CD.down = { x: e.clientX, y: e.clientY, id: e.pointerId }; }, { passive: true });
+  cv.addEventListener('pointermove', e => { if (CD.down && e.pointerId === CD.down.id && (e.buttons || e.pointerType === 'touch') && Math.hypot(e.clientX - CD.down.x, e.clientY - CD.down.y) > 8) cdUserMoved(); }, { passive: true });
+  cv.addEventListener('pointerup', () => { CD.down = null; }, { passive: true });
+  cv.addEventListener('wheel', cdUserMoved, { passive: true });
+  cv.addEventListener('touchstart', e => { if (e.touches.length > 1) cdUserMoved(); }, { passive: true });
+})();
+function cdBtn(show) {
+  if (!CD.btn) {
+    const b = document.createElement('button'); b.id = 'cd-back'; b.type = 'button'; b.textContent = '🎯 Back to work';
+    b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--dock-h,92px) + 16px);z-index:25;display:none;padding:9px 18px;border-radius:999px;border:2px solid #bae6fd;background:rgba(14,116,144,.95);color:#fff;font:700 15px "Plus Jakarta Sans",Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.45);cursor:pointer';
+    b.addEventListener('click', () => { CD.userCam = false; cdBtn(false); TOUCH.camKey = ''; touchWorkView(true); });
+    document.body.appendChild(b); CD.btn = b;
+  }
+  const want = show ? 'block' : 'none'; if (CD.btn.style.display !== want) CD.btn.style.display = want;
+}
+
+// ---- changes look gradual: colour, cloud and sediment ease toward the new state; a fresh precipitate billows (uForm) ----
+const SLOWMO = { k: 1, until: 0, cool: 0, hold: 0 };
+let _smActive = 0;
+function tubeLookSmooth(tb, L) {
+  const now = performance.now(); let S = tb._sm;
+  if (!S || now - S.t > 700) S = tb._sm = { t: now, lin: L.lin.slice(), tur: L.tur, turLin: L.turLin.slice(), sedMl: L.sedMl, sedLin: L.sedLin.slice(), form: 0 };
+  const dt = Math.min(0.12, (now - S.t) / 1000); S.t = now;
+  const k = 1 - Math.exp(-dt * 3.2); let diff = 0;
+  for (let i = 0; i < 3; i++) { diff += Math.abs(L.lin[i] - S.lin[i]) + Math.abs(L.turLin[i] - S.turLin[i]) + Math.abs(L.sedLin[i] - S.sedLin[i]); S.lin[i] += (L.lin[i] - S.lin[i]) * k; S.turLin[i] += (L.turLin[i] - S.turLin[i]) * k; S.sedLin[i] += (L.sedLin[i] - S.sedLin[i]) * k; }
+  const rising = dt > 0.004 ? Math.max(0, L.tur - S.tur) / dt : 0;
+  diff += Math.abs(L.tur - S.tur) + Math.abs(L.sedMl - S.sedMl) * 3;
+  S.tur += (L.tur - S.tur) * k; S.sedMl += (L.sedMl - S.sedMl) * k;
+  S.form = Math.max(S.form * Math.exp(-dt / 2.6), Math.min(1, rising * 1.6));
+  if (diff > 0.01) _smActive = now;
+  return Object.assign({}, L, { lin: S.lin.slice(), tur: S.tur, turLin: S.turLin.slice(), sedMl: S.sedMl, sedLin: S.sedLin.slice(), form: S.form });
+}
+if (typeof testBusy === 'function') { const _tb0 = testBusy; testBusy = function () { return _tb0() || performance.now() - _smActive < 400 || SLOWMO.k < 1; }; }
+// ---- the key moment: when the tube in use visibly changes (cloud, precipitate, colour) time slows down and the camera goes close ----
+const KM = { prev: null, t: 0 };
+function cdKeyMoment(dt, now) {
+  const tb = curTest && curTest() && curTube(); if (!tb || tVol(tb.st) < 0.03) { KM.prev = null; return; }
+  if (SLOWMO.k < 1 && now > SLOWMO.until) { SLOWMO.k = Math.min(1, SLOWMO.k + dt * 1.2); }
+  if (now - KM.t < 250) return; const el = (now - KM.t) / 1000; KM.t = now;
+  const L = tubeLookOf(tb.st), P = KM.prev; KM.prev = { tur: L.tur, sed: L.sedMl, lin: L.lin.slice(), tb };
+  if (!P || P.tb !== tb) return;
+  let cd = 0; for (let i = 0; i < 3; i++) cd += Math.abs(L.lin[i] - P.lin[i]);
+  const rate = (Math.abs(L.tur - P.tur) * 4 + Math.abs(L.sedMl - P.sed) * 3 + cd * 2) / Math.max(0.1, el);
+  if (rate > 0.8 && now > SLOWMO.cool && !(typeof autoRun !== 'undefined' && autoRun && autoRun.fast)) {
+    SLOWMO.cool = now + 6000; SLOWMO.until = now + 2600; SLOWMO.k = 0.45;
+    if (!CD.userCam && !lookMode && typeof actionCam === 'function') { CD.hold = now + 3200; actionCam('tube'); }
+    try { showToast('🔍 Look closely: it is changing now', 'info'); } catch (e) {}
+  }
+}
+followTick = function () {};                                      // the director replaces the old tube-only follow
+let _cdVT = visualTick;
+visualTick = function () { _cdVT(); try { cdTick(Math.min(0.05, (performance.now() - (CD.last || performance.now())) / 1000 || 0.016)); } catch (e) {} CD.last = performance.now(); };
+
+
+// =========================================================================
+// EXTRAS V1: vibration (haptics) and class mode (bigger buttons for a smart board). Both are switches in the ⚙ Settings sheet
+// and are remembered on the device. Shared by every lab (Exp 8-15).
+// =========================================================================
+const EX = { vib: true, cls: false, sw: null };
+function exLoad() { try { const v = localStorage.getItem('chemlab.vib'), c = localStorage.getItem('chemlab.cls'); if (v !== null) EX.vib = v === '1'; if (c !== null) EX.cls = c === '1'; } catch (e) {} }
+function exSave() { try { localStorage.setItem('chemlab.vib', EX.vib ? '1' : '0'); localStorage.setItem('chemlab.cls', EX.cls ? '1' : '0'); } catch (e) {} }
+// Android: navigator.vibrate. iPhone (iOS 17.4+): a hidden "switch" checkbox gives a tiny haptic tick when it is toggled by a tap.
+function haptic(kind) {
+  if (!EX.vib) return;
+  try {
+    if (navigator.vibrate) { navigator.vibrate(kind === 'bad' ? [60, 40, 60] : kind === 'ok' ? 18 : 10); return; }
+    if (!EX.sw) {
+      const l = document.createElement('label'); l.style.cssText = 'position:fixed;left:-99px;top:-99px;opacity:0;pointer-events:none';
+      const i = document.createElement('input'); i.type = 'checkbox'; i.setAttribute('switch', ''); l.appendChild(i); document.body.appendChild(l); EX.sw = l;
+    }
+    EX.sw.click(); if (kind === 'bad') setTimeout(() => EX.sw.click(), 90);
+  } catch (e) {}
+}
+(function exHooks() {
+  const oc = AudioSys.playClick; AudioSys.playClick = function () { haptic('tap'); return oc.apply(this, arguments); };       // every tap on the apparatus clicks
+  if (typeof blockAlert === 'function') { const oB = blockAlert; blockAlert = function () { haptic('bad'); return oB.apply(this, arguments); }; }                       // a mistake
+  if (typeof markDone === 'function') { const oM = markDone; markDone = function () { haptic('ok'); return oM.apply(this, arguments); }; }                            // a step done
+})();
+function exApply() {
+  document.body.classList.toggle('class-mode', EX.cls);
+  const v = document.getElementById('ex-vib'), c = document.getElementById('ex-cls'); if (v) v.checked = EX.vib; if (c) c.checked = EX.cls;
+  try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+}
+(function exUI() {
+  exLoad();
+  const st = document.createElement('style');
+  st.textContent = `
+    body.class-mode #top-bar { zoom: 1.2; } body.class-mode #win-directive, body.class-mode #win-table, body.class-mode #win-report { zoom: 1.2; }
+    body.class-mode .dock-inner .act-btn, body.class-mode .act-prompt, body.class-mode .nudge-btn { font-size: 19px; min-height: 58px; padding: 10px 18px; }
+    body.class-mode #touch-tag { font-size: 28px !important; padding: 8px 20px 10px !important; } body.class-mode #wait-card { zoom: 1.25; } body.class-mode #cd-back { font-size: 20px !important; padding: 12px 24px !important; }`;
+  document.head.appendChild(st);
+  const sheet = document.getElementById('dev-sheet');
+  if (sheet) {
+    const info = document.getElementById('dev-info'), mk = (id, label, key) => { const r = document.createElement('div'); r.className = 'dev-row'; r.innerHTML = `<label for="${id}" style="flex:1">${label}</label><input type="checkbox" id="${id}" style="width:22px;height:22px">`; return r; };
+    const r1 = mk('ex-vib', '📳 Vibration on taps and mistakes'), r2 = mk('ex-cls', '🧑‍🏫 Class mode (bigger buttons and text, for a smart board)');
+    sheet.insertBefore(r1, info); sheet.insertBefore(r2, info);
+    r1.querySelector('input').addEventListener('change', e => { EX.vib = e.target.checked; exSave(); if (EX.vib) haptic('ok'); });
+    r2.querySelector('input').addEventListener('change', e => { EX.cls = e.target.checked; exSave(); exApply(); });
+  }
+  exApply();
+})();
+
+
+// =========================================================================
+// REPLAY V1: "↶ Undo last step" (practice mode only) and "Resume where you left off".
+//   Every real action of the student (a tap on a bottle / jar / tube / burner, or a dock button such as Record) is written to a log
+//   in the browser. Resume and Undo rebuild the lab by playing that log again very fast (the lab's own code does every step, so
+//   the tubes, the table and the labels come out exactly as before). Undo = the log without its last entry.
+//   ?replay=0 switches the whole thing off.
+// =========================================================================
+const RP = { on: !/[?&]replay=0/.test(location.search), log: [], playing: false, k: 30, key: 'chemlab.log.' + (location.pathname.split('/').pop() || 'lab'), auto: 'chemlab.auto.' + (location.pathname.split('/').pop() || 'lab'), btn: null, ov: null };
+function rpSave() { try { if (RP.log.length) localStorage.setItem(RP.key, JSON.stringify({ v: 1, exam: typeof MODE !== 'undefined' ? !!MODE.exam : false, log: RP.log })); else localStorage.removeItem(RP.key); } catch (e) {} }
+function rpLoad() { try { const j = JSON.parse(localStorage.getItem(RP.key) || 'null'); return j && j.v === 1 && j.log && j.log.length ? j : null; } catch (e) { return null; } }
+function rpClear() { RP.log = []; try { localStorage.removeItem(RP.key); localStorage.removeItem(RP.auto); } catch (e) {} }
+function rpSig() {
+  try {
+    return JSON.stringify([rowsT.length, TUBES.map(t => [Object.keys(t.st.f || {}).length, (t.st.c || []).length, t.loc, Math.round((t.st.temp || 0) / 5)]), HEAT.direct && HEAT.direct.on ? 1 : 0, HEAT.bath && HEAT.bath.on ? 1 : 0,
+      typeof LAB !== 'undefined' && LAB.picks ? Object.keys(LAB.picks).length : 0, typeof PASTE !== 'undefined' ? [PASTE.salt, PASTE.acid, PASTE.mixed] : 0]);
+  } catch (e) { return ''; }
+}
+function rpLog(entry, before) {                        // keep the entry only if it really changed something (or started a movement)
+  if (RP.playing || !RP.on || (typeof isAutoRun === 'function' && isAutoRun())) return;
+  setTimeout(() => { if (labBusy() || rpSig() !== before) { RP.log.push(entry); rpSave(); rpUI(); } }, 0);
+}
+const RPTAPS = {};
+(function rpWrap() {
+  const hook = (name, f, set) => {
+    if (typeof f !== 'function') return;
+    const w = function () { const b = rpSig(), a = Array.prototype.slice.call(arguments).filter(x => typeof x === 'string' || typeof x === 'number'); const r = f.apply(this, arguments); rpLog({ t: 'tap', f: name, a }, b); return r; };
+    set(w); RPTAPS[name] = w;
+  };
+  hook('tapSide', typeof tapSide !== 'undefined' ? tapSide : null, v => { tapSide = v; });
+  hook('tapReagent', typeof tapReagent !== 'undefined' ? tapReagent : null, v => { tapReagent = v; });
+  hook('tapSample', typeof tapSample !== 'undefined' ? tapSample : null, v => { tapSample = v; });
+  hook('tapTube', typeof tapTube !== 'undefined' ? tapTube : null, v => { tapTube = v; });
+  hook('tapJar', typeof tapJar !== 'undefined' ? tapJar : null, v => { tapJar = v; });
+  hook('toggleBurner', typeof toggleBurner !== 'undefined' ? toggleBurner : null, v => { toggleBurner = v; });
+  hook('handleTestTap', typeof handleTestTap !== 'undefined' ? handleTestTap : null, v => { handleTestTap = v; });
+  document.addEventListener('click', e => {
+    const b = e.target && e.target.closest ? e.target.closest('#dock-actions button.act-btn') : null;
+    if (b && /^act-/.test(b.id) && !/hint|guess|prompt/.test(b.id)) { const before = RP._pre || ''; rpLog({ t: 'btn', id: b.id }, before); }
+  }, false);
+  document.addEventListener('click', () => { RP._pre = rpSig(); }, true);                  // signature BEFORE the button's own handler runs
+})();
+function rpOverlay(show, text) {
+  if (!RP.ov) { const d = document.createElement('div'); d.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(5,10,20,.88);color:#fff;display:none;align-items:center;justify-content:center;font:700 22px "Plus Jakarta Sans",Arial,sans-serif;text-align:center;padding:24px'; document.body.appendChild(d); RP.ov = d; }
+  RP.ov.textContent = text || ''; RP.ov.style.display = show ? 'flex' : 'none';
+}
+const rpWait = ms => new Promise(r => setTimeout(r, ms));
+async function rpPlay(log) {
+  RP.playing = true; rpOverlay(true, '⏳ Restoring your work…');
+  const oc = chemTick, oSpeed = ANIM_SPEED;
+  chemTick = function (dt) { testTick(dt * RP.k); fluidStep(dt); if (F.plume < 1e-12) F.plume = 0; };
+  ANIM_SPEED = RP.k;
+  try {
+    for (let i = 0; i < log.length; i++) {
+      const e = log[i];
+      for (let n = 0; n < 600 && labBusy(); n++) await rpWait(30);
+      await rpWait(40);
+      rpOverlay(true, '⏳ Restoring your work… ' + (i + 1) + ' / ' + log.length);
+      try {
+        if (e.t === 'tap') { const f = RPTAPS[e.f]; if (f) f.apply(null, e.a || []); }
+        else if (e.t === 'btn') { refreshDock(); const b = document.getElementById(e.id); if (b && !b.disabled) b.click(); }
+      } catch (er) { console.error('replay step failed', e, er); }
+      await rpWait(40);
+    }
+    for (let n = 0; n < 900 && labBusy(); n++) await rpWait(30);
+  } finally { chemTick = oc; ANIM_SPEED = oSpeed; LAB.ffNow = 1; RP.playing = false; RP.log = log.slice(); rpSave(); rpOverlay(false); refreshAll(); rpUI(); TOUCH.camKey = ''; _touchKeyAt = performance.now() - 300; }
+}
+function rpUndo() {
+  if (RP.playing || labBusy() || !RP.log.length) return;
+  RP.log.pop(); rpSave(); try { localStorage.setItem(RP.auto, '1'); } catch (e) {} location.reload();
+}
+function rpUI() {
+  if (!RP.btn) {
+    const b = document.createElement('button'); b.type = 'button'; b.id = 'rp-undo'; b.textContent = '↶ Undo last step';
+    b.style.cssText = 'position:fixed;left:12px;bottom:calc(var(--dock-h,92px) + 16px);z-index:24;display:none;padding:7px 14px;border-radius:999px;border:1.5px solid rgba(186,230,253,.6);background:rgba(15,23,42,.88);color:#e2e8f0;font:600 13px "Plus Jakarta Sans",Arial,sans-serif;cursor:pointer';
+    b.addEventListener('click', () => { if (confirm('Undo the last step? The lab is rebuilt without it (takes a few seconds).')) rpUndo(); });
+    document.body.appendChild(b); RP.btn = b;
+  }
+  const exam = typeof MODE !== 'undefined' && MODE.exam;
+  const show = RP.on && !exam && RP.log.length > 0 && !RP.playing && !(typeof isAutoRun === 'function' && isAutoRun()) && !labBusy();
+  const want = show ? 'block' : 'none'; if (RP.btn.style.display !== want) RP.btn.style.display = want;
+}
+setInterval(() => { if (RP.on && typeof curTest === 'function') { if (typeof LAB !== 'undefined' && LAB.doneAll && RP.log.length) rpClear(); rpUI(); } }, 600);
+(async function rpStart() {
+  if (!RP.on) return;
+  while (typeof bootDone === 'undefined' || !bootDone) await rpWait(200);
+  await rpWait(800);
+  const j = rpLoad(); if (!j) return;
+  if (j.exam !== (typeof MODE !== 'undefined' ? !!MODE.exam : false)) return;
+  let auto = false; try { auto = localStorage.getItem(RP.auto) === '1'; localStorage.removeItem(RP.auto); } catch (e) {}
+  if (auto) return rpPlay(j.log);
+  const d = document.createElement('div'); d.id = 'rp-card';
+  d.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:99997;width:min(420px,90vw);background:#0f172a;color:#e2e8f0;border:2px solid #38bdf8;border-radius:16px;padding:20px;font:500 16px/1.4 "Plus Jakarta Sans",Arial,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.6);text-align:center';
+  d.innerHTML = '<div style="font-weight:800;font-size:19px;margin-bottom:6px">Resume where you left off?</div><div style="opacity:.85;margin-bottom:14px">You did ' + j.log.length + ' steps last time.</div><button id="rp-yes" style="padding:10px 20px;border-radius:10px;border:0;background:#0ea5e9;color:#fff;font:700 16px inherit;margin:4px;cursor:pointer">▶ Resume</button><button id="rp-no" style="padding:10px 20px;border-radius:10px;border:1px solid #64748b;background:transparent;color:#e2e8f0;font:600 16px inherit;margin:4px;cursor:pointer">Start again</button>';
+  document.body.appendChild(d);
+  d.querySelector('#rp-yes').onclick = () => { d.remove(); rpPlay(j.log); };
+  d.querySelector('#rp-no').onclick = () => { d.remove(); rpClear(); };
+})();
+
 </script>
 <script>
 /* Lab loader: starts the lab only when the 3D engine (three.js) is inside this file.
@@ -8908,23 +9183,5 @@ function ffUI(force) {
   document.body.appendChild(s);
 })();
 </script>
-<!-- Back-to-list link (added by the portal; safe to leave out of the lab itself) -->
-<style>
-.portal-back{color:#38bdf8;text-decoration:none;font-weight:800;font-size:12px;white-space:nowrap;padding:3px 8px;margin-right:8px;border:1px solid rgba(56,189,248,.45);border-radius:999px;display:inline-block;line-height:1.4}
-.portal-back:hover{background:rgba(56,189,248,.14)}
-.portal-back--fixed{position:fixed;top:6px;left:6px;z-index:99990;background:rgba(6,9,17,.85)}
-</style>
-<script>
-(function(){
-  function mk(){var a=document.createElement("a");a.className="portal-back";a.href="../";a.textContent="\u2190 Labs";a.setAttribute("aria-label","Back to the list of chemistry labs");return a;}
-  var done=false;
-  var brand=document.querySelector(".lab-brand");
-  if(brand){brand.insertBefore(mk(),brand.firstChild);done=true;}
-  var mt=document.querySelector(".mobile-title");
-  if(mt){mt.insertBefore(mk(),mt.firstChild);done=true;}
-  if(!done){var f=mk();f.className+=" portal-back--fixed";document.body.appendChild(f);}
-})();
-</script>
-<script src="../../track.js" defer></script>
 </body>
 </html>
