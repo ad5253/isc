@@ -1831,6 +1831,19 @@
   #dev-sheet input[type=range] { flex: 1; min-width: 120px; height: 28px; }
   #dev-sheet select { flex: 1; min-height: 38px; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0 8px; font-size: 13px; }
   #dev-sheet .dev-note { font-size: 11.5px; color: var(--text-secondary); line-height: 1.45; margin: 4px 0; }
+  #wait-card { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--stack-h, var(--dock-h, 130px)) + 12px); z-index: 710; display: none; align-items: center; gap: 12px; background: rgba(9,14,26,0.92); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 8px 14px 8px 8px; width: max-content; max-width: min(520px, calc(100vw - 16px)); pointer-events: auto; color: #e2e8f0; }
+  #wait-card.on { display: flex; }
+  #wait-card .wc-ring { flex: none; width: 62px; height: 62px; border-radius: 50%; background: conic-gradient(#38bdf8 var(--p, 0deg), #1e293b 0); display: grid; place-items: center; }
+  #wait-card .wc-ring span { width: 48px; height: 48px; border-radius: 50%; background: #0b1220; display: grid; place-items: center; font: 700 15px 'JetBrains Mono', ui-monospace, monospace; color: #a7f3d0; }
+  #wait-card .wc-body { min-width: 0; font-size: 12.5px; line-height: 1.35; }
+  #wait-card #wc-title { font-weight: 800; font-size: 13.5px; color: #fde68a; }
+  #wait-card #wc-watch { color: #cbd5e1; margin-top: 2px; }
+  #wait-card #wc-vq { color: #bae6fd; margin-top: 4px; }
+  #wait-card .wc-btns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  #wait-card button { background: #0284c7; color: #fff; border: 1px solid #38bdf8; border-radius: 8px; font-weight: 700; font-size: 12px; padding: 6px 10px; min-height: 34px; cursor: pointer; }
+  #wait-card button#wc-viva { background: #475569; border-color: #94a3b8; }
+  .act-prompt { flex: 1 1 220px; display: flex; align-items: center; min-height: 44px; padding: 6px 12px; border-radius: 10px; background: rgba(250,204,21,0.12); border: 1px solid rgba(250,204,21,0.55); color: #fde68a; font-size: 14px; line-height: 1.3; }
+  .act-prompt b { color: #fff; }
   #sw-hud { position: fixed; right: 10px; top: 66px; z-index: 700; background: rgba(9,14,26,0.88); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 6px 10px; display: none; max-width: min(330px, calc(100vw - 20px)); pointer-events: auto; }
   #sw-hud.on { display: block; }
   @media (min-width: 701px) and (max-width: 1250px) { #sw-hud { top: calc(var(--tb-h, 58px) + 8px); } }
@@ -2089,6 +2102,7 @@
   </div>
 </div>
 
+<div id="wait-card"><div class="wc-ring"><span id="wc-time">0:00</span></div><div class="wc-body"><div id="wc-title">Waiting</div><div id="wc-watch"></div><div id="wc-vq" style="display:none"></div><div class="wc-btns"><button id="wc-ff" onclick="ffToggle()">▶ Normal speed</button><button id="wc-viva" onclick="vivaToggle()">❓ Viva question</button></div></div></div>
 <div id="sw-hud"><div class="sw-row" id="sw-ff-row"><span id="sw-ff-text">⏩ Long wait: fast-forward ×6. The lab clock still shows real lab time.</span><button id="sw-ff-btn" onclick="ffToggle()">▶ Normal speed</button></div></div>
 <div id="dev-chip" onclick="DeviceLayer.gesture()">🔊 Tap to turn on sound</div>
 <div id="dev-sheet" role="dialog" aria-label="Settings">
@@ -2326,7 +2340,7 @@ function updateTweens(dt) {
     const tw = activeTweens[i];
     tw.t += dt;
     const p = Math.min(1, tw.t / tw.dur);
-    const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
+    const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2; // ease in-out: slow start, fast middle, slow end
     tw.obj[tw.prop] = tw.from + (tw.to - tw.from) * eased;
     if (p >= 1) activeTweens.splice(i, 1);
   }
@@ -2548,9 +2562,40 @@ function setTier(name) {
 function disposePost() {
   [mainRT, bloomA, bloomB, bloomC, bloomD, depthAll, depthOpq, aoA, aoB, dofRT, lumRT].forEach(t => { if (t) t.dispose(); });
   mainRT = bloomA = bloomB = bloomC = bloomD = depthAll = depthOpq = aoA = aoB = dofRT = lumRT = null;
+  [RTSETS.full, RTSETS.fast].forEach(s => { if (s) Object.keys(s).forEach(k => { if (s[k] && s[k].dispose) s[k].dispose(); }); });
+  RTSETS.full = RTSETS.fast = null; DYN.cur = 1;
 }
+// ---- Sketchfab / Google Earth trick: two complete sets of render pictures. While the camera MOVES the lab is drawn at
+// DYN.k of the sharp size (nobody can read detail on a moving picture); the moment it stops, the full sharp set is used
+// again. Both sets are allocated once, so switching is free (no re-allocation hitch). ?dyn=0 turns it off, ?dyn=0.6 sets the size.
+const RTSETS = { full: null, fast: null };
+const DYN = { k: (() => { const m = location.search.match(/[?&]dyn=([0-9.]+)/); return m ? Math.min(1, +m[1]) : 0.72; })(), cur: 1, still: 0 };
+const RT_KEYS = ['backRT', 'mainRT', 'bloomA', 'bloomB', 'bloomC', 'bloomD', 'depthAll', 'depthOpq', 'aoA', 'aoB', 'dofRT', 'lumRT'];
+function rtSnap() { return { backRT, mainRT, bloomA, bloomB, bloomC, bloomD, depthAll, depthOpq, aoA, aoB, dofRT, lumRT }; }
+function rtLoad(s) { s = s || {}; ({ backRT = null, mainRT = null, bloomA = null, bloomB = null, bloomC = null, bloomD = null, depthAll = null, depthOpq = null, aoA = null, aoB = null, dofRT = null, lumRT = null } = s); }
 function resizeTargets() {
-  const pr = renderer.getPixelRatio(), w = Math.max(2, Math.round(window.innerWidth * pr)), h = Math.max(2, Math.round(window.innerHeight * pr));
+  const pr = renderer.getPixelRatio();
+  rtLoad(RTSETS.full); buildTargets(pr); RTSETS.full = rtSnap();
+  if (DYN.k < 0.98 && tier.post && tier.back > 0) { rtLoad(RTSETS.fast); buildTargets(pr * DYN.k); RTSETS.fast = rtSnap(); }
+  else if (RTSETS.fast) { Object.keys(RTSETS.fast).forEach(k => { const o = RTSETS.fast[k]; if (o && o.dispose) o.dispose(); }); RTSETS.fast = null; }
+  rtLoad(RTSETS.full); DYN.cur = 1; applyTargetSet(1);
+}
+function applyTargetSet(which) {          // which: 1 = sharp set, DYN.k = moving set
+  const s = which === 1 || !RTSETS.fast ? RTSETS.full : RTSETS.fast; if (!s) return;
+  rtLoad(s); DYN.cur = (s === RTSETS.full) ? 1 : DYN.k;
+  const pr = renderer.getPixelRatio() * DYN.cur, w = Math.max(2, Math.round(window.innerWidth * pr)), h = Math.max(2, Math.round(window.innerHeight * pr));
+  SH.uScreen.value.set(w, h); if (backRT) SH.tBack.value = backRT.texture;
+  if (postMats) {
+    postMats.blurH4.uniforms.uTexel.value.set(4 / w, 0); postMats.blurV4.uniforms.uTexel.value.set(0, 4 / h);
+    postMats.blurH8.uniforms.uTexel.value.set(8 / w, 0); postMats.blurV8.uniforms.uTexel.value.set(0, 8 / h);
+    [postMats.ssao, postMats.aoBlurH, postMats.aoBlurV, postMats.dof, postMats.comp].forEach(m => { if (m.uniforms.uRes) m.uniforms.uRes.value.set(w, h); });
+    postMats.aoBlurH.uniforms.uTexel.value.set(2 / w, 0); postMats.aoBlurV.uniforms.uTexel.value.set(0, 2 / h);
+  }
+  aoStale = true;
+}
+function buildTargets(pr) {
+  aoStale = true; aoDone = false;
+  const w = Math.max(2, Math.round(window.innerWidth * pr)), h = Math.max(2, Math.round(window.innerHeight * pr));
   SH.uScreen.value.set(w, h);
   if (tier.back > 0) {
     const bw = Math.round(w * tier.back), bh = Math.round(h * tier.back);
@@ -2659,7 +2704,7 @@ function buildPost() {
     // final picture: depth of field, AO, bloom + lens dirt, exposure, filmic grade (gentle S-curve, warm highlights,
     // cool shadows, colours of the liquids preserved), faint chromatic fringe at the edges, vignette, fine grain
     comp: mk(`uniform sampler2D tSrc; uniform sampler2D tBloom; uniform sampler2D tBloom2; uniform sampler2D tDof; uniform sampler2D tAO; uniform sampler2D tDirt;
-      uniform float uUseDof, uUseAO, uExposure, uTime, uCA, uGrain, uBloom; uniform vec2 uRes; varying vec2 vUv;
+      uniform float uAOk; uniform float uUseDof, uUseAO, uExposure, uTime, uCA, uGrain, uBloom; uniform vec2 uRes; varying vec2 vUv;
       vec3 toSRGB(vec3 c){ c = clamp(c, 0.0, 1.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(0.0031308, c)); }
       float h12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
       void main(){
@@ -2667,7 +2712,7 @@ function buildPost() {
         vec3 c = texture2D(tSrc, vUv).rgb;
         if (uCA > 0.0) { vec2 o = dc * r2 * uCA; c.r = texture2D(tSrc, vUv - o).r; c.b = texture2D(tSrc, vUv + o).b; }
         if (uUseDof > 0.5) { vec4 d = texture2D(tDof, vUv); c = mix(c, d.rgb, smoothstep(0.04, 0.4, d.a)); }
-        if (uUseAO > 0.5) { float ao = texture2D(tAO, vUv).r; c *= mix(1.0, ao, 0.85); }
+        if (uUseAO > 0.5) { float ao = texture2D(tAO, vUv).r; c *= mix(1.0, ao, 0.85 * uAOk); }
         vec3 b = texture2D(tBloom, vUv).rgb * 0.45 + texture2D(tBloom2, vUv).rgb * 0.35;
         c += b * uBloom + b * texture2D(tDirt, vUv).r * 0.6 * uBloom;
         c *= uExposure;
@@ -2680,7 +2725,7 @@ function buildPost() {
         s += (h12(gl_FragCoord.xy + fract(uTime * 7.13) * 397.0) - 0.5) * uGrain;          // very fine film grain
         gl_FragColor = vec4(clamp(s, 0.0, 1.0), 1.0);
       }`, { tSrc: { value: null }, tBloom: { value: null }, tBloom2: { value: null }, tDof: { value: null }, tAO: { value: null }, tDirt: { value: dirt },
-        uUseDof: { value: 0 }, uUseAO: { value: 0 }, uExposure: { value: 1 }, uTime: { value: 0 }, uCA: { value: 0.012 }, uGrain: { value: 0.014 }, uBloom: { value: 1 }, uRes: { value: new THREE.Vector2() } })
+        uUseDof: { value: 0 }, uUseAO: { value: 0 }, uAOk: { value: 0 }, uExposure: { value: 1 }, uTime: { value: 0 }, uCA: { value: 0.012 }, uGrain: { value: 0.014 }, uBloom: { value: 1 }, uRes: { value: new THREE.Vector2() } })
   };
 }
 const BLUR_FS = `uniform sampler2D tSrc; uniform vec2 uTexel; varying vec2 vUv;
@@ -2709,6 +2754,7 @@ function collectBackHide() {
 // depth passes: what is seen-through (glass, liquid) counts for the depth of field, not for the AO
 function isSeeThrough(o) { const m = o.material; return !!m && !Array.isArray(m) && (GLASS_MATS.includes(m) || LIQ_MATS.includes(m) || m.userData.glassLike); }
 let focusDist = 10, exposureNow = 1, lumFrame = 0;
+const aoPose = [0, 0, 0, 0, 0, 0, 0]; let aoStill = 0, aoStale = true, aoK = 0, aoDone = false;
 const _lumBuf = new Uint8Array(16 * 9 * 4);
 function renderDepth(target, withGlass) {
   const was = BACK_HIDE.map(o => o.visible);
@@ -2723,6 +2769,15 @@ function renderDepth(target, withGlass) {
 function setDepthUniforms(m) { m.uniforms.uNear.value = camera.near; m.uniforms.uFar.value = camera.far; m.uniforms.uProjInv.value.copy(camera.projectionMatrixInverse); }
 function renderFrame() {
   SH.uTime.value = performance.now() / 1000;
+  // is the camera moving? (also used by the corner shading below)
+  const cp = camera.position, cq = camera.quaternion;
+  const moved = Math.abs(cp.x - aoPose[0]) + Math.abs(cp.y - aoPose[1]) + Math.abs(cp.z - aoPose[2]) + Math.abs(cq.x - aoPose[3]) + Math.abs(cq.y - aoPose[4]) + Math.abs(cq.z - aoPose[5]) + Math.abs(cq.w - aoPose[6]) > 1e-5;
+  aoPose[0] = cp.x; aoPose[1] = cp.y; aoPose[2] = cp.z; aoPose[3] = cq.x; aoPose[4] = cq.y; aoPose[5] = cq.z; aoPose[6] = cq.w;
+  if (RTSETS.fast) {                                     // moving camera: lighter picture; still camera (or reading a scale): full sharp picture
+    const reading0 = !!(lookMode || lookTween);
+    if (moved && !reading0) { DYN.still = 0; if (DYN.cur === 1) applyTargetSet(DYN.k); }
+    else { DYN.still++; if (DYN.cur !== 1 && (DYN.still > 5 || reading0)) applyTargetSet(1); }
+  }
   if (tier.back > 0 && backRT) {
     const was = BACK_HIDE.map(o => o.visible);
     BACK_HIDE.forEach(o => { o.visible = false; });
@@ -2734,11 +2789,17 @@ function renderFrame() {
   if (tier.post && mainRT) {
     const reading = !!(lookMode || lookTween);          // reading a scale: razor sharp, no fringe, no grain
     renderer.setRenderTarget(mainRT); renderer.render(scene, camera);
-    const useDof = tier.dof && !reading && dofRT, useAO = tier.ssao && aoA;
-    if (useDof || useAO) { renderDepth(depthAll, true); if (useAO) renderDepth(depthOpq, false); }
-    if (useAO) {
+    // soft corner shading (SSAO) is expensive (two extra drawings of the whole lab): it is computed only while the
+    // camera is still, kept while it moves (faded out), and faded back in when it stops. Same look when you look at it.
+    if (moved) { aoStill = 0; aoStale = true; } else aoStill++;
+    const useDof = tier.dof && !reading && dofRT, aoTier = tier.ssao && aoA;
+    const needAO = aoTier && aoStill >= 2 && (aoStale || (aoStill % 40) === 0);
+    aoK += ((aoStill >= 2 ? 1 : 0) - aoK) * 0.2; if (aoK < 0.01) aoK = 0;
+    const useAO = aoTier && aoK > 0 && aoDone;
+    if (useDof || needAO) { renderDepth(depthAll, true); if (needAO) renderDepth(depthOpq, false); }
+    if (needAO) {
       const m = postMats.ssao; setDepthUniforms(m); m.uniforms.tAll.value = depthAll.texture;
-      postPass(m, depthOpq.texture, aoA); postPass(postMats.aoBlurH, aoA.texture, aoB); postPass(postMats.aoBlurV, aoB.texture, aoA);
+      postPass(m, depthOpq.texture, aoA); postPass(postMats.aoBlurH, aoA.texture, aoB); postPass(postMats.aoBlurV, aoB.texture, aoA); aoStale = false; aoDone = true;
     }
     if (useDof) {
       const target = controls ? controls.target : null;
@@ -2752,16 +2813,11 @@ function renderFrame() {
     postPass(postMats.bright, mainRT.texture, bloomA);
     postPass(postMats.blurH4, bloomA.texture, bloomB); postPass(postMats.blurV4, bloomB.texture, bloomA);
     if (tier.bloom > 1) { postPass(postMats.copy, bloomA.texture, bloomC); postPass(postMats.blurH8, bloomC.texture, bloomD); postPass(postMats.blurV8, bloomD.texture, bloomC); postPass(postMats.blurH8, bloomC.texture, bloomD); postPass(postMats.blurV8, bloomD.texture, bloomC); }
-    // gentle eye adaptation: brighter scenes are brought down a little, darker ones lifted a little
-    if ((lumFrame++ % 20) === 0) {
-      postPass(postMats.copy, mainRT.texture, lumRT);
-      try { renderer.readRenderTargetPixels(lumRT, 0, 0, 16, 9, _lumBuf); let s = 0; for (let i = 0; i < _lumBuf.length; i += 4) s += (0.2126 * _lumBuf[i] + 0.7152 * _lumBuf[i + 1] + 0.0722 * _lumBuf[i + 2]) / 255; s /= 144;
-        const target = reading ? 1 : Math.min(1.1, Math.max(0.9, Math.pow(0.5 / Math.max(0.05, s), 0.18))); exposureNow += (target - exposureNow) * 0.5; } catch (e) {}
-    }
+    // (eye adaptation removed: reading pixels back from the graphics chip froze iPhones every 20 frames; exposure is fixed)
     const c = postMats.comp.uniforms;
     c.tBloom.value = bloomA.texture; c.tBloom2.value = tier.bloom > 1 ? bloomC.texture : bloomA.texture;
     c.uUseDof.value = useDof ? 1 : 0; c.tDof.value = useDof ? dofRT.texture : null;
-    c.uUseAO.value = useAO ? 1 : 0; c.tAO.value = useAO ? aoA.texture : null;
+    c.uAOk.value = aoK; c.uUseAO.value = useAO ? 1 : 0; c.tAO.value = useAO ? aoA.texture : null;
     c.uExposure.value = exposureNow; c.uTime.value = SH.uTime.value;
     c.uCA.value = reading || DeviceLayer.phone() ? 0 : (tier.dof ? 0.006 : 0.003); c.uGrain.value = reading ? 0 : 0.012; c.uBloom.value = reading ? 0.6 : 1;
     postPass(postMats.comp, mainRT.texture, null);
@@ -2770,12 +2826,12 @@ function renderFrame() {
   }
 }
 // Automatic downgrade: if a busy scene keeps running slower than ~28 fps, drop one tier (never below low)
-let tierEma = 0.016, tierCheckAt = 6000;
+let tierEma = 0.016, tierCheckAt = 15000;
 function watchTier(dt, busy, now) {
   if (!busy) return;
-  tierEma = tierEma * 0.95 + dt * 0.05;
+  tierEma = tierEma * 0.985 + dt * 0.015;
   if (now < tierCheckAt) return;
-  if (tierEma > 0.062 && tierName !== 'low' && !/[?&]q=/.test(location.search)) {      // below ~16 fps for a good while: one step down (never from a short camera move)
+  if (tierEma > 0.1 && tierName !== 'low' && !/[?&]q=/.test(location.search)) {      // below ~16 fps for a good while: one step down (never from a short camera move)
     setTier(tierName === 'high' ? 'medium' : 'low'); DeviceLayer.noteTierDrop();
     tierEma = 0.02; tierCheckAt = now + 12000;
     console.log('Quality lowered to ' + tierName);
@@ -3552,9 +3608,9 @@ function labelCanvas(lines, w, h, bg, fg) {
   g.fillStyle = ed(0, 0, w * 0.05, 0); g.fillRect(0, 0, w * 0.05, h); g.fillStyle = ed(w, 0, w * 0.95, 0); g.fillRect(w * 0.95, 0, w * 0.05, h);
   g.strokeStyle = 'rgba(60,40,20,0.5)'; g.lineWidth = Math.max(2.5, w / 130); g.strokeRect(w * 0.03, h * 0.05, w * 0.94, h * 0.9);
   g.textAlign = 'center'; g.textBaseline = 'middle';
-  const ink = fg || '#1f2937';
+  const ink = fg || '#0b0f14';
   lines.forEach((ln, i) => {
-    g.font = (i === 0 ? '800 ' + Math.round(h * 0.3) : '700 ' + Math.round(h * 0.15)) + 'px "Plus Jakarta Sans", Arial, sans-serif';
+    g.font = (i === 0 ? '800 ' + Math.round(h * 0.34) : '700 ' + Math.round(h * 0.17)) + 'px "Plus Jakarta Sans", Arial, sans-serif';
     const y = h * (lines.length === 1 ? 0.5 : (i === 0 ? 0.33 : 0.33 + i * 0.22));
     g.save(); g.shadowColor = ink; g.shadowBlur = 1.6; g.globalAlpha = 0.35; g.fillStyle = ink; g.fillText(ln, w / 2, y); g.restore();   // bleed
     g.fillStyle = ink; g.globalAlpha = 0.92; g.fillText(ln, w / 2, y); g.globalAlpha = 1;
@@ -3563,7 +3619,8 @@ function labelCanvas(lines, w, h, bg, fg) {
 }
 function curvedLabel(canvas, r, hh, yc, arc, parent) {
   const geo = new THREE.CylinderGeometry(r, r, hh, 32, 1, true, -arc / 2, arc);
-  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(canvas), roughness: 0.82, envMap: envTex, envMapIntensity: 0.3 }));
+  const tex = new THREE.CanvasTexture(canvas); tex.anisotropy = 8;      // sharp labels also when seen at a slant / from far
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.82, envMap: envTex, envMapIntensity: 0.3 }));
   m.position.y = yc; parent.add(m);
   return m;
 }
@@ -4012,7 +4069,7 @@ const REAGENTS = [
   // bottom shelf
   { id: 'KMnO4', name: 'KMnO₄', sub: '(aq)', sigma: [0.9, 7.0, 1.3], full: 'Potassium permanganate solution' },
   { id: 'Oxalic', name: 'Oxalic Acid', sub: '(aq)', sigma: [0.004, 0.003, 0.002], full: 'Oxalic acid solution' },
-  { id: 'Mohr', name: "Mohr's Salt", sub: '(aq)', sigma: [0.28, 0.045, 0.16], full: "Mohr's salt (ferrous ammonium sulphate) solution, pale green" },
+  { id: 'NH4CO3', name: '(NH₄)₂CO₃', sub: '(aq)', sigma: [0.004, 0.003, 0.002], full: 'Ammonium carbonate solution' },
   { id: 'NaHCO3', name: 'NaHCO₃', sub: '(aq)', sigma: [0.004, 0.003, 0.002], full: 'Sodium hydrogen carbonate solution' }
 ];
 // which reagents this experiment uses, and what for
@@ -4032,16 +4089,16 @@ function rackWoodCanvas() {
   return c;
 }
 function rackLabelCanvas(r) {
-  const c = document.createElement('canvas'); c.width = 384; c.height = 220;
-  const g = c.getContext('2d');
+  const c = document.createElement('canvas'); c.width = 768; c.height = 440;          // 2x for sharp text
+  const g = c.getContext('2d'); g.scale(2, 2);
   g.fillStyle = '#f8f6f0'; g.fillRect(0, 0, 384, 220);
   for (let i = 0; i < 900; i++) { g.strokeStyle = `rgba(120,110,90,${Math.random() * 0.07})`; g.lineWidth = 0.6; const x = Math.random() * 384, y = Math.random() * 220, a = Math.random() * 7; g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * 5, y + Math.sin(a) * 3); g.stroke(); }
   const yl = g.createLinearGradient(0, 0, 0, 220); yl.addColorStop(0, 'rgba(170,140,80,0.10)'); yl.addColorStop(0.3, 'rgba(0,0,0,0)'); yl.addColorStop(1, 'rgba(150,120,70,0.16)'); g.fillStyle = yl; g.fillRect(0, 0, 384, 220);
   g.strokeStyle = 'rgba(0,0,0,0.28)'; g.lineWidth = 3; g.strokeRect(3, 3, 378, 214);
-  g.fillStyle = '#111'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  const txt = (t, f, y) => { g.font = f; g.save(); g.shadowColor = '#111'; g.shadowBlur = 1.5; g.globalAlpha = 0.35; g.fillText(t, 192, y); g.restore(); g.globalAlpha = 0.9; g.fillText(t, 192, y); g.globalAlpha = 1; };
-  txt(r.name, `600 ${r.name.length > 9 ? 50 : 62}px "Plus Jakarta Sans", Arial, sans-serif`, 92);
-  txt(r.sub, '500 40px "Plus Jakarta Sans", Arial, sans-serif', 160);
+  g.fillStyle = '#000'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  const txt = (t, f, y) => { g.font = f; g.save(); g.shadowColor = '#111'; g.shadowBlur = 1.5; g.globalAlpha = 0.35; g.fillText(t, 192, y); g.restore(); g.globalAlpha = 1; g.fillText(t, 192, y); g.globalAlpha = 1; };
+  txt(r.name, `800 ${r.name.length > 9 ? 58 : 76}px "Plus Jakarta Sans", Arial, sans-serif`, 92);
+  txt(r.sub, '700 46px "Plus Jakarta Sans", Arial, sans-serif', 160);
   return c;
 }
 function makeRackBottle(r) {
@@ -4057,7 +4114,7 @@ function makeRackBottle(r) {
   const rt = radiusTex(() => H(2.48), 0, H(14), H(2.48));
   const liq = attachLiquid(lathe([[0.001, 0.35], [2.47, 0.35], [2.47, 6.6], [0.001, 6.6]], liquidMat({ frame: g, rTex: rt, y0: 0, y1: H(14), rmax: H(2.48), yBot: H(0.35), yTop: H(6.6), sigma: r.sigma, refr: 0.05 }), 36));
   liq.renderOrder = 7; g.add(liq);
-  const lab = new THREE.Mesh(new THREE.CylinderGeometry(H(2.68), H(2.68), H(3.2), 32, 1, true, -0.62, 1.24), new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(rackLabelCanvas(r)), roughness: 0.8 }));
+  const lab = new THREE.Mesh(new THREE.CylinderGeometry(H(2.68), H(2.68), H(3.7), 32, 1, true, -0.78, 1.56), new THREE.MeshStandardMaterial({ map: (() => { const tx = new THREE.CanvasTexture(rackLabelCanvas(r)); tx.anisotropy = 8; return tx; })(), roughness: 0.8 }));
   lab.position.y = H(4.0); g.add(lab);
   const hit = new THREE.Mesh(new THREE.CylinderGeometry(H(2.8), H(2.8), H(14), 10), new THREE.MeshBasicMaterial({ visible: false }));
   hit.position.y = H(7); g.add(hit);
@@ -4572,7 +4629,7 @@ function updateAnims(dt) {
     const a = anims[i];
     a.t += dt * ANIM_SPEED;
     const p = Math.min(1, a.t / a.dur);
-    a.fn(p < 1 ? p * p * (3 - 2 * p) : 1, p);
+    a.fn(p < 1 ? p * p * p * (p * (p * 6 - 15) + 10) : 1, p);      // smootherstep: slow start, fast middle, slow end
     if (p >= 1) { anims.splice(i, 1); i--; if (a.done) a.done(); }
   }
 }
@@ -5677,14 +5734,14 @@ const SFX = {
       pour: () => this.noiseLoop('bandpass', 700, 2.5, 0.4),
       slosh: () => DeviceLayer.phone() ? this.noiseLoop('bandpass', 900, 0.8, 0.2) : this.noiseLoop('lowpass', 520, 0.7, 0.3),
       pipette: () => this.noiseLoop('bandpass', 900, 3, 0.3),
-      roar: () => this.noiseLoop('bandpass', 750, 0.45, 0.25),
+      roar: () => this.noiseLoop('lowpass', 300, 0.6, 0.15),      // burner: a faint low breath, never a hiss (school burners are almost silent)
       boil: () => this.noiseLoop('bandpass', 1500, 0.7, 0.35)
     }[name];
     const L = this.loop(name, mk), t = this.ctx.currentTime;
     const target = this.muted ? 0 : level;
-    if (Math.abs(target - L.level) > 0.002 || tune) {
+    if (Math.abs(target - L.level) > 0.0003 || tune) {
       L.level = target;
-      L.g.gain.setTargetAtTime(target, t, 0.06);
+      L.g.gain.setTargetAtTime(target, t, name === 'roar' ? 0.4 : 0.06);
       if (tune) tune(L, t);
     }
   },
@@ -5817,6 +5874,7 @@ function stepCamName(key) {
 }
 function stepCam(key) {
   const c = stepCamName(key); if (!c || lookMode) return;
+  if (typeof touchTarget === 'function' && TOUCH.on && touchTarget(key)) return;        // touch steps get the work view (12u)
   if (typeof autoRun !== 'undefined' && autoRun) return;       // Auto moves the camera itself
   setTimeout(() => { if (!lookMode && !labBusy()) actionCam(c); }, 350);
 }
@@ -5874,6 +5932,7 @@ function refreshDock() {
     S.running = false;                                   // a held ▶ Run button is about to disappear: close the tap
     box.innerHTML = '';
     acts.forEach(([id, label, kind, fn, style]) => {
+      if (kind === 'prompt') { const d = document.createElement('div'); d.className = 'act-prompt'; d.id = id; d.innerHTML = '<span>' + label + '</span>'; box.appendChild(d); return; }
       const b = document.createElement('button');
       b.className = 'act-btn' + (style ? ' ' + style : ''); b.id = id; b.innerHTML = label; b.disabled = busy;
       if (busy) b.style.opacity = 0.45;
@@ -6495,12 +6554,22 @@ let camAnim = null;
 let CAMF = null;
 function followTube(tb) { if (!tb) return; CAMF = tb; }
 function followStop() { CAMF = null; }
+const FOLLOW = { vp: new THREE.Vector3(), vt: new THREE.Vector3(), on: false };
+function smoothDamp(cur, tgt, vel, st, dt) {          // critically damped spring: slow start, smooth fast middle, slow end
+  const om = 2 / st, x = om * dt, e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  ['x', 'y', 'z'].forEach(k => {
+    const ch = cur[k] - tgt[k], tmp = (vel[k] + om * ch) * dt;
+    vel[k] = (vel[k] - om * tmp) * e; cur[k] = tgt[k] + (ch + tmp) * e;
+  });
+}
 function followTick(dt) {
-  if (!CAMF || lookMode) return;
+  if (!CAMF || lookMode) { FOLLOW.on = false; return; }
   const b = tubeBoxNow(CAMF); b.expandByVector(v3(H(5), H(2.5), H(2)));
-  const t = fitBox(b, v3(0.12, 0.3, 1), 1.05), a = 1 - Math.exp(-dt * 6);
+  const t = fitBox(b, v3(0.12, 0.3, 1), 1.05);
+  if (!FOLLOW.on) { FOLLOW.on = true; FOLLOW.vp.set(0, 0, 0); FOLLOW.vt.set(0, 0, 0); }
   camAnim = {}; presetAnimUntil = performance.now() + 400;
-  camera.position.lerp(t.pos, a); controls.target.lerp(t.look, a);
+  const d = Math.min(dt, 0.05);
+  smoothDamp(camera.position, t.pos, FOLLOW.vp, 0.45, d); smoothDamp(controls.target, t.look, FOLLOW.vt, 0.45, d);
 }
 function moveCamera(t, dur) {
   const startPos = camera.position.clone(), startTarget = controls.target.clone(), startTime = performance.now();
@@ -6625,7 +6694,7 @@ window.startAuto = async function () {
     let guard = 0;
     while (guard++ < 200) {
       if (!curTest()) break;
-      ANIM_SPEED = (window.TEST_ANIM || 1) * (rowsT.length === 0 ? 1.7 : 2.4);
+      ANIM_SPEED = (window.TEST_ANIM || 1) * (rowsT.length === 0 ? 1.4 : 1.9);
       const key = currentStep().key, base = stepBase(key);
       if (base === 'result') break;
       if (typeof actionCam === 'function' && base !== 'watch') actionCam(stepCamName(key));
@@ -6845,7 +6914,7 @@ let frameEma = 0.016, lastAdapt = 0, curPixelRatio = 0;
 const breathOff = new THREE.Vector3();
 function breathe(now) {
   camera.position.sub(breathOff); breathOff.set(0, 0, 0);
-  if (lookMode || lookTween || now - lastInteraction < 4000 || now < presetAnimUntil) return;
+  return;                                                     // breathing removed: a still camera lets the lab rest (smoothness fix)
   const t = now / 1000;
   breathOff.set(Math.sin(t * 0.31) * 0.025, Math.sin(t * 0.23 + 1) * 0.018, Math.cos(t * 0.27) * 0.02);
   camera.position.add(breathOff);
@@ -6856,6 +6925,10 @@ function sceneIsBusy(now) {
   return !!(activeTweens.length || anims.length || lookTween || S.running || S.swirl || F.plume > 1e-7 || pipHold || lookPointers.size || (S.funnelOn && S.funnelResidual > 0) || bubbleIM.count || splashIM.count || vortex > 1e-4 || ripples.some(r => now - r.t < 2500));
 }
 let hudTimer = 0;
+// ?fps=1 shows a small frames-per-second counter (and the picture size used) in the corner
+const FPSBOX = /[?&]fps=1/.test(location.search) ? (() => { const d = document.createElement('div'); d.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.7);color:#7dffa0;font:13px monospace;padding:4px 8px;border-radius:6px;pointer-events:none'; document.body.appendChild(d); return d; })() : null;
+let fpsN = 0, fpsT = 0;
+function fpsTick(now) { fpsN++; if (now - fpsT > 500) { FPSBOX.textContent = Math.round(fpsN * 1000 / (now - fpsT)) + ' fps · ' + Math.round(DYN.cur * 100) + '% size · ' + tierName; fpsN = 0; fpsT = now; } }
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
@@ -6866,7 +6939,7 @@ function animate() {
   pipTick(dt);
   updateAnims(Math.min(0.12, (now - lastFrameTime0) / 1000));            // hand animations keep real speed on a slow device
   const busy = sceneIsBusy(now);
-  if (!busy && now - lastRenderTime < 66) return;
+  if (!busy && now - lastRenderTime < 250) return;      // idle: a still lab is redrawn only 4 times a second (cool phone, no jitter)
   lastRenderTime = now;
   if (busy) DeviceLayer.adaptTick(dt, now);       // pixel ratio and quality go down when slow AND come back up when fast
   if ((frameCount++ & 7) === 0) updateViewOffset();
@@ -6886,6 +6959,7 @@ function animate() {
   if (!lookDriven) followTick(dt);
   if (controls && !lookDriven) controls.update();
   if (renderer && scene && camera) renderFrame();
+  if (FPSBOX) fpsTick(now);
   watchTier(dt, busy, now);
   if (!bootDone) finishBoot();
 }
@@ -7020,7 +7094,7 @@ const DeviceLayer = (() => {
   const phone = () => window.matchMedia('(pointer: coarse)').matches && Math.min(window.innerWidth, window.innerHeight) < 700;
 
   // ---------- pixel budget ----------
-  const BUDGET = { high: 4.5e6, medium: 3.0e6, low: 2.0e6 };
+  const BUDGET = { high: 3.7e6, medium: 3.0e6, low: 2.0e6 };
   function targetPR() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     let budget = BUDGET[typeof tierName === 'string' ? tierName : 'medium'] || 3.0e6;
@@ -7040,23 +7114,9 @@ const DeviceLayer = (() => {
     else if (D.quality === 'smooth') { if (tierName !== 'medium' && tierName !== 'low') setTier('medium'); else if (tierName === 'high') setTier('medium'); }
   }
   // called every frame while the scene is busy: lowers quality when slow and now ALSO raises it again when fast
-  function adaptTick(dt, now) {
-    if (!renderer) return;
-    D.ema = D.ema * 0.92 + dt * 0.08;
-    if (!D.prCur) D.prCur = renderer.getPixelRatio();
-    const target = targetPR(), floor = window.innerWidth * window.innerHeight > 3e6 ? 0.75 : 1.0;
-    if (D.ema > 0.066 && D.prCur > floor && now - D.lastDown > 6000) {
-      D.lastDown = now; D.goodSince = 0; applyPR(Math.max(floor, D.prCur - 0.25)); D.ema = 0.02; return;
-    }
-    if (D.ema < 0.034) { if (!D.goodSince) D.goodSince = now; } else D.goodSince = 0;
-    if (D.goodSince && now - D.goodSince > 3000 && now - D.lastUp > 3000 && now - D.lastDown > 5000) {
-      D.lastUp = now;
-      if (D.prCur < target - 1e-3) { applyPR(Math.min(target, D.prCur + 0.25)); return; }
-      // the picture is already at full sharpness: let the quality tier come back up (one step, 12 s after any drop)
-      const i = TIER_ORDER.indexOf(tierName);
-      if (!forcedQ() && D.quality !== 'smooth' && i < TIER_ORDER.indexOf(D.baseTier) && now - lastTierDrop() > 8000) { setTier(TIER_ORDER[i + 1]); applyPR(targetPR()); }
-    }
-  }
+  // Fixed sharpness (smoothness fix): the pixel ratio is chosen once (and again on rotate / resize) and never
+  // goes up and down while working. Only a real emergency (under ~10 fps for a long time) lowers the tier (section 5).
+  function adaptTick(dt, now) { /* intentionally empty */ }
   let _tierDrop = 0;
   const lastTierDrop = () => _tierDrop;
   function noteTierDrop() { _tierDrop = performance.now(); }
@@ -7892,7 +7952,7 @@ function tubeLiquidUpdate(tb) {
 function labSpeed(rawDt) {
   const w = waitLeft();
   let ff = 1;
-  if (LAB.ffOn && !LAB.hold && w > 15 && !labBusy()) ff = (typeof autoRun !== 'undefined' && autoRun) ? 10 : 6;
+  if (LAB.ffOn && !LAB.hold && w > 5 && !labBusy()) ff = (typeof autoRun !== 'undefined' && autoRun) ? 10 : (w > 15 ? 6 : 4);
   LAB.ffNow = ff; return rawDt * ff * (window.TEST_TIME_SCALE || 1);
 }
 // lab seconds of "nothing to see" ahead (more than about 15 = worth fast-forwarding; 0 = watch at normal speed)
@@ -8094,7 +8154,7 @@ function steamStep(dt) {
 // ---------- the sounds of the test bench ----------
 function testSound(dt) {
   const roar = Math.max(HEAT.bath.flameK, HEAT.direct.flameK) * 0.5 + Math.min(HEAT.bath.flameK, HEAT.direct.flameK) * 0.2;
-  SFX.setLoop('roar', roar * 0.075);
+  SFX.setLoop('roar', roar * 0.011);
   const boil = LAB.bathT > 88 ? clamp01((LAB.bathT - 88) / 11) : 0;
   SFX.setLoop('boil', boil * 0.055 * (HEAT.bath.on || LAB.bathT > 97 ? 1 : 0.4), (L, t) => L.fl.frequency.setTargetAtTime(1200 + 400 * boil, t, 0.2));
   if (LAB.popSnd) { LAB.popSnd = false; if (boil > 0.5) SFX.gurgleTick && SFX.gurgleTick(0.9, 0.2); }
@@ -8580,6 +8640,214 @@ const TFX = {
   smellCard(text) { showToast('👃 ' + text, 'info'); },
   crystals(tb, colour, amount) { const t = testOf(tb.st.test); if (t) { t.ppt = t.ppt || {}; } tb.st.crystals = { colour, amount }; }
 };
+
+// =========================================================================
+// 12u. TOUCH LAYER (test engine v1: Experiments 8 to 14) AND THE WAIT CARD
+//   In manual mode the dock names the item to touch ("Tap the NaOH bottle on the reagent stand"), a soft ring marks it,
+//   and touching the right item does the step. A wrong item gives the usual "you forgot / not needed" messages.
+//   The camera frames the tube and that item together. 💡 Hint: first tap explains + blinks the ring, second tap does it.
+//   The wait card (timer ring, what to watch for, viva question) shows during heating / bath waits; fast-forward has a
+//   "Normal speed" button. Auto mode is not affected. Built once; every test lab gets it with no data.
+// =========================================================================
+const TOUCH = { on: !/[?&]touch=0/.test(location.search), ring: null, camKey: '', blinkUntil: 0 };
+const isAutoRun = () => typeof autoRun !== 'undefined' && !!autoRun;
+const cap1t = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+function touchSrcOf(rid) { const R = REAG[rid]; if (!R || !R.src) return null; const p = R.src.split(':'); return { kind: p[0], id: p[1] }; }
+let _bObj = {};
+function touchBurnerObj(key) {
+  if (_bObj[key]) return _bObj[key];
+  scene.traverse(o => { if (!_bObj[key] && o.userData && o.userData.tapAction === 'burner' && o.userData.burner === key) _bObj[key] = o; });
+  return _bObj[key];
+}
+function touchTubeOf() { const t = curTest(); return t ? curTube() : null; }
+function touchFreeTube() { const t = curTest(); if (!t) return null; const own = TUBES[TESTS.indexOf(t)]; return own && tubeIsUntouched(own) ? own : TUBES.find(tubeIsUntouched) || null; }
+// what to touch for the current step: { kind, id, text, obj() }
+function touchTarget(key) {
+  const t = curTest(); if (!t) return null;
+  const k = (key || currentStep().key).split(':'), tb = curTube();
+  switch (k[0]) {
+    case 'lightBath': return { kind: 'burner', id: 'bath', text: 'Tap the <b>water-bath burner</b> to light it', obj: () => touchBurnerObj('bath') };
+    case 'take': return { kind: 'tube', text: 'Tap a <b>clean test tube</b> in the rack', obj: () => { const f = touchFreeTube(); return f ? f.g : null; } };
+    case 'add': {
+      const R = REAG[k[1]], s = touchSrcOf(k[1]); if (!R || !s) return null;
+      if (s.kind === 'sample') return { kind: 'sample', text: `Tap the <b>SAMPLE</b> bottle`, obj: () => sampleBottle };
+      if (s.kind === 'side') return { kind: 'side', id: s.id, text: `Tap the <b>${R.name}</b> bottle on the side shelf`, obj: () => sideBottles[s.id] };
+      if (s.kind === 'rack') return { kind: 'stand', id: s.id, text: `Tap the <b>${R.name}</b> bottle on the reagent stand`, obj: () => rackBottle(s.id) };
+      return null;
+    }
+    case 'heat': return { kind: 'burner', id: 'direct', text: 'Tap the <b>burner</b> to heat the tube', obj: () => touchBurnerObj('direct') };
+    case 'bath': return { kind: 'bath', text: 'Tap the <b>boiling water bath</b> to put the tube in', obj: () => bathBeaker };
+    case 'pour': return { kind: 'curtube', text: 'Tap the <b>tube</b> to pour the acid down its side', obj: () => (tb || {}).g };
+    case 'cool': return { kind: 'curtube', text: 'Tap the <b>tube</b> to cool it under the tap', obj: () => (tb || {}).g };
+    case 'look': return { kind: 'curtube', text: 'Tap the <b>tube</b> to look closely', obj: () => (tb || {}).g };
+  }
+  return null;
+}
+function touchBusy() { return !TOUCH.on || isAutoRun() || labBusy() || (typeof lookMode !== 'undefined' && lookMode); }
+const ACT_OF = () => ({ pour: actPour, cool: actCool, look: actLook, heat: actFlame, bath: actBath });
+(function wrapTaps() {
+  const oSide = tapSide, oTube = tapTube, oBurner = toggleBurner, oStand = tapReagent, oSample = tapSample, oHT = handleTestTap;
+  const ridFor = (src, curKey) => {
+    const k = (curKey || currentStep().key).split(':');
+    if (k[0] === 'add' && REAG[k[1]] && REAG[k[1]].src === src) return k[1];
+    return Object.keys(REAG).find(r => REAG[r].src === src);
+  };
+  tapSide = function (id) { if (touchBusy() || !curTest()) return oSide(id); const rid = ridFor('side:' + id); if (!rid) return oSide(id); AudioSys.playClick(); SFX.clink && SFX.clink(); actAdd(rid); };
+  tapReagent = function (id) { if (touchBusy() || !curTest()) return oStand(id); const rid = ridFor('rack:' + id); if (!rid) return oStand(id); AudioSys.playClick(); SFX.clink && SFX.clink(); actAdd(rid); };
+  tapSample = function () { if (touchBusy() || !curTest()) return oSample(); const rid = ridFor('sample'); if (!rid) return oSample(); AudioSys.playClick(); actAdd(rid); };
+  tapTube = function (i) {
+    if (touchBusy() || !curTest()) return oTube(i);
+    const T = touchTarget(), cur = curTube(), tb = TUBES[i];
+    if (T && T.kind === 'tube' && tubeIsUntouched(tb)) return actTake();
+    if (T && (T.kind === 'curtube' || T.kind === 'burner' || T.kind === 'bath') && cur === tb) {
+      const f = ACT_OF()[currentStep().key.split(':')[0]]; if (f) return f();
+    }
+    return oTube(i);
+  };
+  toggleBurner = function (key) {
+    if (touchBusy() || !curTest()) return oBurner(key);
+    const T = touchTarget(), k = currentStep().key.split(':')[0];
+    if (k === 'lightBath' && key === 'bath') return actLightBath();
+    if (k === 'heat' && key === 'direct') return actFlame();
+    if (k === 'bath' && key === 'bath' && !HEAT.bath.on) return actLightBath();
+    return oBurner(key);
+  };
+  handleTestTap = function (a, t) {
+    if (a === 'bath') { if (!touchBusy() && curTest() && currentStep().key.split(':')[0] === 'bath') actBath(); else showToast('<b>Boiling water bath</b>: for the tests that are warmed in it (never heat Tollens’ reagent over a flame).', 'info'); return true; }
+    return oHT(a, t);
+  };
+})();
+const TOUCH_MAIN = ['act-light', 'act-take', 'act-add', 'act-heat', 'act-bath', 'act-pour', 'act-cool', 'act-look'];
+(function wrapDock() {
+  const oActs = stepActions, oHint = hintFor;
+  stepActions = function (key) {
+    const a = oActs(key); if (!TOUCH.on || isAutoRun()) return a;
+    const T = touchTarget(key); if (!T) return a;
+    const rest = a.filter(x => !(x && x[4] === 'main' && TOUCH_MAIN.includes(x[0])));
+    return [['act-prompt', '👉 ' + T.text, 'prompt']].concat(rest);
+  };
+  hintFor = function (key) {
+    const h = oHint(key); if (!h || !TOUCH.on) return h;
+    if (touchTarget(key)) { h.btn = 'act-prompt'; TOUCH.blinkUntil = performance.now() + 6000; }
+    return h;
+  };
+})();
+// ---- the glowing ring and the work view (same as the salt lab) ----
+function touchRingEnsure() {
+  if (TOUCH.ring) return TOUCH.ring;
+  const g = new THREE.RingGeometry(0.8, 1.0, 56); g.rotateX(-Math.PI / 2);
+  const m = new THREE.MeshBasicMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const r = new THREE.Mesh(g, m); r.renderOrder = 30; r.visible = false; r.userData.noBack = true; scene.add(r); TOUCH.ring = r; return r;
+}
+const _tb3 = new THREE.Box3(), _tv3 = new THREE.Vector3();
+function touchRingTick() {
+  const ring = touchRingEnsure(), now = performance.now();
+  const T = (!TOUCH.on || isAutoRun() || labBusy() || currentProcedure === 'B') ? null : touchTarget();
+  const o = T && T.obj ? T.obj() : null;
+  if (!o) { ring.visible = false; touchHaloHide(); return; }
+  _tb3.setFromObject(o); if (_tb3.isEmpty()) { ring.visible = false; touchHaloHide(); return; }
+  _tb3.getSize(_tv3); const cx = (_tb3.min.x + _tb3.max.x) / 2, cz = (_tb3.min.z + _tb3.max.z) / 2;
+  const rad = Math.max(_tv3.x, _tv3.z) * 0.62 + H(1.0);
+  const pulse = 0.5 + 0.5 * Math.sin(now / 380), blink = TOUCH.blinkUntil > now ? 1.0 : 0.55;
+  ring.position.set(cx, _tb3.min.y + 0.012, cz); ring.scale.set(rad * (1 + 0.1 * pulse), 1, rad * (1 + 0.1 * pulse));
+  ring.material.opacity = (0.25 + 0.5 * pulse) * blink; ring.visible = true;
+  touchHaloTick(T, pulse, blink);
+}
+// ---- soft glow shell around the item + a name tag floating above it (so the right bottle is found at once) ----
+function touchHaloEnsure() {
+  if (TOUCH.halo) return TOUCH.halo;
+  const g = new THREE.CylinderGeometry(1, 1, 1, 28, 1, true);
+  const m = new THREE.MeshBasicMaterial({ color: 0x8fdcff, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide });
+  const h = new THREE.Mesh(g, m); h.renderOrder = 31; h.visible = false; h.userData.noBack = true; h.frustumCulled = false; scene.add(h);
+  try { collectBackHide(); } catch (e) {}
+  const tag = document.createElement('div'); tag.id = 'touch-tag';
+  tag.style.cssText = 'position:fixed;left:0;top:0;z-index:30;pointer-events:none;display:none;transform:translate(-50%,-100%);padding:6px 14px 8px;border-radius:12px;background:rgba(14,116,144,.94);color:#fff;font:800 20px/1.15 "Plus Jakarta Sans",Arial,sans-serif;letter-spacing:.2px;box-shadow:0 4px 18px rgba(0,0,0,.45);border:2px solid #bae6fd;white-space:nowrap;text-align:center';
+  document.body.appendChild(tag); TOUCH.halo = h; TOUCH.tag = tag; return h;
+}
+function touchHaloHide() { if (TOUCH.halo) TOUCH.halo.visible = false; if (TOUCH.tag) TOUCH.tag.style.display = 'none'; }
+const _hv = new THREE.Vector3();
+function touchHaloTick(T, pulse, blink) {
+  const h = touchHaloEnsure();
+  _tb3.getSize(_tv3);
+  const rx = Math.max(_tv3.x, _tv3.z) * 0.5 * 1.16 + 0.02;
+  h.position.set((_tb3.min.x + _tb3.max.x) / 2, (_tb3.min.y + _tb3.max.y) / 2, (_tb3.min.z + _tb3.max.z) / 2);
+  h.scale.set(rx, _tv3.y * 1.05 + 0.02, rx);
+  h.material.opacity = (0.16 + 0.34 * pulse) * (blink > 0.9 ? 1.25 : 1); h.visible = true;
+  const m = /<b>(.*?)<\/b>/.exec(T.text || ''), tag = TOUCH.tag;
+  if (!m || (typeof lookMode !== 'undefined' && lookMode)) { tag.style.display = 'none'; return; }
+  _hv.set(h.position.x, _tb3.max.y + 0.02, h.position.z).project(camera);
+  if (_hv.z > 1) { tag.style.display = 'none'; return; }
+  const x = (_hv.x * 0.5 + 0.5) * window.innerWidth, y = (-_hv.y * 0.5 + 0.5) * window.innerHeight - 6;
+  if (tag._txt !== m[1]) { tag._txt = m[1]; tag.innerHTML = m[1] + '<div style="font-size:14px;line-height:10px;margin-top:2px">▼</div>'; }
+  tag.style.left = Math.max(60, Math.min(window.innerWidth - 60, x)) + 'px'; tag.style.top = Math.max(96, y) + 'px'; tag.style.display = 'block';
+}
+function o0(T) { return !!(T && T.obj && T.obj()); }
+function touchWorkView(force) {
+  if (!TOUCH.on || isAutoRun() || labBusy() || currentProcedure === 'B' || (typeof lookMode !== 'undefined' && lookMode)) return;
+  const tb = curTube(), T = touchTarget(); if (!T) return;
+  if (tb && tb.loc !== 'rack') return;
+  const key = currentStep().key + '|' + (tb ? tb.i : -1);
+  if (!force && key === TOUCH.camKey) return; TOUCH.camKey = key;
+  if (o0(T) && ['stand', 'side', 'jar', 'dish', 'sample'].includes(T.kind)) {            // a bottle / jar is needed: the camera flies close to it, label facing the student
+    const ob = T.obj(), bx = new THREE.Box3().setFromObject(ob);
+    if (!bx.isEmpty()) {
+      if (T.kind === 'stand') bx.max.y = Math.min(bx.max.y, bx.min.y + H(14.6));            // whole bottle incl. stopper
+      bx.expandByVector(v3(H(3.5), H(T.kind === 'stand' ? 3.5 : 1.6), H(1.5)));
+      moveCamera(fitBox(bx, v3(0, T.kind === 'stand' ? 0.14 : 0.3, 1), 1.0), 1100); return;
+    }
+  }
+  const o = T.obj && T.obj(), box = new THREE.Box3(), fresh = touchFreeTube(), tubeObj = tb ? tb.g : (fresh && fresh.g);
+  if (tubeObj) box.expandByObject(tubeObj);
+  if (o) box.expandByObject(o);
+  if (box.isEmpty()) return;
+  box.expandByVector(v3(H(4), H(2), H(3)));
+  moveCamera(fitBox(box, v3(0.12, 0.3, 1), 1.1), 900);
+}
+function touchEnsureBathHit() {
+  if (typeof bathBeaker === 'undefined' || !bathBeaker || bathBeaker.userData.touchHit) return;
+  const hit = new THREE.Mesh(new THREE.CylinderGeometry(H(4.4), H(4.4), H(10), 12), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = H(5);
+  hit.userData.tapAction = 'bath'; bathBeaker.add(hit); bathBeaker.userData.touchHit = true;
+}
+let _touchKey = '', _touchKeyAt = 0, _vt0 = visualTick;
+visualTick = function () {
+  _vt0(); touchEnsureBathHit();
+  const now = performance.now();
+  if (!curTest()) { if (TOUCH.ring) TOUCH.ring.visible = false; touchHaloHide(); return; }
+  const k = currentStep().key + '|' + (curTube() ? curTube().i : -1);
+  if (k !== _touchKey) { _touchKey = k; _touchKeyAt = now; }
+  if (_touchKeyAt && now - _touchKeyAt > 650 && now - lastInteraction > 2500 && !labBusy()) { _touchKeyAt = 0; touchWorkView(false); }
+  touchRingTick();
+};
+// ---- the wait card (replaces the small fast-forward box) ----
+const WAIT = { vivaOpen: false, key: '', total: 0 };
+window.vivaToggle = function () { WAIT.vivaOpen = !WAIT.vivaOpen; AudioSys.playClick(); ffUI(true); };
+function waitInfo() {
+  const left = waitLeft(), tb = curTube(), t = curTest(); if (left <= 1.5) return null;
+  let label = 'Waiting';
+  if (tb && tb.loc === 'bath') label = 'In the boiling water bath'; else if (tb && tb.loc === 'flame') label = 'Heating over the flame';
+  else if (HEAT.bath.on && LAB.bathT < 99.5) label = 'The water bath is warming up';
+  if (label !== WAIT.key) { WAIT.key = label; WAIT.total = left; WAIT.vivaOpen = false; } else WAIT.total = Math.max(WAIT.total, left);
+  return { label, total: WAIT.total, left, watch: t && t.watch ? t.watch : 'the colour and any change in the tube', why: t && t.why ? t.why : '' };
+}
+function ffUI(force) {
+  const card = document.getElementById('wait-card'); if (!card) return;
+  const w = waitInfo(), show = !!w && w.total >= 4;
+  card.classList.toggle('on', show);
+  if (!show) { if (!w) WAIT.key = ''; return; }
+  const m = Math.floor(w.left / 60), s = Math.ceil(w.left % 60), pct = Math.max(0, Math.min(1, 1 - w.left / w.total));
+  card.style.setProperty('--p', (pct * 360).toFixed(1) + 'deg');
+  setText('wc-time', `${s === 60 ? m + 1 : m}:${String(s === 60 ? 0 : s).padStart(2, '0')}`);
+  setText('wc-title', w.label + (LAB.ffNow > 1 ? ` · ⏩ ×${LAB.ffNow}` : ' · normal speed'));
+  if (force || card.dataset.k !== WAIT.key) {
+    card.dataset.k = WAIT.key;
+    setText('wc-watch', 'Watch for: ' + w.watch);
+    const v = document.getElementById('wc-viva'), vq = document.getElementById('wc-vq'), has = !!w.why;
+    if (v) v.style.display = has ? '' : 'none';
+    if (vq) { vq.style.display = has && WAIT.vivaOpen ? '' : 'none'; vq.textContent = 'Viva: why is this done? ' + String(w.why).replace(/<[^>]+>/g, ''); }
+  }
+  const b = document.getElementById('wc-ff'); if (b) b.textContent = LAB.ffOn ? '▶ Normal speed' : '⏩ Fast-forward';
+}
+
 </script>
 <script>
 /* Lab loader: starts the lab only when the 3D engine (three.js) is inside this file.
