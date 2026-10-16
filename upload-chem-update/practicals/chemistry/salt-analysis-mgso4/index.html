@@ -9641,15 +9641,32 @@ function sbUpdate() {
 }
 let _sbVT = visualTick;
 visualTick = function () { _sbVT(); const now = performance.now(); if (now - SB.t > 250) { SB.t = now; try { sbUpdate(); } catch (e) {} } };
-// Back to work: always sits just above whatever bottom bar is really showing (laptop dock or phone tab bar)
-function sbBackPlace() {
+// ---- robust placement (v2): the bar always sits under the REAL top bar; on phones the title line also carries the step; Back to work never goes under a bottom bar ----
+function sbpFit() {
+  const sb = document.getElementById('stepbar'), tb = document.getElementById('top-bar'); if (!sb) return;
+  if (tb) { const r = tb.getBoundingClientRect(); if (r.bottom > 0) sb.style.top = Math.round(r.bottom + 6) + 'px'; }
+  sb.style.zIndex = 250;
+  try {
+    const mt = document.querySelector('#top-bar .mobile-title'), L = document.getElementById('sb-l');
+    if (mt && L && L.textContent) { if (!mt.dataset.base) mt.dataset.base = mt.textContent; const t = mt.dataset.base.split(':')[0] + ' · ' + L.textContent.split(' · ')[0]; if (mt.textContent !== t) mt.textContent = t; }
+  } catch (e) {}
+}
+function sbpBack() {
   const b = document.getElementById('cd-back'); if (!b || b.style.display === 'none') return;
+  const sb = document.getElementById('stepbar'), phone = window.matchMedia('(max-width: 700px), (max-height: 500px)').matches;
+  b.style.zIndex = 900; b.style.bottom = 'auto';
+  if (phone) { // phone: just under the step bar at the top, where no bottom bar can cover it
+    const tb = document.getElementById('top-bar'); const base = sb && sb.style.display !== 'none' ? sb.getBoundingClientRect().bottom : (tb ? tb.getBoundingClientRect().bottom : 60);
+    b.style.top = Math.round(base + 8) + 'px'; return;
+  }
   let top = window.innerHeight;
   ['mobile-stack', 'win-controls'].forEach(id => { const e = document.getElementById(id); if (!e) return; const cs = getComputedStyle(e); if (cs.display === 'none' || cs.visibility === 'hidden') return; const r = e.getBoundingClientRect(); if (r.height > 4 && r.bottom > window.innerHeight * 0.5) top = Math.min(top, r.top); });
-  b.style.bottom = Math.round(window.innerHeight - top + 14) + 'px'; b.style.zIndex = 900;
+  b.style.top = Math.max(60, Math.round(top - b.offsetHeight - 14)) + 'px';
 }
-let _sbVT2 = visualTick;
-visualTick = function () { _sbVT2(); const now = performance.now(); if (now - (SB.t2 || 0) > 300) { SB.t2 = now; try { sbBackPlace(); } catch (e) {} } };
+let sbpcb = cdBtn; cdBtn = function (s) { sbpcb(s); try { sbpFit(); sbpBack(); } catch (e) {} };
+let sbpvt = visualTick; visualTick = function () { sbpvt(); const n = performance.now(); if (n - (window.__sbpT || 0) > 200) { window.__sbpT = n; try { sbpFit(); sbpBack(); } catch (e) {} } };
+window.addEventListener('resize', () => { try { sbpFit(); sbpBack(); } catch (e) {} });
+
 // the guess pop-up shows the salt that the chosen anion + cation make
 document.addEventListener('change', e => {
   if (!e.target || (e.target.id !== 'g-an' && e.target.id !== 'g-ca')) return;
