@@ -433,6 +433,13 @@
                 </div>
                 <div class="adm-card">
                     <div class="adm-card__head">
+                        <h2 class="adm-card__title">Practical labs: use and speed</h2>
+                    </div>
+                    <p class="adm-note">How often each lab is opened, how long people stay, and how smoothly it runs on their devices. A lab with many people leaving within 20 s or many "laggy" runs needs a look.</p>
+                    <div id="admLabStats" class="adm-list"></div>
+                </div>
+                <div class="adm-card">
+                    <div class="adm-card__head">
                         <h2 class="adm-card__title">Who needs a hand</h2>
                         <span id="admStuckCount" class="adm-card__sub"></span>
                     </div>
@@ -495,8 +502,9 @@
                     <div class="adm-bar">
                         <input type="search" id="adminRosterSearch" class="adm-input adm-input--grow" placeholder="Search people…" autocomplete="off">
                         <select id="admPeopleSort" class="adm-select" aria-label="Sort">
+                            <option value="active">Most active time</option>
                             <option value="recent">Latest activity</option>
-                            <option value="time">Most time</option>
+                            <option value="time">Most time on site</option>
                             <option value="name">Name A–Z</option>
                         </select>
                         <button type="button" id="adminExportBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Export CSV</button>
@@ -721,7 +729,7 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=1"></script>
-    <script defer src="script.js?v=52"></script>
+    <script defer src="script.js?v=53"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

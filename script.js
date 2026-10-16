@@ -1023,6 +1023,7 @@
       const ep = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
       if (ep && ep.indexOf("PASTE_YOUR") !== 0) fetch(`${ep}?action=ping`).catch(() => {});
     } catch (e) {}
+    try { const em = SITE_CONFIG.session && SITE_CONFIG.session.expiryMinutes; localStorage.setItem("c12_expmin", String(typeof em === "number" ? em : 15)); } catch (e) {}
     let saved = readSession();
     if (!saved) {
       // "Keep me signed in" ticked earlier on this device: pick the session back up.
@@ -1073,6 +1074,11 @@
             ? "Developer tools were detected again. Your ID has been recorded and your account may now be suspended."
             : "Developer tools were detected, so you have been signed out. Your ID has been recorded. If you try this again, your account will be suspended.");
         }
+      }
+    } catch (e) {}
+    try {
+      if (!gate.classList.contains("hidden") && /^practicals\//i.test(new URLSearchParams(location.search).get("next") || "")) {
+        showGateError("Please sign in to open Practicals.");
       }
     } catch (e) {}
     nameForm.addEventListener("submit", onNameSubmit);
@@ -1972,6 +1978,12 @@
     // once: replaceState strips it from the URL immediately after, so
     // a later reload or manual "Home" tap behaves completely normally.
     const qs = new URLSearchParams(location.search);
+    // Sent here by a Practicals page because they weren't signed in: now they are, so take them back.
+    const nextPath = qs.get("next");
+    if (nextPath && /^practicals\/[a-z0-9\/_-]*$/i.test(nextPath)) {
+      location.replace(APP_BASE + nextPath);
+      return;
+    }
     const requestedSubject = qs.get("subject");
     const requestedFile = qs.get("file"); // a shared link to one PDF
     const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
@@ -4859,7 +4871,7 @@
     overview: { activity: [], filesToday: 0, logRows: 0 },
     bandwidth: null, keyMode: "", loadedAt: 0
   };
-  const peopleUI = { filter: "all", sort: "recent", selected: new Set() };
+  const peopleUI = { filter: "all", sort: "active", selected: new Set() };
   const queueSel = new Set();
   const bannerState = { error: "", partial: "", legacy: false };
 
@@ -5288,6 +5300,21 @@
     const slow = (d.slowToday || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${sec(x.ms)} &middot; ${whenHtml(x.at)}</span></div>`).join("");
     host.innerHTML = `<div class="adm-row"><span class="adm-row__title">Typical login</span><span class="adm-row__meta"><b>${sec(d.median)}</b></span></div><div class="adm-row"><span class="adm-row__title">Slowest 1 in 10</span><span class="adm-row__meta">${sec(d.p90)}</span></div><div class="adm-row"><span class="adm-row__title">Slowest ever (7 days)</span><span class="adm-row__meta">${sec(d.slowest)}</span></div><div class="adm-row"><span class="adm-row__title">Today</span><span class="adm-row__meta">${d.loginsToday || 0} logins &middot; <b>${d.failsToday || 0}</b> where the check didn't finish</span></div>${slow ? `<p class="adm-note" style="margin:10px 0 4px">Slowest logins today</p>${slow}` : ""}<p class="adm-note" style="margin:10px 0 4px">Last 7 days</p>${rows}`;
   }
+  async function loadLabStats() {
+    const host = $id("admLabStats"); if (!host) return;
+    const d = await adminFetch("labStats");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.labs || [];
+    if (!l.length) { host.innerHTML = emptyMsg("No lab has been opened yet."); return; }
+    const mins = (sec) => (sec >= 90 ? Math.round(sec / 60) + " min" : sec + " s");
+    host.innerHTML = l.map((x) => {
+      const smooth = x.measured ? `<span class="${x.laggyPct >= 30 ? "adm-tag adm-tag--bad" : x.laggyPct >= 10 ? "adm-tag adm-tag--brass" : "adm-tag adm-tag--good"}">${x.medianFps} fps &middot; ${x.laggyPct}% laggy</span>` : '<span class="adm-row__meta">speed: not measured yet</span>';
+      const short = x.opens ? Math.round(100 * x.shortStays / x.opens) : 0;
+      const slow = (x.slowDevices || []).map((v) => `${esc(v.dev)} (${v.fps} fps${v.n > 1 ? ", " + v.n + "\u00D7" : ""})`).join(", ");
+      const extra = [x.noWebgl ? `${x.noWebgl} couldn't start 3D` : "", x.software ? `${x.software} on software graphics (slow)` : ""].filter(Boolean).join(" \u00B7 ");
+      return `<div class="adm-row" style="flex-wrap:wrap"><span class="adm-row__title">${esc(x.lab)}</span><span class="adm-row__meta">${x.opens} ${x.opens === 1 ? "open" : "opens"} &middot; ${x.people} ${x.people === 1 ? "person" : "people"} &middot; stay ${x.avgSeconds ? esc(mins(x.avgSeconds)) : "\u2013"} &middot; ${short}% left within 20 s</span><span style="flex-basis:100%">${smooth}</span>${slow ? `<span class="adm-row__meta" style="flex-basis:100%">Struggling on: ${slow}</span>` : ""}${extra ? `<span class="adm-row__meta" style="flex-basis:100%">${esc(extra)}</span>` : ""}</div>`;
+    }).join("");
+  }
   async function refreshTidyUI() {
     const st = $id("admTidyState"); if (!st) return;
     const r = await adminFetch("tidyStatus");
@@ -5377,7 +5404,7 @@
   let secondaryRun = 0;
   async function runSecondaryLoaders() {
     const my = ++secondaryRun;
-    const steps = [loadStuck, loadResetRequests, loadTimeStats, loadClassProgress, loadSharedAccounts, loadLoginSpeed, refreshAuthUI, loadClientErrors, loadDevtools];
+    const steps = [loadStuck, loadResetRequests, loadTimeStats, loadClassProgress, loadSharedAccounts, loadLoginSpeed, loadLabStats, refreshAuthUI, loadClientErrors, loadDevtools];
     for (const fn of steps) {
       if (my !== secondaryRun || !adminPresenceTimer) return; // a newer refresh started, or admin was closed
       try { await fn(); } catch {}
@@ -5837,6 +5864,7 @@
     const sort = peopleUI.sort;
     list = list.slice().sort((a, b) => {
       if (sort === "name") return String(a.name).localeCompare(String(b.name));
+      if (sort === "active") { const ta = timeFor(a), tb = timeFor(b); return ((tb && tb.active) || 0) - ((ta && ta.active) || 0) || (b.totalSessionSeconds || 0) - (a.totalSessionSeconds || 0); }
       if (sort === "time") return (b.totalSessionSeconds || 0) - (a.totalSessionSeconds || 0);
       return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
     });
