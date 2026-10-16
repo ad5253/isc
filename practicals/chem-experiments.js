@@ -57,5 +57,54 @@ window.CHEMISTRY_EXPERIMENTS = [
     title: "Characteristic Tests of Glucose",
     blurb: "Carry out the characteristic tests for glucose and observe what each one shows.",
     tag: "Qualitative tests"
+  },
+  {
+    slug: "proteins",
+    num: 9,
+    title: "Characteristic Tests of Proteins",
+    blurb: "Test a protein solution with the standard reagents and record what each test shows.",
+    tag: "Organic tests"
+  },
+  {
+    slug: "glycerol",
+    num: 10,
+    title: "Characteristic Tests of Glycerol",
+    blurb: "Carry out the characteristic tests for glycerol (a polyhydric alcohol) and note the observations.",
+    tag: "Organic tests"
+  },
+  {
+    slug: "formaldehyde",
+    num: 11,
+    title: "Characteristic Tests of Formaldehyde",
+    blurb: "Carry out the characteristic tests for formaldehyde and see how an aldehyde behaves.",
+    tag: "Organic tests"
+  },
+  {
+    slug: "acetone",
+    num: 12,
+    title: "Characteristic Tests of Acetone",
+    blurb: "Carry out the characteristic tests for acetone and tell a ketone apart from an aldehyde.",
+    tag: "Organic tests"
+  },
+  {
+    slug: "benzoic-acid",
+    num: 13,
+    title: "Characteristic Tests of Benzoic Acid",
+    blurb: "Carry out the characteristic tests for benzoic acid, an aromatic carboxylic acid.",
+    tag: "Organic tests"
+  },
+  {
+    slug: "aniline",
+    num: 14,
+    title: "Characteristic Tests of Aniline",
+    blurb: "Carry out the characteristic tests for aniline, an aromatic primary amine.",
+    tag: "Organic tests"
+  },
+  {
+    slug: "salt-analysis-mgso4",
+    num: 15,
+    title: "Salt Analysis I \u2013 Magnesium Sulphate (MgSO\u2084)",
+    blurb: "Identify the cation and anion in an unknown salt using dry and wet tests.",
+    tag: "Salt analysis"
   }
 ];

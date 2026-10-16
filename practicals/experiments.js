@@ -88,6 +88,12 @@ window.PHYSICS_EXPERIMENTS = [
     title: "Focal Length of a Concave Mirror (u–v Method)",
     blurb: "Use two pins on an optical bench, remove parallax and find the focal length of a concave mirror.",
     tag: "3D"
+  },
+  {
+    slug: "convex-mirror",
+    num: 12,
+    title: "Focal Length of a Convex Mirror using a Convex Lens",
+    blurb: "Form a real image with a convex lens, place the convex mirror in the beam and find its focal length from the pin position.",
+    tag: "3D"
   }
-  // , { slug: "...", num: 12, title: "...", blurb: "...", tag: "3D" }
 ];

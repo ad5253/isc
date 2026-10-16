@@ -61,6 +61,11 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://ad5253.github.io/isc/practicals/physics/convex-mirror/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>https://ad5253.github.io/isc/practicals/physics/internal-resistance/</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
@@ -127,6 +132,41 @@
   </url>
   <url>
     <loc>https://ad5253.github.io/isc/practicals/chemistry/glucose-tests/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/proteins/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/glycerol/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/formaldehyde/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/acetone/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/benzoic-acid/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/aniline/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://ad5253.github.io/isc/practicals/chemistry/salt-analysis-mgso4/</loc>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
