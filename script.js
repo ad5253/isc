@@ -1010,7 +1010,7 @@
       logEventBeacon("session_end", currentName, reason || "logout", undefined, { duration: seconds });
     }
     stopHeartbeat();
-    try { sessionStorage.removeItem("c12_tm"); } catch (e) {}
+    try { sessionStorage.removeItem("c12_tm"); sessionStorage.removeItem("c12_authok"); sessionStorage.removeItem("c12_openfile"); } catch (e) {}
     try { localStorage.removeItem("c12_keep"); } catch (e) {}
     clearSession();
     location.reload();
@@ -1049,7 +1049,24 @@
       // Warm the checks while the person is still typing their name.
       getDeviceId().catch(() => {}); getClientIp().catch(() => {}); fetchLoginCheck("").catch(() => {});
     }
-    if (saved && (await isSuspended(saved))) {
+    // Page reloaded (or the phone restarted the tab) while someone was signed in and was checked a
+    // moment ago: go straight back in with no login screen and no waiting. The check is repeated
+    // quietly in the background and only sends them to the login page if it really fails.
+    const recentlyChecked = !!saved && (() => { try { return Date.now() - Number(sessionStorage.getItem("c12_authok") || 0) < 10 * 60 * 1000; } catch (e) { return false; } })();
+    const endResume = () => document.documentElement.classList.remove("resuming");
+    setTimeout(endResume, 9000); // safety: never leave the splash up forever
+    if (saved && recentlyChecked) {
+      gate.classList.add("hidden");
+      showApp(saved);
+      endResume();
+      Promise.all([isSuspended(saved), isAuthorized(saved)]).then(([sus, ok]) => {
+        if (sus || !ok) {
+          try { localStorage.removeItem("c12_keep"); sessionStorage.removeItem("c12_authok"); } catch (e) {}
+          clearSession();
+          location.reload();
+        }
+      }).catch(() => {});
+    } else if (saved && (await isSuspended(saved))) {
       try { localStorage.removeItem("c12_keep"); } catch (e) {}
       clearSession();
       gate.classList.remove("hidden");
@@ -1063,6 +1080,7 @@
       gate.classList.remove("hidden");
       app.classList.add("hidden");
     }
+    endResume();
 
     // Signed out by the developer-tools guard (see guard.js): explain why.
     try {
@@ -1331,6 +1349,10 @@
     viewerPages.addEventListener("touchmove", onViewerTouchMove, { passive: false });
     viewerPages.addEventListener("touchend", onViewerTouchEnd, { passive: true });
     viewerPages.addEventListener("touchcancel", onViewerTouchEnd, { passive: true });
+    viewerPages.addEventListener("wheel", onViewerWheel, { passive: false });
+    viewerPages.addEventListener("dblclick", onViewerDblClick);
+    // iOS Safari has its own pinch gesture events; keep it from zooming the whole page instead.
+    ["gesturestart", "gesturechange", "gestureend"].forEach((t) => viewerPages.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeViewer();
 
@@ -1947,6 +1969,7 @@
   }
 
   async function showApp(name) {
+    try { sessionStorage.setItem("c12_authok", String(Date.now())); } catch (e) {}
     currentName = name;
     sessionId = readSessionId() || makeId(); // reuses the one saved at login — a plain reload must NOT look like a different device logging in, or claimActiveSession below would kick out its own just-abandoned previous instance every single time
     sessionStart = Date.now();
@@ -1985,7 +2008,10 @@
       return;
     }
     const requestedSubject = qs.get("subject");
-    const requestedFile = qs.get("file"); // a shared link to one PDF
+    // A phone that restarted the tab while a PDF was open: put the person back in that PDF.
+    let restoreFile = null;
+    try { if (Date.now() - Number(sessionStorage.getItem("c12_alive") || 0) < 90000) restoreFile = sessionStorage.getItem("c12_openfile"); } catch (e) {}
+    const requestedFile = qs.get("file") || restoreFile; // a shared link to one PDF (or the one that was open before a reload)
     const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
     const requestedView = qs.get("view");   // coming back from the Practicals pages: ?view=progress
     const requestedQuery = qs.get("q");     // ... or a search typed up there
@@ -3769,8 +3795,16 @@
     }
   }
   const ZOOM_MIN = 0.5;
-  const ZOOM_MAX = 3;
+  const ZOOM_MAX = 4;
   const ZOOM_INCREMENT = 0.25;
+  // Memory limits for the page images (phones kill the whole tab if these are exceeded,
+  // which showed up as the site "logging out" and coming back a few seconds later).
+  const IS_TOUCH_DEVICE = (typeof matchMedia === "function") && matchMedia("(pointer: coarse)").matches;
+  const RENDER_MAX_PIXELS = IS_TOUCH_DEVICE ? 6e6 : 14e6;   // largest single page image
+  const LIVE_PIXEL_BUDGET = IS_TOUCH_DEVICE ? 36e6 : 90e6;   // all page images together
+  const RENDER_ZONE = 1200;                                    // px above/below the screen that stay rendered
+  const EVICT_DISTANCE = RENDER_ZONE + 1500;                   // pages farther than this are freed
+  let renderEpoch = 0;                                         // bumped on every zoom so stale renders are dropped
 
   // ── Viewer viewport pinning ──────────────────────────────
   // In-app browsers (WhatsApp's, Chrome Custom Tabs, etc.) animate
@@ -3915,6 +3949,7 @@
   }
 
   let currentPdfIsDedicated = false; // true only when currentPdf is its own full-download copy, not the shared thumbnail document
+  let viewerAliveTimer = 0;   // while a PDF is open: "this page is alive" stamp, used to reopen it after a phone-forced reload
   let currentPdfPath = null; // tracks which file's loading task to evict from cache once this document is destroyed
 
   let lastFocusBeforeViewer = null;
@@ -3939,6 +3974,10 @@
     maybeShowViewerHint();
     endCurrentView(); // in case a different PDF was already open — close out its timer first
     currentPdfPath = path;
+    try { sessionStorage.setItem("c12_openfile", path); sessionStorage.setItem("c12_alive", String(Date.now())); } catch (e) {}
+    clearInterval(viewerAliveTimer);
+    viewerAliveTimer = setInterval(() => { try { sessionStorage.setItem("c12_alive", String(Date.now())); } catch (e) {} }, 4000);
+    resetZoomState();
     startStuckPageWatchdog();
     viewerName.textContent = name;
     viewer.classList.remove("hidden");
@@ -4125,6 +4164,8 @@
     wrap.dataset.rendering = "1";
     wrap.dataset.renderStartedAt = String(Date.now()); // lets the stuck-page watchdog below spot a render that never finished
     const myToken = viewerLoadToken;
+    const myEpoch = renderEpoch;
+    const isStale = () => myToken !== viewerLoadToken || myEpoch !== renderEpoch;
     const pdf = currentPdf;
     const dpr = window.devicePixelRatio || 1;
 
@@ -4132,7 +4173,7 @@
     // now called through — see queuePageRender — actually knows when
     // this page is done and can start the next queued one.
     return withTimeout(pdf.getPage(pageNum), 8000, "Page load timed out").then((page) => {
-      if (myToken !== viewerLoadToken) {
+      if (isStale()) {
         delete wrap.dataset.rendering;
         return;
       }
@@ -4146,7 +4187,10 @@
       wrap.style.width = `${displayWidth}px`;
       wrap.style.height = `${displayHeight}px`;
 
-      const renderScale = (displayWidth / unscaledViewport.width) * dpr;
+      let renderScale = (displayWidth / unscaledViewport.width) * dpr;
+      // Never make a page image bigger than the device can safely hold.
+      const wantPixels = (unscaledViewport.width * renderScale) * (unscaledViewport.height * renderScale);
+      if (wantPixels > RENDER_MAX_PIXELS) renderScale *= Math.sqrt(RENDER_MAX_PIXELS / wantPixels);
       const viewport = page.getViewport({ scale: renderScale });
 
       const canvas = document.createElement("canvas");
@@ -4163,12 +4207,14 @@
         "Page render timed out"
       ).then(() => {
         if (activeRenderTasks.get(wrap) === renderTask) activeRenderTasks.delete(wrap);
-        if (myToken !== viewerLoadToken) {
+        if (isStale()) {
           delete wrap.dataset.rendering;
+          try { canvas.width = 0; canvas.height = 0; } catch (e) {}
           return;
         }
         delete wrap.dataset.rendering;
         wrap.dataset.rendered = "1";
+        delete wrap.dataset.stale;
 
         drawWatermark(ctx, canvas);
 
@@ -4178,8 +4224,9 @@
 
         // Swap canvas safely: remove any existing canvas and append new one (no flash)
         const oldCanvas = wrap.querySelector("canvas.viewer__page");
-        if (oldCanvas) oldCanvas.remove();
+        if (oldCanvas) { try { oldCanvas.width = 0; oldCanvas.height = 0; } catch (e) {} oldCanvas.remove(); }
         wrap.appendChild(canvas);
+        evictFarPages(); // keep memory bounded: free page images that are far from the screen
 
         // Remove old annotation layer if present
         const oldAnno = wrap.querySelector(".annotationLayer");
@@ -4203,7 +4250,7 @@
         // depends on an external class matching, or on a pdf.js
         // feature this build may or may not actually expose.
         page.getAnnotations({ intent: "display" }).then((annots) => {
-          if (myToken !== viewerLoadToken || !annots || !annots.length) return;
+          if (isStale() || !annots || !annots.length) return;
           try {
             const cssScale = displayWidth / unscaledViewport.width;
             const annoViewport = page.getViewport({ scale: cssScale });
@@ -4314,7 +4361,7 @@
         const pageNum = Number(wrap.dataset.pageNum);
         queuePageRender(() => renderPageInto(wrap, pageNum), pageNum);
       });
-    }, { root: viewerPages, rootMargin: "2000px 0px 2000px 0px" });
+    }, { root: viewerPages, rootMargin: `${RENDER_ZONE}px 0px ${RENDER_ZONE}px 0px` });
 
     // Thumbnail strip observer
     thumbObserver2 = new IntersectionObserver((entries) => {
@@ -4546,6 +4593,7 @@
       });
       updateCurrentPageDisplay(closestPage);
       highlightThumbnail(closestPage);
+      evictFarPages();
     }, 80);
   }
 
@@ -4592,129 +4640,190 @@
     return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   }
 
-  // ── Flicker-Free Synchronous Zoom ────────────────────────
-  // Resizes page containers immediately via cached aspect ratios (0 promises, 1ms),
-  // scales existing canvases with zero flicker, and re-renders visible pages at high DPI.
-  function setZoom(next, pinchAnchor) {
-    next = Math.round(clampZoom(next) * 100) / 100;
-    if (!currentPdf || next === viewerZoom) {
-      if (pagesInner) pagesInner.style.transform = "";
+  // ── Zoom engine (pinch, double-tap, buttons, Ctrl+wheel) ────────────────
+  // Two stages, like the big PDF apps:
+  //  1) PREVIEW: while fingers move (or a button is pressed) the whole page stack is
+  //     moved/scaled with a GPU transform. It follows both the pinch AND the movement of the
+  //     fingers, costs almost nothing, and never touches the layout.
+  //  2) COMMIT: when the gesture ends, the pages are resized once, the scroll position is
+  //     set so the spot under the fingers stays under the fingers, and only the pages
+  //     near the screen are redrawn sharp. The old (stretched) image stays visible until
+  //     the new one is ready, so nothing blinks.
+  let zg = null;               // the zoom gesture in progress
+  let zoomCommitTimer = 0;
+  let pinch = null;            // two-finger state
+  let tapStart = null, lastTap = null;
+
+  function listWraps() { return pagesInner ? Array.from(pagesInner.querySelectorAll(".viewer__page-wrap")) : []; }
+
+  // The page (and the spot on it) that is under a screen point — stays put through the zoom.
+  function pickAnchorAt(cx, cy) {
+    const wraps = listWraps();
+    let best = null, bestD = Infinity;
+    for (let i = 0; i < wraps.length; i++) {
+      const r = wraps[i].getBoundingClientRect();
+      const d = cy < r.top ? r.top - cy : (cy > r.bottom ? cy - r.bottom : 0);
+      if (d < bestD) { bestD = d; best = { wrap: wraps[i], r }; if (d === 0) break; }
+    }
+    if (!best) return null;
+    const r = best.r;
+    return {
+      wrap: best.wrap,
+      fx: r.width ? (cx - r.left) / r.width : 0.5,
+      fy: r.height ? Math.min(1, Math.max(0, (cy - r.top) / r.height)) : 0.5
+    };
+  }
+
+  function zoomPreviewBegin(cx, cy) {
+    if (!currentPdf || !pagesInner) return null;
+    clearTimeout(zoomCommitTimer);
+    if (zg) return zg;
+    pagesInner.style.transition = "none";
+    pagesInner.style.transform = "";
+    const pr = pagesInner.getBoundingClientRect();
+    const anchor = pickAnchorAt(cx, cy);
+    if (!anchor) return null;
+    pagesInner.style.transformOrigin = `${cx - pr.left}px ${cy - pr.top}px`;
+    zg = { startZoom: viewerZoom, cur: viewerZoom, sx: cx, sy: cy, mx: cx, my: cy, anchor };
+    return zg;
+  }
+
+  function zoomPreviewApply(zoom, mx, my, animate) {
+    if (!zg || !pagesInner) return;
+    zoom = Math.min(ZOOM_MAX * 1.15, Math.max(ZOOM_MIN * 0.85, zoom)); // a little give past the limits, springs back on release
+    zg.cur = zoom; zg.mx = mx; zg.my = my;
+    pagesInner.style.transition = animate ? "transform 170ms cubic-bezier(.2,.8,.2,1)" : "none";
+    pagesInner.style.transform = `translate3d(${mx - zg.sx}px, ${my - zg.sy}px, 0) scale(${zoom / zg.startZoom})`;
+    const label = $("#viewerZoomLabel");
+    if (label) label.textContent = `${Math.round(clampZoom(zoom) * 100)}%`;
+  }
+
+  function zoomCommit() {
+    clearTimeout(zoomCommitTimer);
+    const g = zg;
+    zg = null;
+    if (!g || !pagesInner) return;
+    const next = Math.round(clampZoom(g.cur) * 100) / 100;
+
+    // Nothing really changed (or pushed past a limit): glide back.
+    if (!currentPdf || Math.abs(next - viewerZoom) < 0.005) {
+      pagesInner.style.transition = "transform 160ms ease-out";
+      pagesInner.style.transform = "";
+      const pi = pagesInner;
+      setTimeout(() => { if (pagesInner === pi && !zg) pi.style.transition = ""; }, 200);
+      updateZoomLabel();
       return;
     }
-    const prevZoom = viewerZoom;
+
     viewerZoom = next;
     updateZoomLabel();
-    viewerLoadToken++;
+    renderEpoch++; // anything still being drawn at the old zoom is now out of date
 
-    const allWraps = pagesInner ? Array.from(pagesInner.querySelectorAll(".viewer__page-wrap")) : [];
+    const wraps = listWraps();
     const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
     const newWidth = Math.round(baseWidth * viewerZoom);
-
-    let restoreScroll;
-    if (pinchAnchor) {
-      const scaleRatio = next / prevZoom;
-      const targetContentX = pinchAnchor.contentX * scaleRatio;
-      const targetContentY = pinchAnchor.contentY * scaleRatio;
-      restoreScroll = () => {
-        viewerPages.scrollLeft = targetContentX - pinchAnchor.viewportOffsetX;
-        viewerPages.scrollTop = targetContentY - pinchAnchor.viewportOffsetY;
-      };
-    } else {
-      const maxScrollBefore = viewerPages.scrollHeight - viewerPages.clientHeight;
-      const scrollRatio = maxScrollBefore > 0 ? viewerPages.scrollTop / maxScrollBefore : 0;
-      restoreScroll = () => {
-        const maxScrollAfter = viewerPages.scrollHeight - viewerPages.clientHeight;
-        viewerPages.scrollTop = maxScrollAfter > 0 ? scrollRatio * maxScrollAfter : 0;
-      };
-    }
-
-    // Step 1: Instantly and synchronously resize every wrap (cheap —
-    // just CSS, no network or pdf.js call needed for this part, since
-    // dimensions are already known from the cached aspect ratio).
-    //
-    // This used to ALSO unconditionally clear every wrap's "rendered"
-    // flag here, and Step 2 rebuilt the observer and re-observed
-    // everything with a generous 2000px lookahead — meaning EVERY
-    // page within that margin (often 5-8+ pages, not just the 1-2
-    // actually on screen) fired a full re-fetch-and-re-render all at
-    // once, on every single zoom step. That simultaneous burst of
-    // work was the actual cause of the pinch/zoom flicker and the
-    // 2-3 second lag: nothing was broken, it was doing far more work
-    // than a zoom change needs. Now only pages that are BOTH already
-    // rendered AND actually visible right now refresh immediately; a
-    // previously-rendered page currently off-screen just gets marked
-    // stale and quietly re-renders next time it naturally scrolls
-    // into view — the observer below (left running throughout,
-    // watching the same wraps) already does that on its own.
-    const viewportRect = viewerPages.getBoundingClientRect();
-    const toRefreshNow = [];
-    allWraps.forEach((wrap) => {
+    wraps.forEach((wrap) => {
       const aspect = Number(wrap.dataset.aspect) || 1.414;
       const newHeight = Math.round(newWidth * aspect);
       wrap.style.width = `${newWidth}px`;
       wrap.style.height = `${newHeight}px`;
-
       const annoLayer = wrap.querySelector(".annotationLayer");
-      if (annoLayer) {
-        annoLayer.style.width = `${newWidth}px`;
-        annoLayer.style.height = `${newHeight}px`;
-      }
-
-      cancelActiveRender(wrap); // a render for this page may genuinely still be running from before the zoom — cancel it explicitly rather than abandoning it, since pdf.js can't safely run two render() calls on the same page at once
-
-      if (!wrap.dataset.rendered) return; // never rendered — nothing to refresh, the observer renders it normally whenever it's actually scrolled to
-      delete wrap.dataset.rendered;
+      if (annoLayer) { annoLayer.style.width = `${newWidth}px`; annoLayer.style.height = `${newHeight}px`; }
+      cancelActiveRender(wrap);
       delete wrap.dataset.rendering;
-
-      const wrapRect = wrap.getBoundingClientRect();
-      const isVisibleNow = wrapRect.bottom > viewportRect.top && wrapRect.top < viewportRect.bottom;
-      if (isVisibleNow) toRefreshNow.push(wrap);
+      if (wrap.dataset.rendered) { delete wrap.dataset.rendered; wrap.dataset.stale = "1"; }
     });
 
-    if (pagesInner) pagesInner.style.transform = "";
+    pagesInner.style.transition = "none";
+    pagesInner.style.transform = "";
+    pagesInner.style.transformOrigin = "";
 
-    restoreScroll();
+    // Keep the spot that was under the fingers under the fingers.
+    const wr = g.anchor.wrap.getBoundingClientRect();
+    viewerPages.scrollLeft += (wr.left + g.anchor.fx * wr.width) - g.mx;
+    viewerPages.scrollTop += (wr.top + g.anchor.fy * wr.height) - g.my;
 
-    // The existing observer is left connected throughout — no need to
-    // disconnect/rebuild/re-observe it here, since it's still watching
-    // the exact same wrap elements (none were removed from the DOM),
-    // and every wrap's aspect/size is already correct from Step 1
-    // above. Only the handful of pages actually on screen right now
-    // refresh immediately; everything else stays lazy, exactly like a
-    // first-time render does.
-    toRefreshNow.forEach((wrap) => {
-      const pageNum = Number(wrap.dataset.pageNum);
-      queuePageRender(() => renderPageInto(wrap, pageNum), pageNum, { priority: true });
+    refreshZoomRender(wraps);
+  }
+
+  // Redraw sharp only what is near the screen; free the rest (they redraw when scrolled back).
+  function refreshZoomRender(wraps) {
+    const vr = viewerPages.getBoundingClientRect();
+    const lo = vr.top - RENDER_ZONE, hi = vr.bottom + RENDER_ZONE;
+    const mid = (vr.top + vr.bottom) / 2;
+    const todo = [];
+    wraps.forEach((w) => {
+      const r = w.getBoundingClientRect();
+      const c = w.querySelector("canvas.viewer__page");
+      if (!(r.bottom > lo && r.top < hi)) { if (c) dropPageCanvas(w, c); delete w.dataset.stale; return; }
+      if (w.dataset.stale || !c) todo.push({ w, visible: r.bottom > vr.top && r.top < vr.bottom, d: Math.abs((r.top + r.bottom) / 2 - mid) });
+    });
+    todo.sort((a, b) => b.d - a.d); // farthest first, so the page you are looking at is queued last with priority (= runs first)
+    todo.forEach((t) => {
+      const n = Number(t.w.dataset.pageNum);
+      queuePageRender(() => renderPageInto(t.w, n), n, { priority: t.visible });
     });
   }
 
-  function zoomIn() {
-    setZoom(viewerZoom + ZOOM_INCREMENT);
+  function dropPageCanvas(w, c) {
+    try { c.width = 0; c.height = 0; } catch (e) {}
+    c.remove();
+    delete w.dataset.rendered;
+    const a = w.querySelector(".annotationLayer");
+    if (a) a.remove();
   }
 
-  function zoomOut() {
-    setZoom(viewerZoom - ZOOM_INCREMENT);
+  // Keeps memory bounded: page images far from the screen are freed, and the total is capped.
+  function evictFarPages() {
+    if (!pagesInner || viewer.classList.contains("hidden")) return;
+    const vr = viewerPages.getBoundingClientRect();
+    const lo = vr.top - EVICT_DISTANCE, hi = vr.bottom + EVICT_DISTANCE;
+    const zlo = vr.top - RENDER_ZONE, zhi = vr.bottom + RENDER_ZONE;
+    const mid = (vr.top + vr.bottom) / 2;
+    let total = 0;
+    const live = [];
+    pagesInner.querySelectorAll(".viewer__page-wrap[data-rendered]").forEach((w) => {
+      const c = w.querySelector("canvas.viewer__page");
+      if (!c) return;
+      const r = w.getBoundingClientRect();
+      if (r.bottom < lo || r.top > hi) { dropPageCanvas(w, c); return; }
+      total += c.width * c.height;
+      live.push({ w, c, d: Math.abs((r.top + r.bottom) / 2 - mid), inZone: r.bottom > zlo && r.top < zhi });
+    });
+    if (total > LIVE_PIXEL_BUDGET) {
+      live.sort((a, b) => b.d - a.d);
+      for (const e of live) {
+        if (total <= LIVE_PIXEL_BUDGET) break;
+        if (e.inZone) continue;
+        total -= e.c.width * e.c.height;
+        dropPageCanvas(e.w, e.c);
+      }
+    }
   }
 
-  // ── Pinch-to-zoom ────────────────────────────────────────
-  // Native pinch was disabled on purpose (touch-action: pan-x pan-y
-  // in CSS) because it just stretches the already-rendered canvas —
-  // pinch out far enough and it goes visibly blurry. This gives the
-  // same real pinch gesture back without that trade-off: while the
-  // fingers are moving, a cheap CSS transform on the pages wrapper
-  // tracks them live for instant visual feedback; the moment the
-  // gesture ends, the transform resets and a single real re-render
-  // happens at the new zoom level through the normal high-res path.
-  let pinchStartDist = null;
-  let pinchStartZoom = 1;
-  let pinchLiveZoom = null;
-  let pinchAnchor = null; // set at touchstart — the content-space point under the fingers, kept fixed for the whole gesture
+  // Zoom to a level with a short smooth animation (buttons, double-tap, keyboard, fit).
+  function zoomAnimated(target, cx, cy) {
+    if (!currentPdf || !pagesInner) return;
+    if (cx == null) {
+      const vr = viewerPages.getBoundingClientRect();
+      cx = vr.left + vr.width / 2;
+      cy = vr.top + vr.height / 2;
+    }
+    if (!zg && !zoomPreviewBegin(cx, cy)) return;
+    zoomPreviewApply(clampZoom(target), zg.mx, zg.my, true);
+    clearTimeout(zoomCommitTimer);
+    zoomCommitTimer = setTimeout(zoomCommit, 190);
+  }
+  function setZoom(next) { zoomAnimated(next); }
 
+  function zoomIn() { zoomAnimated(Math.round(((zg ? zg.cur : viewerZoom) + ZOOM_INCREMENT) * 100) / 100); }
+  function zoomOut() { zoomAnimated(Math.round(((zg ? zg.cur : viewerZoom) - ZOOM_INCREMENT) * 100) / 100); }
+
+  // ── Touch: pinch (with two-finger moving) and double-tap ──────────────
   function touchDistance(touches) {
     const [a, b] = touches;
     return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
   }
-
   function touchMidpoint(touches) {
     const [a, b] = touches;
     return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
@@ -4722,49 +4831,78 @@
 
   function onViewerTouchStart(e) {
     if (e.touches.length === 2 && currentPdf && pagesInner) {
-      pinchStartDist = touchDistance(e.touches);
-      pinchStartZoom = viewerZoom;
-
-      // Anchor the zoom to wherever the fingers actually are, not the
-      // center of the whole document (pagesInner's own default
-      // transform-origin) — for anything longer than one screen's
-      // worth of page, that center could be hundreds of pixels from
-      // where someone is actually pinching, which is exactly what made
-      // this feel uncontrollable: content zoomed from a point you
-      // weren't even looking at.
-      const mid = touchMidpoint(e.touches);
-      const rect = viewerPages.getBoundingClientRect();
-      const contentX = mid.x - rect.left + viewerPages.scrollLeft;
-      const contentY = mid.y - rect.top + viewerPages.scrollTop;
-      pagesInner.style.transformOrigin = `${contentX}px ${contentY}px`;
-      pinchAnchor = {
-        contentX,
-        contentY,
-        viewportOffsetX: mid.x - rect.left, // fingers' position relative to the viewer, not the page — this is what "under the fingers" gets restored to after the real re-render
-        viewportOffsetY: mid.y - rect.top
-      };
+      tapStart = null; lastTap = null;
+      if (zg) zoomCommit(); // a button zoom was still settling: finish it first
+      const m = touchMidpoint(e.touches);
+      if (!zoomPreviewBegin(m.x, m.y)) return;
+      pinch = { d0: Math.max(24, touchDistance(e.touches)) };
+      // Freeze native scrolling for the length of the pinch, so the page can't also scroll.
+      viewerPages.style.overflow = "hidden";
+    } else if (e.touches.length === 1) {
+      tapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };
+    } else {
+      tapStart = null;
     }
   }
 
   function onViewerTouchMove(e) {
-    if (e.touches.length === 2 && pinchStartDist && pagesInner) {
-      e.preventDefault();
-      const scale = touchDistance(e.touches) / pinchStartDist;
-      pinchLiveZoom = clampZoom(pinchStartZoom * scale);
-      pagesInner.style.transform = `scale(${pinchLiveZoom / pinchStartZoom})`;
+    if (pinch && zg && e.touches.length === 2) {
+      if (e.cancelable) e.preventDefault();
+      const m = touchMidpoint(e.touches);
+      zoomPreviewApply(zg.startZoom * touchDistance(e.touches) / pinch.d0, m.x, m.y, false);
+    } else if (tapStart && e.touches.length === 1) {
+      const t = e.touches[0];
+      if (Math.hypot(t.clientX - tapStart.x, t.clientY - tapStart.y) > 12) tapStart = null; // it's a scroll, not a tap
     }
   }
 
   function onViewerTouchEnd(e) {
-    if (pinchStartDist !== null && e.touches.length < 2) {
-      pinchStartDist = null;
-      const finalZoom = pinchLiveZoom;
-      const anchor = pinchAnchor;
-      pinchLiveZoom = null;
-      pinchAnchor = null;
-      if (finalZoom !== null) setZoom(finalZoom, anchor);
-      else if (pagesInner) pagesInner.style.transform = "";
+    if (pinch && e.touches.length < 2) {
+      pinch = null;
+      viewerPages.style.overflow = "";
+      zoomCommit();
+      tapStart = null; lastTap = null;
+      return;
     }
+    if (tapStart && e.touches.length === 0 && e.changedTouches && e.changedTouches.length === 1) {
+      const now = Date.now();
+      const ct = e.changedTouches[0];
+      const quick = now - tapStart.t < 300;
+      tapStart = null;
+      if (!quick) { lastTap = null; return; }
+      if (e.target && e.target.closest && e.target.closest("a, button, input, textarea")) { lastTap = null; return; }
+      if (lastTap && now - lastTap.t < 320 && Math.hypot(ct.clientX - lastTap.x, ct.clientY - lastTap.y) < 40) {
+        lastTap = null;
+        zoomAnimated(viewerZoom < 1.4 ? 2 : 1, ct.clientX, ct.clientY);
+      } else {
+        lastTap = { x: ct.clientX, y: ct.clientY, t: now };
+      }
+    }
+  }
+
+  // Laptop: Ctrl + scroll wheel (also a trackpad pinch) zooms smoothly around the pointer.
+  function onViewerWheel(e) {
+    if (!(e.ctrlKey || e.metaKey) || !currentPdf || !pagesInner) return;
+    e.preventDefault();
+    if (!zg && !zoomPreviewBegin(e.clientX, e.clientY)) return;
+    const f = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.01));
+    zoomPreviewApply(zg.cur * f, zg.mx, zg.my, false);
+    clearTimeout(zoomCommitTimer);
+    zoomCommitTimer = setTimeout(zoomCommit, 160);
+  }
+
+  // Mouse double-click zooms too (touch is handled above).
+  function onViewerDblClick(e) {
+    if (!currentPdf || !pagesInner) return;
+    if (e.target && e.target.closest && e.target.closest("a, button, input, textarea")) return;
+    zoomAnimated(viewerZoom < 1.4 ? 2 : 1, e.clientX, e.clientY);
+  }
+
+  function resetZoomState() {
+    clearTimeout(zoomCommitTimer);
+    zg = null; pinch = null; tapStart = null; lastTap = null;
+    if (viewerPages) viewerPages.style.overflow = "";
+    if (pagesInner) { pagesInner.style.transition = ""; pagesInner.style.transform = ""; pagesInner.style.transformOrigin = ""; }
   }
 
   function closeViewer() {
@@ -4775,6 +4913,9 @@
     viewer.style.top = "";
     viewer.style.height = "";
     viewerLoadToken++; // invalidate any render still in flight
+    resetZoomState();
+    clearInterval(viewerAliveTimer);
+    try { sessionStorage.removeItem("c12_openfile"); sessionStorage.removeItem("c12_alive"); } catch (e) {}
     pageRenderQueue = []; // drop anything still queued for the document we're about to destroy
     if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
     if (thumbObserver2) { thumbObserver2.disconnect(); thumbObserver2 = null; }
