@@ -1,0 +1,6778 @@
+// ============================================================
+//  CLASS 12 — STUDY INDEX — CORE LOGIC
+//  Name gate · Navigation · PDF thumbnails · Viewer · Logging
+// ============================================================
+
+(function () {
+  "use strict";
+
+  // The owner's account: every spelling of the name is a protected (name + password) account.
+  try {
+    var _pa = (typeof SITE_CONFIG !== "undefined" && SITE_CONFIG.protectedAccounts) || null;
+    if (_pa) {
+      _pa.usernames = _pa.usernames || [];
+      ["adnan", "adnan merchant", "adnan abbas merchant"].forEach(function (n) { if (_pa.usernames.indexOf(n) === -1) _pa.usernames.push(n); });
+    }
+  } catch (e) {}
+
+  // ── PDF.js setup ───────────────────────────────────────
+  // The PDF library (~350 KB) is no longer downloaded on the login
+  // screen — it starts loading the moment someone is signed in (or is
+  // awaited on demand), so login gets the bandwidth to itself.
+  let pdfLibPromise = null;
+  function ensurePdfLib() {
+    if (window.pdfjsLib) return Promise.resolve(true);
+    if (!pdfLibPromise) {
+      pdfLibPromise = new Promise((resolve) => {
+        const sc = document.createElement("script");
+        sc.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+        sc.onload = () => {
+          try { pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; } catch {}
+          resolve(!!window.pdfjsLib);
+        };
+        sc.onerror = () => { pdfLibPromise = null; resolve(false); }; // allow a retry next time
+        document.head.appendChild(sc);
+      });
+    }
+    return pdfLibPromise;
+  }
+
+  // A folder's thumbnails and the full viewer used to each call
+  // pdfjsLib.getDocument() independently — meaning a 30–40MB scanned
+  // PDF got fully fetched and parsed once for its thumbnail, then
+  // AGAIN from scratch the moment someone clicked to actually view it.
+  // This cache keeps the one loading task per file for the whole
+  // session, so opening the viewer after its thumbnail has already
+  // rendered reuses the same in-flight/completed load instead of
+  // starting over. Session-scoped only — closing the tab clears it,
+  // same as browser memory generally.
+  // Wraps any promise with a hard deadline — pdf.js doesn't always turn
+  // a stalled/blocked request into a clean rejection, it sometimes just
+  // hangs forever, and a hung promise anywhere in this file was the
+  // actual cause behind three different-looking symptoms: a folder's
+  // thumbnails crawling (one stuck request permanently occupying a
+  // concurrency slot), a PDF opening to a totally blank screen with no
+  // error (nothing downstream of the hung call ever got a chance to
+  // run), and jumping to a page that then never loads (its "currently
+  // rendering" flag never got cleared, so every retry silently no-oped
+  // forever). Every render path below is now wrapped with this.
+  function withTimeout(promise, ms, message) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message || "Timed out")), ms);
+      promise.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); }
+      );
+    });
+  }
+
+  // Same idea as withTimeout, but for a pdf.js RenderTask specifically.
+  // withTimeout alone only gives up on WAITING for the promise — it
+  // never told the actual render to stop, so a stalled render kept
+  // running in the background forever even after we'd moved on. pdf.js
+  // refuses to run a second render() on the same page while an old one
+  // is still alive, so that page would then silently break for the
+  // rest of the session: every future attempt to open it — a scroll, a
+  // retry tap, a link jump — would just no-op forever, exactly like a
+  // page that "works once, then never again." Calling renderTask.cancel()
+  // the moment we give up is what actually frees that page back up.
+  function withRenderTimeout(renderTask, ms, message) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        try { renderTask.cancel(); } catch (e) { /* already done */ }
+        reject(new Error(message || "Timed out"));
+      }, ms);
+      renderTask.promise.then(
+        (v) => { if (!settled) { clearTimeout(timer); settled = true; resolve(v); } },
+        (e) => { if (!settled) { clearTimeout(timer); settled = true; reject(e); } }
+      );
+    });
+  }
+
+  const pdfLoadingTasks = new Map();
+  function getPdfLoadingTask(path) {
+    if (!pdfLoadingTasks.has(path)) {
+      pdfLoadingTasks.set(path, makePdfLoadingTask(path));
+    }
+    return pdfLoadingTasks.get(path);
+  }
+
+  // ── Dedicated "open a specific PDF" loading path ────────────
+  // Separate on purpose from the thumbnail cache above. Thumbnails
+  // only ever need a sliver of each file (page 1) via range requests
+  // — browsing a folder of 14 PDFs should never trigger 14 full
+  // downloads. This path is only used when someone actually taps to
+  // open ONE of them: it downloads that single file in full before
+  // showing it, so once it's open, jumping to any page — including
+  // the very last one — never has to talk to the network again.
+  //
+  // This depends on the Cloudflare Worker tolerating a plain,
+  // non-Range GET request, which isn't guaranteed — some Workers are
+  // built specifically around serving byte-ranges and reject or
+  // silently hang on anything else. So this LEARNS, once per browser
+  // session: the first file opened tries the full-download approach;
+  // if the Worker doesn't answer within 9 seconds, that attempt is
+  // abandoned and it falls back to the same proven range-based
+  // loading thumbnails already use — and every file after that just
+  // uses the fallback directly, with no wasted wait. Worst case, this
+  // behaves exactly as it did before this feature existed.
+  let fullDownloadUnsupported = false;
+  const pdfViewLoadingTasks = new Map();
+  function getPdfViewLoadingTask(path) {
+    // Already learned the Worker can't do this — just use the shared,
+    // proven range-based task directly, exactly as opening a PDF
+    // worked before this feature existed. No attempt, no wait.
+    if (fullDownloadUnsupported) return getPdfLoadingTask(path);
+    if (!pdfViewLoadingTasks.has(path)) {
+      pdfViewLoadingTasks.set(path, makeFullPdfLoadingTask(path));
+    }
+    return pdfViewLoadingTasks.get(path);
+  }
+
+  function makeFullPdfLoadingTask(path) {
+    const task = { onProgress: null };
+    let realTask = null;
+    let fellBack = false;
+
+    const fullAttempt = Promise.all([ensurePdfToken(), ensurePdfLib()]).then(([token, libOk]) => {
+      if (!libOk) throw new Error("network");
+      realTask = pdfjsLib.getDocument({ url: pdfWorkerUrl(path, token), disableRange: true });
+      realTask.onProgress = (p) => { if (!fellBack && task.onProgress) task.onProgress(p); };
+      return realTask.promise;
+    });
+
+    const giveUpAfterDelay = new Promise((resolve) => { setTimeout(() => resolve(null), 9000); });
+
+    task.promise = Promise.race([fullAttempt.then((pdf) => ({ pdf })), giveUpAfterDelay])
+      .catch((err) => {
+        // Access decisions (suspended / not authorized) are real answers,
+        // not evidence the Worker can't serve a full download — pass
+        // those straight through instead of masking them as a fallback.
+        if (err && (err.message === "suspended" || err.message === "unauthorized")) throw err;
+        return null; // anything else (hang, network hiccup, Worker rejecting a non-Range GET) falls through to the fallback below
+      })
+      .then((result) => {
+        if (result && result.pdf) {
+          task.resolvedPdf = result.pdf;
+          return result.pdf;
+        }
+        fellBack = true;
+        fullDownloadUnsupported = true; // learned for the rest of this session — see above
+        // So a LATER open of this same file goes straight through the
+        // fast "already learned" path above instead of finding this
+        // now-stale wrapper still sitting in the cache.
+        if (pdfViewLoadingTasks.get(path) === task) pdfViewLoadingTasks.delete(path);
+        if (realTask) { try { realTask.destroy(); } catch (e) { /* already gone */ } }
+        const fallbackTask = getPdfLoadingTask(path);
+        fallbackTask.onProgress = task.onProgress;
+        return fallbackTask.promise.then((pdf) => { task.resolvedPdf = pdf; return pdf; });
+      });
+
+    // If the full attempt actually succeeds AFTER we've already given
+    // up and switched to the fallback, don't leave it sitting in
+    // memory unused — nothing holds a reference to it once fellBack
+    // is true.
+    fullAttempt.then((pdf) => { if (fellBack) { try { pdf.destroy(); } catch (e) {} } }).catch(() => {});
+
+    return task;
+  }
+
+
+  // Building the request URL now needs an async token fetch first
+  // (see ensurePdfToken above), but existing callers set `.onProgress`
+  // synchronously right after calling getPdfLoadingTask and then read
+  // `.promise` — so this returns a task-shaped object immediately,
+  // and wires the real pdf.js task's progress through to it once the
+  // token is ready and the real load has actually started.
+  //
+  // If the load fails (bad token, Worker/Backblaze hiccup, momentary
+  // network issue...), the failed entry used to stay in this Map for
+  // the rest of the browser session — so a transient failure looked
+  // permanent: every future click on that same file replayed the same
+  // rejected promise instead of trying again. Now a failure evicts its
+  // own cache entry, so the next click on that file starts a genuinely
+  // fresh load.
+  //
+  // A 25-second hard timeout was added here too, for a real bug this
+  // was masking: on a folder with several files, thumbnails load 4 at
+  // a time (see THUMBNAIL_CONCURRENCY below) — and each one calls the
+  // Worker, which itself range-requests the file from Backblaze
+  // multiple times per document, not once. That was blowing through
+  // the Worker's old per-minute request limit within the first few
+  // thumbnails, and pdf.js doesn't always turn a stalled/rate-limited
+  // connection into a clean rejection — sometimes it just hangs. A
+  // hung promise here never resolves OR rejects, so it never freed its
+  // slot in the concurrency queue below, which is exactly what made
+  // "only a few thumbnails load, the rest just sit there forever"
+  // happen: the queue wasn't broken, it was permanently stuck waiting
+  // on tasks that were never going to finish. This timeout forces any
+  // such hang to fail cleanly instead, freeing its slot and letting
+  // the file's own existing "click to open" behavior serve as a real
+  // retry once it's evicted from the cache below.
+  function makePdfLoadingTask(path) {
+    const task = { onProgress: null };
+    let realTask = null; // captured once created, so a timeout can properly destroy() it instead of just walking away and leaving it running in the background — which would keep eating memory even after this code has given up on it, compounding exactly the RAM pressure this is meant to fix
+    let timedOut = false;
+
+    const realLoadPromise = Promise.all([ensurePdfToken(), ensurePdfLib()]).then(([token, libOk]) => {
+      if (!libOk) throw new Error("network");
+      realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
+      realTask.onProgress = (p) => { if (task.onProgress) task.onProgress(p); };
+      return realTask.promise;
+    });
+
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        timedOut = true;
+        if (realTask) realTask.destroy();
+        reject(new Error("PDF load timed out"));
+      }, 25000);
+    });
+
+    task.promise = Promise.race([realLoadPromise, timeoutPromise]).then((pdf) => {
+      // Remembered so the viewer can tell, after the fact, whether the
+      // document it ended up with is THIS shared one (thumbnails use it
+      // too — must never be destroyed just because one viewer closed)
+      // or its own separate, dedicated full-download copy. See
+      // getPdfViewLoadingTask / closeViewer.
+      task.resolvedPdf = pdf;
+      return pdf;
+    }).catch((err) => {
+      if (pdfLoadingTasks.get(path) === task) pdfLoadingTasks.delete(path);
+      throw err;
+    });
+    // If the real load actually succeeds AFTER we've already given up
+    // and moved on, still destroy() the now-unwanted document rather
+    // than let it sit in memory unused — nothing holds a reference to
+    // it once the timeout has already rejected task.promise.
+    realLoadPromise.then((pdf) => { if (timedOut) pdf.destroy(); }).catch(() => {});
+    return task;
+  }
+
+  // ── Thumbnail lazy-load + concurrency throttle ─────────
+  // Opening a folder used to fire off a full pdf.js load for EVERY
+  // file in it at once, which could genuinely choke a connection on
+  // a folder with many large files. But capping it too low backfires
+  // just as badly: with only a couple of slots open, a small file
+  // sitting near the back of an 8-file folder has to wait for
+  // several bigger files ahead of it to finish before it even starts
+  // — so a quick 4MB file can *look* like it took 45 seconds when
+  // really it spent most of that time queued, not downloading.
+  // 4 concurrent is a better balance for realistic folder sizes here
+  // (single digits to ~17MB each) — enough parallelism that nothing
+  // sits queued for long, while still well short of firing off every
+  // file in a folder simultaneously.
+  const THUMBNAIL_CONCURRENCY = 6;
+  let activeThumbnailLoads = 0;
+  const thumbnailQueue = [];
+
+  function queueThumbnailLoad(task) {
+    thumbnailQueue.push(task);
+    drainThumbnailQueue();
+  }
+
+  function drainThumbnailQueue() {
+    while (activeThumbnailLoads < THUMBNAIL_CONCURRENCY && thumbnailQueue.length) {
+      const task = thumbnailQueue.shift();
+      activeThumbnailLoads++;
+      task().finally(() => {
+        activeThumbnailLoads--;
+        drainThumbnailQueue();
+      });
+    }
+  }
+
+  // Same throttling for the main viewer's own page rendering — this
+  // never had any limit at all, unlike the thumbnail grid above. With
+  // a generous 2000px lookahead margin, simply opening a document (or
+  // scrolling quickly) could mark 8-10+ pages as "intersecting" all at
+  // once, and every single one fired off its own render immediately,
+  // all competing for the same connections to the same Worker
+  // simultaneously. That's the real cause of "the first ~10 pages
+  // load fine, then it just stops" — nothing was actually broken,
+  // there just wasn't a queue, so a page requested 11th had to wait
+  // behind an unbounded pile of concurrent work instead of a short one.
+  const PAGE_RENDER_CONCURRENCY = 3;
+  let activePageRenders = 0;
+  // Every page-render request — whether from the lazy-scroll observer
+  // or from jumping straight to a page — now goes through this ONE
+  // queue, tagged with the page number it's for. Previously, jumping to
+  // a page (scrollToPage) rendered its target + neighbors directly,
+  // completely bypassing this cap — so a deep jump could run 3 queued
+  // renders AND 3 direct ones at once, doubling the real concurrent
+  // load on pdf.js/the Worker at exactly the moment that load is
+  // riskiest (a long jump). Nothing bypasses the cap now.
+  let pageRenderQueue = []; // { run, pageNum }
+
+  function queuePageRender(run, pageNum, opts) {
+    const entry = { run, pageNum };
+    if (opts && opts.priority) pageRenderQueue.unshift(entry);
+    else pageRenderQueue.push(entry);
+    drainPageRenderQueue();
+  }
+
+  // A long smooth-scroll jump (page 1 -> page 60) sweeps every page in
+  // between through the IntersectionObserver, queuing dozens of renders
+  // for pages the person never actually stopped on. Once we land on the
+  // real target, anything still waiting in the queue for a page far
+  // from it is just wasted work sitting ahead of what the person is
+  // actually looking at — drop it.
+  function focusPageRenderQueue(aroundPage, radius) {
+    pageRenderQueue = pageRenderQueue.filter((e) => Math.abs(e.pageNum - aroundPage) <= radius);
+  }
+
+  function drainPageRenderQueue() {
+    while (activePageRenders < PAGE_RENDER_CONCURRENCY && pageRenderQueue.length) {
+      const entry = pageRenderQueue.shift();
+      activePageRenders++;
+      entry.run().finally(() => {
+        activePageRenders--;
+        drainPageRenderQueue();
+      });
+    }
+  }
+
+  let thumbObserver = null;
+  function observeThumbnail(target, path, canvas, skeleton) {
+    if (!("IntersectionObserver" in window)) {
+      // No IntersectionObserver support — fall back to loading
+      // immediately (still throttled by the concurrency queue above).
+      queueThumbnailLoad(() => renderThumbnail(path, canvas, skeleton));
+      return;
+    }
+    if (!thumbObserver) {
+      thumbObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            thumbObserver.unobserve(entry.target);
+            const data = entry.target.__thumbData;
+            if (data) queueThumbnailLoad(() => renderThumbnail(data.path, data.canvas, data.skeleton));
+          });
+        },
+        { rootMargin: "300px 0px", threshold: 0.01 }
+      );
+    }
+    target.__thumbData = { path, canvas, skeleton };
+    thumbObserver.observe(target);
+  }
+
+  // ── Line icons (no emoji) ───────────────────────────────
+  const ICONS = {
+    maths: `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.2 20h15.6z"/><path d="M12 3v17"/><circle cx="12" cy="3" r="1" fill="currentColor" stroke="none"/></svg>`,
+    physics: `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><ellipse cx="12" cy="12" rx="9.2" ry="3.6"/><ellipse cx="12" cy="12" rx="9.2" ry="3.6" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="9.2" ry="3.6" transform="rotate(120 12 12)"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>`,
+    chemistry: `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h5"/><path d="M10.3 2.5v6.4L4.6 18.8a1.6 1.6 0 0 0 1.4 2.4h12a1.6 1.6 0 0 0 1.4-2.4L13.7 8.9V2.5"/><path d="M7.6 15.3h8.8"/></svg>`,
+    folder: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
+    doc: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+    tray: `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 3h6l2-3h4"/><path d="M5 12 3.5 6.4A1.6 1.6 0 0 1 5 4.5h14a1.6 1.6 0 0 1 1.5 1.9L19 12v5.4A1.6 1.6 0 0 1 17.4 19H6.6A1.6 1.6 0 0 1 5 17.4z"/></svg>`,
+    star: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2.5 15.1 9 22 10 17 15 18.2 22 12 18.6 5.8 22 7 15 2 10 8.9 9"/></svg>`
+  };
+
+  // ── DOM refs ───────────────────────────────────────────
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s, root) => Array.from((root || document).querySelectorAll(s));
+  const gate        = $("#gate");
+  const nameForm    = $("#nameForm");
+  const nameInput   = $("#nameInput");
+  const app         = $("#app");
+  const homeBtn     = $("#homeBtn");
+  const progressBtn = $("#progressBtn");
+  const greeting    = $("#greeting");
+  const logoutBtn   = $("#logoutBtn");
+  const breadcrumb  = $("#breadcrumb");
+  const content     = $("#content");
+  const searchInput = $("#searchInput");
+  const studyTimeEl = $("#studyTime");
+  const viewer      = $("#viewer");
+  const viewerName  = $("#viewerName");
+  const viewerClose = $("#viewerClose");
+  const viewerOverlay = $("#viewerOverlay");
+  const viewerPages = $("#viewerPages");
+  const viewerThumbStrip = $("#viewerThumbStrip");
+  const viewerThumbToggle = $("#viewerThumbToggle");
+  const viewerPrevPage    = $("#viewerPrevPage");
+  const viewerNextPage    = $("#viewerNextPage");
+  const viewerPageInput   = $("#viewerPageInput");
+  const viewerPageTotal   = $("#viewerPageTotal");
+  const viewerFitWidth    = $("#viewerFitWidth");
+  const viewerFitPage     = $("#viewerFitPage");
+  const gatePasswordField = $("#gatePasswordField");
+  const gatePasswordInput = $("#gatePasswordInput");
+  const gateBtn     = $(".gate__btn");
+  const gatePinBox = $("#gatePinBox");
+  const gatePinHint = $("#gatePinHint");
+  const gatePinInput = $("#gatePinInput");
+  const gatePinConfirmField = $("#gatePinConfirmField");
+  const gatePinConfirm = $("#gatePinConfirm");
+  const gatePinForgot = $("#gatePinForgot");
+  const gatePinAsk = $("#gatePinAsk");
+  const gateError   = $("#gateError");
+  const gateField   = $(".gate__field");
+  const gateRequestApproval = $("#gateRequestApproval");
+  const gateRequestBtn      = $("#gateRequestBtn");
+  const gateRequestSent     = $("#gateRequestSent");
+  const gateRequestEmail     = $("#gateRequestEmail");
+  const gateRequestEmailHint = $("#gateRequestEmailHint");
+
+  // ── Admin dashboard refs (the rest are looked up by id inside the admin code) ──
+  const adminApp           = $("#adminApp");
+  const adminBackBtn       = $("#adminBackBtn");
+  const adminRefreshBtn    = $("#adminRefreshBtn");
+  const adminTabs          = $("#adminTabs");
+  const toastStack = $("#toastStack");
+  const confirmOverlay = $("#confirmOverlay");
+  const confirmMessage = $("#confirmMessage");
+  const confirmCancelBtn = $("#confirmCancelBtn");
+  const confirmOkBtn = $("#confirmOkBtn");
+  const confirmInput = $("#confirmInput");
+
+  // ── State ──────────────────────────────────────────────
+  let curView     = "home";
+  let curSubject  = null;
+  let curFolder   = null;
+  let currentName = "";
+
+  // ── Session / view tracking (for the activity log) ──────
+  // sessionId identifies one "visit" (from the app becoming visible
+  // to the tab closing/reloading/logging out). viewId identifies one
+  // PDF being open. Both are randomly generated client-side purely to
+  // let rows in the Log sheet be grouped back into a readable trail —
+  // they carry no personal info themselves.
+  let sessionId          = null;
+  let sessionStart        = null;
+  let currentViewId       = null;
+  let currentViewName     = null;
+  let currentViewActiveMs = 0;   // accumulated foreground time for the open PDF
+  let currentViewLogged = false; // true once the open PDF has genuinely loaded and been logged
+  let currentViewResumedAt = null; // timestamp the PDF most recently became foregrounded
+  let heartbeatTimer      = null;
+
+  function makeId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+
+  // ── Helpers ────────────────────────────────────────────
+  // ── PDF access token (Apps Script → Cloudflare Worker) ──────────
+  // PDFs are no longer fetched as static files from this repo. Every
+  // open goes through the Worker, which only streams file bytes back
+  // if it's handed a genuine, unexpired token — minted server-side by
+  // Apps Script's getPdfToken action, which re-checks (fresh, live)
+  // that this name is still on the access list and not suspended.
+  // That's the actual security decision; this file just carries the
+  // token along. Cached in memory and refreshed a few minutes before
+  // its ~20-minute expiry so opening a PDF mid-session never has to
+  // wait on a fresh token fetch.
+  let pdfToken = null;
+  let pdfTokenExpiresAt = 0;
+  let pdfTokenPromise = null;
+
+  // Throws instead of returning null on failure, carrying the SPECIFIC
+  // reason as the error message ("suspended", "unauthorized", or one
+  // of the three local codes below) instead of collapsing everything
+  // into one generic failure. This is what lets openViewer's catch
+  // handler show "you've been suspended" instead of "please try
+  // again" to someone who's been blocked — the old version discarded
+  // the server's actual reason and made every failure look like a
+  // network blip, which is actively misleading for that case.
+  let busyRetryPath = "";
+  async function fetchPdfToken() {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    const workerUrl = SITE_CONFIG.pdfWorker && SITE_CONFIG.pdfWorker.url;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
+    if (!workerUrl || workerUrl.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
+    if (!sessionId || !currentName) throw new Error("not_logged_in");
+
+    let data;
+    try {
+      // Bounded wait + one automatic retry (second try usually hits a warm backend).
+      const url = `${endpoint}?action=getPdfToken&name=${encodeURIComponent(currentName)}&sessionId=${encodeURIComponent(sessionId)}&pt=${encodeURIComponent(getDt(currentName))}`;
+      const tryOnce = async (ms) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          return await res.json();
+        } finally { clearTimeout(timer); }
+      };
+      try { data = await tryOnce(10000); } catch { data = await tryOnce(12000); }
+    } catch {
+      throw new Error("network");
+    }
+
+    if (data && data.ok && data.token) {
+      pdfToken = data.token;
+      // Real token is good for 20 minutes (see mintPdfToken in the
+      // Apps Script) — refresh a few minutes early so we're never
+      // caught handing out a token that expires mid-fetch.
+      pdfTokenExpiresAt = Date.now() + 17 * 60 * 1000;
+      return pdfToken;
+    }
+    if (data && data.error === "pin_required") setDt(currentName, ""); // stale/missing proof — forget it so the next login asks for the PIN
+    throw new Error((data && data.error) || "network");
+  }
+
+  // Returns a usable token, fetching a new one only if there's no
+  // cached token or the cached one is due to expire soon. Concurrent
+  // callers (e.g. several thumbnails loading at once) share a single
+  // in-flight fetch instead of each firing their own request.
+  function ensurePdfToken() {
+    if (pdfToken && Date.now() < pdfTokenExpiresAt) return Promise.resolve(pdfToken);
+    if (!pdfTokenPromise) {
+      pdfTokenPromise = fetchPdfToken().catch((err) => {
+        // Server busy / slow: a token that expired a moment ago is usually still accepted, so keep the person reading.
+        const m = err && err.message;
+        if (pdfToken && Date.now() < pdfTokenExpiresAt + 150000 && m !== "suspended" && m !== "unauthorized" && m !== "pin_required") return pdfToken;
+        throw err;
+      }).finally(() => { pdfTokenPromise = null; });
+    }
+    return pdfTokenPromise;
+  }
+
+  function pdfWorkerUrl(path, token) {
+    const base = SITE_CONFIG.pdfWorker.url;
+    return `${base}?file=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`;
+  }
+
+  // Case/whitespace-insensitive match against the access list —
+  // "PRIYA", " priya ", "Priya" all match "Priya".
+  function normalizeName(s) {
+    return s.trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  // ── Abuse/harassment filter ──────────────────────────────
+  // Best-effort, not exhaustive — extend these two lists if something
+  // gets through. ABUSIVE_WHOLE_WORDS is matched only against whole
+  // words (so it won't false-positive on a short substring buried
+  // inside a real name); ABUSIVE_PHRASES is matched as a substring of
+  // the full normalized string, for multi-word taunts.
+  const ABUSIVE_WHOLE_WORDS = [
+    "bsdk", "bsdka", "mc", "bc", "chutiya", "chutiye", "harami",
+    "kutta", "kutte", "kamina", "kamine", "randi", "gandu", "gaandu",
+    "bhosdi", "bhosdike", "saala", "saale",
+    "fuck", "fucker", "bitch", "asshole", "bastard", "dumbass"
+  ];
+  const ABUSIVE_PHRASES = [
+    "tera baap", "teri maa", "teri behen"
+  ];
+
+  // Deliberately NOT a call to an external moderation API — see the
+  // reasoning in chat: that would add a network dependency, a cost,
+  // and latency to every single login, legitimate or not, for a name
+  // field. This instead defeats the cheap, common evasion tricks
+  // (leetspeak, spacing/punctuation, stretched letters) with a plain
+  // string transform, which covers the realistic threat model here.
+  const LEET_MAP = { "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s" };
+  function squash(str) {
+    return normalizeName(str)
+      .split("")
+      .map((c) => LEET_MAP[c] || c)
+      .join("")
+      .replace(/[^a-z]/g, "")       // drop spaces/punctuation entirely
+      .replace(/(.)\1{2,}/g, "$1"); // "bsdkkkk" -> "bsdk"
+  }
+
+  function looksAbusive(name) {
+    const norm = normalizeName(name).replace(/[^a-z\s]/g, "");
+    if (ABUSIVE_PHRASES.some((p) => norm.includes(p))) return true;
+    const words = norm.split(/\s+/).filter(Boolean);
+    if (words.some((w) => ABUSIVE_WHOLE_WORDS.includes(w))) return true;
+
+    // Second pass: squash out spacing/leetspeak/letter-stretching and
+    // check again. Restricted to words of 4+ letters — squashing
+    // removes spaces entirely, and re-checking a 2-letter word like
+    // "mc" as a bare substring would false-positive on ordinary names
+    // ("Ram Chandra" -> "ramchandra" contains "mc"). Longer words don't
+    // have that problem.
+    const squashed = squash(name);
+    return ABUSIVE_WHOLE_WORDS.filter((w) => w.length >= 4).some((w) => squashed.includes(squash(w)));
+  }
+
+  // The access list stores salted SHA-256 hashes, not plaintext names,
+  // so that opening dev tools on config.js doesn't hand someone the
+  // exact list of valid names to try. This is a deterrent against
+  // casual snooping, not real security — see the comment in config.js.
+  async function sha256Hex(str) {
+    const bytes = new TextEncoder().encode(str);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  async function hashName(name) {
+    const list = SITE_CONFIG.accessList;
+    const salt = (list && list.salt) || "";
+    return sha256Hex(salt + normalizeName(name));
+  }
+
+  // Verifies a protected-account password against the server, never
+  // Sends only a hash of the password, salted with
+  // SITE_CONFIG.protectedAccounts.salt — never the password itself.
+  // Returns "valid", "invalid", or "error" (never a plain boolean)
+  // so the caller can tell "the server said no" apart from "the
+  // check never actually finished" — those are NOT the same thing,
+  // and treating them the same was the actual bug behind "the first
+  // attempt always says incorrect password, the second always
+  // works": the very first check after this feature goes live has
+  // to make the Apps Script side create a brand-new sheet from
+  // scratch, which is genuinely slower than a quick timeout allows
+  // for — so it silently timed out and got mislabeled as a wrong
+  // password, when the real password was never actually checked.
+  // One quiet retry with a longer timeout now happens automatically
+  // before ever surfacing an error to the person typing.
+  // The fast-login Worker (Cloudflare): answers a CORRECT password in ~0.1 s.
+  // Anything else — or any trouble — returns null and the normal (Apps Script) check decides.
+  async function authFast(body) {
+    const cb = cacheBase();
+    if (!cb) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    try {
+      const res = await fetch(cb + "/auth", { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body), signal: controller.signal });
+      const d = await res.json();
+      return d && d.ok ? d : null;
+    } catch { return null; } finally { clearTimeout(timer); }
+  }
+
+  async function checkCredentialsRemote(username, password) {
+    const cred = SITE_CONFIG.protectedAccounts;
+    if (!cred) return "error";
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return "error";
+    const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
+    const url = `${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`;
+    const fast = await authFast({ op: "cred", username, credHash });
+    if (fast && fast.valid) return "valid";
+
+    // Asked up to three times in parallel (now, after 1.5 s, after 3.5 s) — a
+    // slow or sleeping server answers whichever request it reaches first.
+    // Reading the answer twice is harmless, so this is safe.
+    return new Promise((resolve) => {
+      let finished = false, running = 0, launched = 0;
+      const done = (v) => { if (!finished) { finished = true; resolve(v); } };
+      const fire = (ms) => {
+        if (finished) return;
+        launched++; running++;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), ms);
+        fetch(url, { signal: controller.signal })
+          .then((res) => res.json())
+          .then((data) => { if (data && data.ok) done(data.valid ? "valid" : "invalid"); })
+          .catch(() => {})
+          .finally(() => {
+            clearTimeout(timeout); running--;
+            if (!finished && running === 0 && launched >= 3) done("error");
+          });
+      };
+      fire(14000);
+      setTimeout(() => fire(11000), 1500);
+      setTimeout(() => fire(8000), 3500);
+      setTimeout(() => done("error"), 15000);
+    });
+  }
+
+  async function isAuthorized(name) {
+    const list = SITE_CONFIG.accessList;
+    if (!list || !list.enabled) return true;
+    if (!window.crypto || !window.crypto.subtle) return true; // insecure context (e.g. plain http) — fail open rather than lock everyone out
+    const hash = await hashName(name);
+    if (list.hashes.includes(hash)) return true;
+    // Live-approved names — added from the admin dashboard's approval
+    // queue or "Add name" box, no redeploy needed. Checked in addition
+    // to the static list above, never instead of it.
+    const remote = await fetchLoginCheck(name);
+    return remote.accessHashes.includes(hash);
+  }
+
+  // ── Consolidated remote login check ──────────────────────────────
+  // One request, cached for the rest of this page load, covering
+  // everything isSuspended/isAuthorized/isNameActive need from the
+  // server: the live device blocklist, live access list, live+expired
+  // suspended-name list, and whether this name is active elsewhere
+  // right now. This used to be 4 separate sequential fetches — each
+  // its own Apps Script cold-start — adding real, noticeable seconds
+  // to every login on a slow connection. Same data, same checks, just
+  // fetched together. Fails open (empty/false) on any network error,
+  // same philosophy as everything else here: a hiccup reaching the
+  // sheet should never lock out someone who's actually fine.
+  let cachedLoginCheck = null;
+  let cachedLoginCheckAt = 0;
+  let loginCheckInFlight = null;
+  function fetchLoginCheck(name) {
+    // Kept for 40 s only, so a person who was just approved isn't told "not yet" from an old copy.
+    if (cachedLoginCheck && Date.now() - cachedLoginCheckAt > 40000) cachedLoginCheck = null;
+    if (cachedLoginCheck) return Promise.resolve(cachedLoginCheck);
+    if (!loginCheckInFlight) loginCheckInFlight = fetchLoginCheckNow(name).finally(() => { loginCheckInFlight = null; });
+    return loginCheckInFlight;
+  }
+  async function fetchLoginCheckNow(name) {
+    if (cachedLoginCheck) return cachedLoginCheck;
+    const fallback = { blockedDeviceIds: [], accessHashes: [], suspendedHashes: [], active: false };
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return fallback;
+    try {
+      const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}`, cacheBase() ? 3500 : 2000).catch(() => null);
+      if (data && data.ok) {
+        cachedLoginCheck = {
+          blockedDeviceIds: data.blockedDeviceIds || [],
+          accessHashes: data.accessHashes || [],
+          suspendedHashes: data.suspendedHashes || [],
+          pinPrefixes: Array.isArray(data.pinPrefixes) ? data.pinPrefixes : null,
+          active: !!data.active
+        };
+        cachedLoginCheckAt = Date.now();
+      } else {
+        return fallback; // not cached — the next attempt asks again
+      }
+    } catch {
+      return fallback;
+    }
+    return cachedLoginCheck;
+  }
+
+  // Console helper for adding a new student later without re-editing
+  // through an AI assistant: open dev tools on the live site and run
+  //   await __hashName("Their Name")
+  // then paste the printed hash into config.js's accessList.hashes.
+  window.__hashName = async (name) => {
+    const hash = await hashName(name);
+    console.log(hash);
+    return hash;
+  };
+
+  // Admin secret hashing — same salted-hash model as hashName above,
+  // but NOT lowercased/space-collapsed, so case and spacing in your
+  // chosen phrase count toward its strength instead of being thrown
+  // away. Console helper: open dev tools on the live site and run
+  //   await __hashAdminSecret("your chosen phrase")
+  // then paste the printed value into config.js's admin.secretHash.
+  async function hashAdminSecret(secret) {
+    const salt = (SITE_CONFIG.admin && SITE_CONFIG.admin.salt) || "";
+    return sha256Hex(salt + secret.trim());
+  }
+
+  window.__hashAdminSecret = async (secret) => {
+    const hash = await hashAdminSecret(secret);
+    console.log(hash);
+    return hash;
+  };
+
+  // ── Device fingerprint ──────────────────────────────────
+  // A hash of stable browser/hardware signals — NOT tied to any name
+  // typed into the gate. This is what lets us block a specific phone
+  // even if it enters someone else's name.
+  //
+  // The canvas-rendering signal that used to be part of this was
+  // REMOVED after testing showed it changing across a fully-closed-
+  // and-reopened browser on the exact same phone — which meant a
+  // banned device could get a fresh ID just by force-closing the app
+  // and relaunching the link. That's not a bug in this code: recent
+  // Chrome (and most in-app browsers, WhatsApp's included) now inject
+  // small random noise into canvas readback specifically to defeat
+  // canvas fingerprinting — it's a deliberate anti-tracking feature,
+  // and it resets that noise on a fresh session. There's no reliable
+  // way to read a "clean" canvas value around it from JavaScript.
+  //
+  // What's left below is every OTHER signal — none of them are
+  // subject to that noise, so they should now be stable across
+  // reopens on the same phone. Trade-off worth knowing: this makes
+  // the fingerprint a little less unique between two totally
+  // different phones that happen to share the exact same model,
+  // browser version, screen size, language, and timezone — an edge
+  // case, but not impossible. There's no purely-client-side way to
+  // fully close that gap; a hard guarantee would need device
+  // attestation from a native app or phone-number verification,
+  // neither of which fits a static site like this one.
+  let cachedDeviceId = null;
+  async function getDeviceId() {
+    if (cachedDeviceId) return cachedDeviceId;
+    const parts = [
+      navigator.userAgent || "",
+      navigator.platform || "",
+      navigator.language || "",
+      String(navigator.hardwareConcurrency || ""),
+      `${screen.width}x${screen.height}x${screen.colorDepth}`,
+      (Intl.DateTimeFormat().resolvedOptions().timeZone || "")
+    ];
+    cachedDeviceId = await sha256Hex(parts.join("||"));
+    return cachedDeviceId;
+  }
+
+  // A human-readable guess at what device this is, purely for admin
+  // display next to the (opaque) device hash above — never used for
+  // matching/blocking itself. Best-effort, not exact:
+  //   - Android UAs often include the real model string (e.g.
+  //     "SM-G991B") right after the Android version — this shows up
+  //     when it's there.
+  //   - iPhones/iPads will only ever show as "iPhone"/"iPad" plus an
+  //     iOS version. Apple deliberately strips the exact model from
+  //     the user-agent string for privacy — there's no way to get a
+  //     more specific label than that from the browser.
+  //   - Desktop OSes and common browsers are detected from simple
+  //     substring checks, same limitation: whatever the UA reveals.
+  function parseDeviceLabel() {
+    const ua = navigator.userAgent || "";
+    let platform = "Unknown device";
+
+    const androidMatch = ua.match(/Android\s+([\d.]+);\s*([^;)]+)\)/);
+    if (androidMatch) {
+      platform = `Android ${androidMatch[1]} \u00B7 ${androidMatch[2].trim()}`;
+    } else if (/iPhone/.test(ua)) {
+      const v = ua.match(/OS (\d+)/);
+      platform = `iPhone \u00B7 iOS ${v ? v[1] : "?"}`;
+    } else if (/iPad/.test(ua)) {
+      const v = ua.match(/OS (\d+)/);
+      platform = `iPad \u00B7 iPadOS ${v ? v[1] : "?"}`;
+    } else if (/Windows/.test(ua)) {
+      platform = "Windows";
+    } else if (/Macintosh/.test(ua)) {
+      platform = "Mac";
+    } else if (/Linux/.test(ua)) {
+      platform = "Linux";
+    }
+
+    let browser = "";
+    if (/Edg\//.test(ua)) browser = "Edge";
+    else if (/Chrome\//.test(ua)) browser = "Chrome";
+    else if (/CriOS/.test(ua)) browser = "Chrome";
+    else if (/Firefox\//.test(ua)) browser = "Firefox";
+    else if (/Safari\//.test(ua)) browser = "Safari";
+
+    // Strip characters that would break the " || key:value" trace
+    // format this gets embedded into (see the trace string below).
+    const label = browser ? `${platform} \u00B7 ${browser}` : platform;
+    return label.replace(/[|:]/g, "").trim();
+  }
+
+  // Console helper: open dev tools on the suspect's phone (or ask them
+  // to, or just check the log sheet after their next attempt — see
+  // logEvent below, which now records this on every login try) and
+  // run  await __deviceId()  to get the value to paste into
+  // config.js's suspended.deviceIds.
+  window.__deviceId = async () => {
+    const id = await getDeviceId();
+    console.log(id);
+    return id;
+  };
+
+  // ── Client IP (best-effort, bonus layer only) ───────────
+  // Fetched from a public "what's my IP" service since a static site
+  // has no server of its own to read it from. Fails silently (empty
+  // string) if the request is blocked or slow — never blocks login on
+  // a network hiccup.
+  let cachedIp = null;
+  async function getClientIp() {
+    if (cachedIp !== null) return cachedIp;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1500);
+      const res = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await res.json();
+      cachedIp = data.ip || "";
+    } catch {
+      cachedIp = "";
+    }
+    return cachedIp;
+  }
+
+  // ── Suspension check ─────────────────────────────────────
+  // Checked BEFORE the normal accessList lookup. Any one of four
+  // signals is enough to block: the typed name, this browser's device
+  // fingerprint (checked against BOTH the static config.js list and
+  // the auto-maintained remote list), or (best-effort) the current IP.
+  // This is what makes "enters a classmate's name instead" not work —
+  // the device fingerprint check doesn't care what name was typed.
+  async function isSuspended(name) {
+    const s = SITE_CONFIG.suspended;
+    if (!s || !s.enabled) return false;
+
+    if (name && Array.isArray(s.hashes) && s.hashes.length) {
+      const hash = await hashName(name);
+      if (s.hashes.includes(hash)) return true;
+    }
+
+    const deviceId = await getDeviceId();
+
+    if (Array.isArray(s.deviceIds) && s.deviceIds.includes(deviceId)) return true;
+
+    const remote = await fetchLoginCheck(name);
+    if (remote.blockedDeviceIds.includes(deviceId)) return true;
+
+    // Live-suspended names — added from the admin dashboard's Suspend
+    // button, which also cascades to every linked alias and device.
+    // Checked in addition to the static config.js list above.
+    if (name) {
+      const hash = await hashName(name);
+      if (remote.suspendedHashes.includes(hash)) return true;
+    }
+
+    if (Array.isArray(s.ips) && s.ips.length) {
+      const ip = await getClientIp();
+      if (ip && s.ips.includes(ip)) return true;
+    }
+
+    return false;
+  }
+
+  // ── Font-load gate ───────────────────────────────────────
+  // The gate's entrance animation is written in CSS as "paused"
+  // until this fires. Fraunces/Archivo load async — if the reveal
+  // ran on the browser's fallback-font layout, the real webfont
+  // swapping in partway through would reflow the title (one line
+  // → two lines) mid-clip-path and freeze the animation on a cut
+  // frame. Waiting for the real fonts first removes that failure
+  // mode entirely. A hard timeout guarantees the page never stays
+  // invisible if font loading stalls (slow network, blocked CDN).
+  function markFontsReady() {
+    document.documentElement.classList.add("fonts-ready");
+  }
+
+  if (document.fonts && document.fonts.ready) {
+    Promise.race([
+      Promise.all([
+        document.fonts.load('italic 500 100px Fraunces'),
+        document.fonts.load('500 15px Archivo'),
+        document.fonts.load('600 15px Archivo'),
+        document.fonts.ready
+      ]),
+      new Promise((resolve) => setTimeout(resolve, 900))
+    ]).then(markFontsReady).catch(markFontsReady);
+  } else {
+    setTimeout(markFontsReady, 300);
+  }
+
+  // ── Session persistence ──────────────────────────────────
+  //  sessionStorage, not localStorage: localStorage is shared by
+  //  every tab/WebView instance for this domain — including a brand
+  //  new one Chrome/Safari spins up the next time someone taps the
+  //  same WhatsApp link. That's what made a second tap silently
+  //  resume the previous person's login instead of asking fresh.
+  //  sessionStorage is scoped to that one tab/instance and is wiped
+  //  the moment it's actually closed, so a fresh tap always starts
+  //  with nothing stored — while still keeping someone logged in
+  //  normally while they navigate around inside the same open tab.
+  //  Stored as JSON {name, ts} rather than a bare name, so we can
+  //  also expire it after SITE_CONFIG.session.expiryMinutes if that
+  //  same tab is just left open and idle for a long stretch.
+  function saveSession(name, sid) {
+    sessionStorage.setItem("c12_name", JSON.stringify({ name, ts: Date.now(), sid }));
+  }
+
+  // Reads back the sessionId saved alongside the name, so a plain page
+  // reload (init() calling showApp(saved) directly, not a fresh
+  // login) reuses the SAME sessionId instead of minting a new one —
+  // otherwise every reload would look like "a different device just
+  // logged in" to claimActiveSession below, harmlessly but wastefully
+  // kicking out its own just-abandoned previous instance each time.
+  function readSessionId() {
+    const raw = sessionStorage.getItem("c12_name");
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return (parsed && parsed.sid) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function readSession() {
+    const raw = sessionStorage.getItem("c12_name");
+    if (!raw) return null;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Old format from before expiry was added: a bare name string.
+      // Treat it as expired so everyone gets re-prompted once, cleanly.
+      return null;
+    }
+    if (!parsed || !parsed.name || !parsed.ts) return null;
+
+    const minutes = (SITE_CONFIG.session && SITE_CONFIG.session.expiryMinutes);
+    const maxAgeMs = (typeof minutes === "number" ? minutes : 15) * 60 * 1000;
+    if (Date.now() - parsed.ts > maxAgeMs) return null; // expired
+
+    return parsed.name;
+  }
+
+  function clearSession() {
+    sessionStorage.removeItem("c12_name");
+  }
+
+  // Shared by the manual "sign out" button and a forced admin logout
+  // (see checkCommands below) — same clean-up either way: end any
+  // open PDF view, log the session as ended, stop the heartbeat, wipe
+  // the saved name, then reload back to the gate.
+  function performLogout(reason) {
+    try { syncPush(true); } catch (e) {} // must run BEFORE the proof below is forgotten
+    try { if (currentName) setDt(currentName, ""); } catch (e) {} // signing out forgets the password proof
+    try { writeFocus(null); } catch (e) {}
+    try { history.replaceState(null, "", APP_BASE); } catch (e) {}
+    endCurrentView();
+    if (sessionId) {
+      const seconds = sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : "";
+      logEventBeacon("session_end", currentName, reason || "logout", undefined, { duration: seconds });
+    }
+    stopHeartbeat();
+    try { sessionStorage.removeItem("c12_tm"); sessionStorage.removeItem("c12_authok"); sessionStorage.removeItem("c12_openfile"); } catch (e) {}
+    try { localStorage.removeItem("c12_keep"); } catch (e) {}
+    clearSession();
+    location.reload();
+  }
+
+  // ── Init ───────────────────────────────────────────────
+  async function init() {
+    // Wake the Apps Script backend as soon as the page opens (cold start is a few seconds).
+    try {
+      const ep = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (ep && ep.indexOf("PASTE_YOUR") !== 0) fetch(`${ep}?action=ping`).catch(() => {});
+    } catch (e) {}
+    try { const em = SITE_CONFIG.session && SITE_CONFIG.session.expiryMinutes; localStorage.setItem("c12_expmin", String(typeof em === "number" ? em : 15)); } catch (e) {}
+    let saved = readSession();
+    if (!saved) {
+      // "Keep me signed in" ticked earlier on this device: pick the session back up.
+      try {
+        const k = JSON.parse(localStorage.getItem("c12_keep") || "null");
+        if (k && k.name && k.until > Date.now()) { saveSession(k.name, makeId()); saved = readSession(); }
+        else if (k) localStorage.removeItem("c12_keep");
+      } catch (e) {}
+    }
+    if (!saved) {
+      // The moment someone starts typing their name, wake the server again.
+      try {
+        const ni = document.getElementById("nameInput");
+        const ep2 = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+        if (ni && ep2 && ep2.indexOf("PASTE_YOUR") !== 0) {
+          let warmed = false;
+          const warm = () => { if (warmed) return; warmed = true; fetch(`${ep2}?action=ping`).catch(() => {}); };
+          ni.addEventListener("input", warm, { once: true });
+          ni.addEventListener("focus", warm, { once: true });
+        }
+      } catch (e) {}
+      loadGateStats();
+      // Warm the checks while the person is still typing their name.
+      getDeviceId().catch(() => {}); getClientIp().catch(() => {}); fetchLoginCheck("").catch(() => {});
+    }
+    // Page reloaded (or the phone restarted the tab) while someone was signed in and was checked a
+    // moment ago: go straight back in with no login screen and no waiting. The check is repeated
+    // quietly in the background and only sends them to the login page if it really fails.
+    const recentlyChecked = !!saved && (() => { try { return Date.now() - Number(sessionStorage.getItem("c12_authok") || 0) < 10 * 60 * 1000; } catch (e) { return false; } })();
+    const endResume = () => document.documentElement.classList.remove("resuming");
+    setTimeout(endResume, 9000); // safety: never leave the splash up forever
+    if (saved && recentlyChecked) {
+      gate.classList.add("hidden");
+      showApp(saved);
+      endResume();
+      Promise.all([isSuspended(saved), isAuthorized(saved)]).then(([sus, ok]) => {
+        if (sus || !ok) {
+          try { localStorage.removeItem("c12_keep"); sessionStorage.removeItem("c12_authok"); } catch (e) {}
+          clearSession();
+          location.reload();
+        }
+      }).catch(() => {});
+    } else if (saved && (await isSuspended(saved))) {
+      try { localStorage.removeItem("c12_keep"); } catch (e) {}
+      clearSession();
+      gate.classList.remove("hidden");
+      app.classList.add("hidden");
+      showGateError((SITE_CONFIG.suspended && SITE_CONFIG.suspended.message) || "You are not able to access this page.");
+    } else if (saved && (await isAuthorized(saved))) {
+      gate.classList.add("hidden");
+      showApp(saved);
+    } else {
+      if (saved) clearSession(); // no longer on the list, or expired
+      gate.classList.remove("hidden");
+      app.classList.add("hidden");
+    }
+    endResume();
+
+    // Signed out by the developer-tools guard (see guard.js): explain why.
+    try {
+      const gm = JSON.parse(localStorage.getItem("c12_guard_msg") || "null");
+      if (gm) {
+        localStorage.removeItem("c12_guard_msg");
+        if (Date.now() - gm.t < 15 * 60 * 1000 && !gate.classList.contains("hidden")) {
+          showGateError(gm.strike >= 2
+            ? "Developer tools were detected again. Your ID has been recorded and your account may now be suspended."
+            : "Developer tools were detected, so you have been signed out. Your ID has been recorded. If you try this again, your account will be suspended.");
+        }
+      }
+    } catch (e) {}
+    try {
+      if (!gate.classList.contains("hidden") && /^practicals\//i.test(new URLSearchParams(location.search).get("next") || "")) {
+        showGateError("Please sign in to open Practicals.");
+      }
+    } catch (e) {}
+    nameForm.addEventListener("submit", onNameSubmit);
+    nameInput.addEventListener("input", () => {
+      hideGateError();
+      if (pinMode && normalizeName(nameInput.value) !== previewName) resetPinUI();
+      schedulePreview();
+    });
+    nameInput.addEventListener("change", schedulePreview);
+    // Remembered name + "stay signed in" choice, and the eye buttons.
+    try {
+      const ln = localStorage.getItem("c12_lastname");
+      if (ln && !nameInput.value) nameInput.value = ln;
+      if (gateKeep && localStorage.getItem("c12_keep") !== null) gateKeep.checked = true;
+    } catch (e) {}
+    [gatePasswordInput, gatePinInput, gatePinConfirm].forEach(addEyeButton);
+    fetchLoginCheck("").then(schedulePreview).catch(() => {});
+    schedulePreview();
+    // Mandatory so an approval can actually be followed up on — the
+    // approval queue used to have no way to tell someone their request
+    // was accepted short of you personally remembering their name and
+    // messaging them back. Live-validated the same way the feedback
+    // form's email field is, and re-checked again on click below
+    // (belt and braces, same reasoning as the feedback form).
+    if (gateRequestEmail) {
+      gateRequestEmail.addEventListener("input", () => {
+        const valid = isValidEmail(gateRequestEmail.value);
+        if (gateRequestBtn) gateRequestBtn.disabled = !valid;
+        if (gateRequestEmailHint) {
+          gateRequestEmailHint.classList.toggle("hidden", gateRequestEmail.value.length === 0 || valid);
+          gateRequestEmailHint.textContent = "Enter a real email address (e.g. name@gmail.com)";
+        }
+      });
+    }
+    if (gateRequestBtn) {
+      gateRequestBtn.addEventListener("click", () => {
+        if (!pendingApprovalName || gateRequestBtn.disabled) return;
+        const email = gateRequestEmail ? gateRequestEmail.value.trim() : "";
+        if (!isValidEmail(email)) return; // re-checked here too, not just trusting the disabled state
+        gateRequestBtn.disabled = true;
+        gateRequestBtn.classList.add("is-busy");
+        gateRequestBtn.textContent = "Sending…";
+        // Tagged distinctly from the plain "unauthorized" attempts
+        // logged automatically on every failed try — the backend's
+        // approval queue reads from THIS tag only, not from every
+        // login attempt. See getUnauthorizedQueue in the Apps Script.
+        // The email is appended to the trace string using the same
+        // "key:value || key:value" shape the trace already uses for
+        // device/ip/label — extractField() on the backend reads it out
+        // with zero changes needed to that function.
+        logEvent("login", pendingApprovalName, "approval_requested", `${pendingApprovalTrace} || email:${email}`);
+        gateRequestBtn.classList.add("hidden");
+        if (gateRequestSent) gateRequestSent.classList.remove("hidden");
+        pendingApprovalName = null;
+        pendingApprovalTrace = null;
+      });
+    }
+    // Safety net for mobile keyboards: some virtual keyboards' Enter/Go
+    // key doesn't reliably fire a native form submit inside in-app
+    // browsers. Preventing the default here and calling requestSubmit()
+    // ourselves makes Enter behave exactly like tapping Continue, on
+    // every browser, without ever double-submitting.
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (nameForm.requestSubmit) nameForm.requestSubmit();
+      else onNameSubmit(e);
+    });
+    // Back/Forward: the URL already changed, so re-render to match it
+    // without pushing anything new. Only once signed in (nav needs the
+    // app up). Falls back to home for any URL that isn't a subject.
+    window.addEventListener("popstate", (e) => {
+      if (!sessionId) return;
+      const st = e.state;
+      if (st && st.view) { nav(st.view, st.subjectId, st.folderId, "none"); return; }
+      const m = location.pathname.match(/(physics|chemistry|maths)\/?$/);
+      if (m) nav("subject", m[1], null, "none"); else nav("home", null, null, "none");
+    });
+    homeBtn.addEventListener("click", () => nav("home"));
+    if (progressBtn) progressBtn.addEventListener("click", () => nav("progress"));
+
+    // Phone bottom bar
+    const tabbar = document.getElementById("tabbar");
+    if (tabbar) tabbar.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-tab]");
+      if (!b) return;
+      const t = b.dataset.tab;
+      if (t === "search") {
+        const open = document.body.classList.toggle("search-open");
+        if (open && searchInput) setTimeout(() => searchInput.focus(), 30);
+        else if (searchInput) { searchInput.value = ""; searchInput.blur(); render(); }
+        syncTabbar();
+        return;
+      }
+      document.body.classList.remove("search-open");
+      if (searchInput && searchInput.value) { searchInput.value = ""; }
+      if (t === "home") nav("home");
+      else if (t === "progress") nav("progress");
+      else if (t === "practicals") location.href = APP_BASE + "practicals/";
+      syncTabbar();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && document.body.classList.contains("search-open")) {
+        document.body.classList.remove("search-open");
+        if (searchInput) { searchInput.value = ""; render(); }
+        syncTabbar();
+      }
+    });
+    logoutBtn.addEventListener("click", () => {
+      // No confirmation here at all was the actual bug behind "logs
+      // out suddenly if something is clicked" — this button sits
+      // packed in a row with five other small icons (WhatsApp, email,
+      // progress, search), and a mis-tap on it ended the session
+      // instantly with zero warning. checkCommands' forceLogout path
+      // was the other suspect, but that one's already correctly
+      // gated (exact session match, consumed the instant it's read,
+      // requires an explicit tap to confirm) — this button genuinely
+      // had none of that.
+      if (confirm("Sign out of Class 12?")) performLogout("logout");
+    });
+
+    // ── Support Us (UPI) ────────────────────────────────────
+    // No amount is pre-filled — the "am" param is deliberately left
+    // out of the UPI URI so whoever pays picks the amount themselves.
+    // The upi:// link only does anything where a UPI app can handle
+    // it (Android mainly); the QR code underneath is what makes it
+    // actually usable from a laptop, or an iPhone (iOS has no
+    // system-level UPI handler) — scan it with any UPI app on a
+    // phone instead. The QR image itself is generated by a small
+    // free public API (api.qrserver.com) — the one external
+    // dependency here; everything else about the site stays
+    // self-contained.
+    const supportBtn = $("#supportBtn");
+    const supportBtnTop = $("#supportBtnTop");
+    const supportModal = $("#supportModal");
+    if ((supportBtn || supportBtnTop) && supportModal) {
+      const upiUri = "upi://pay?pa=7405806352@fam&pn=Adnan&cu=INR";
+      const upiLink = $("#supportUpiLink");
+      const qrImg = $("#supportQr");
+      const openSupportModal = () => {
+        if (upiLink) upiLink.href = upiUri;
+        if (qrImg && !qrImg.src) {
+          qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(upiUri)}`;
+        }
+        supportModal.classList.remove("hidden");
+      };
+      const closeSupportModal = () => supportModal.classList.add("hidden");
+      if (supportBtn) supportBtn.addEventListener("click", openSupportModal);
+      if (supportBtnTop) supportBtnTop.addEventListener("click", openSupportModal);
+      $("#supportModalClose").addEventListener("click", closeSupportModal);
+      $("#supportModalOverlay").addEventListener("click", closeSupportModal);
+    }
+    if (searchInput) searchInput.addEventListener("input", () => { render(); if (searchInput.value.trim()) window.scrollTo({ top: 0 }); });
+    document.addEventListener("visibilitychange", () => {
+      if (!currentViewId) return;
+      if (document.hidden) {
+        if (currentViewResumedAt !== null) {
+          currentViewActiveMs += Date.now() - currentViewResumedAt;
+          currentViewResumedAt = null;
+        }
+      } else {
+        currentViewResumedAt = Date.now();
+      }
+    });
+
+    // Fires on tab close, browser close, and reload — the one moment
+    // a normal fetch can't be trusted to finish, so both of these go
+    // out via sendBeacon instead (see logEventBeacon above).
+    window.addEventListener("pagehide", () => {
+      endCurrentView();
+      if (sessionId) {
+        const seconds = sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : "";
+        logEventBeacon("session_end", currentName, "closed", undefined, { duration: seconds });
+      }
+    });
+
+    initAdminUI();
+
+    viewerClose.addEventListener("click", closeViewer);
+    const viewerDoneBtn = document.getElementById("viewerDoneBtn");
+    const viewerShareBtn = document.getElementById("viewerShareBtn");
+    if (viewerDoneBtn) viewerDoneBtn.addEventListener("click", () => {
+      if (!currentPdfPath) return;
+      const on = !getRevisedSet().has(currentPdfPath);
+      setRevised(currentPdfPath, on);
+      syncViewerDoneBtn();
+      showToast(on ? "Marked as done \u2713" : "Unmarked");
+      buzz();
+    });
+    if (viewerPageTotal) {
+      viewerPageTotal.title = "Jump to the last page";
+      viewerPageTotal.addEventListener("click", () => { if (currentPdf) scrollToPage(currentPdf.numPages); });
+    }
+    wireViewerSearch();
+    const viewerModeBtn = document.getElementById("viewerModeBtn");
+    if (viewerModeBtn) viewerModeBtn.addEventListener("click", cycleReadMode);
+    applyReadMode(false);
+    if (viewerShareBtn) viewerShareBtn.addEventListener("click", () => {
+      if (currentPdfPath) shareFile(currentPdfPath, viewerName.textContent || "Document");
+    });
+    viewerThumbToggle.addEventListener("click", () => {
+      viewerThumbStrip.classList.toggle("viewer__thumb-strip--open");
+    });
+    viewerOverlay.addEventListener("click", closeViewer);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncViewerViewport);
+      window.visualViewport.addEventListener("scroll", syncViewerViewport);
+    }
+    $("#viewerZoomIn").addEventListener("click", zoomIn);
+    $("#viewerZoomOut").addEventListener("click", zoomOut);
+    if (viewerPrevPage) viewerPrevPage.addEventListener("click", prevPage);
+    if (viewerNextPage) viewerNextPage.addEventListener("click", nextPage);
+    if (viewerPageInput) {
+      viewerPageInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const p = parseInt(viewerPageInput.value, 10);
+          if (!isNaN(p)) scrollToPage(p);
+          viewerPageInput.blur();
+        }
+      });
+      viewerPageInput.addEventListener("change", () => {
+        const p = parseInt(viewerPageInput.value, 10);
+        if (!isNaN(p)) scrollToPage(p);
+      });
+      viewerPageInput.addEventListener("blur", () => {
+        const p = parseInt(viewerPageInput.value, 10);
+        if (isNaN(p) || (currentPdf && (p < 1 || p > currentPdf.numPages))) {
+          if (pagesInner) {
+            const wraps = pagesInner.querySelectorAll(".viewer__page-wrap");
+            const targetMid = viewerPages.scrollTop + viewerPages.clientHeight / 3;
+            let closest = 1;
+            let minDiff = Infinity;
+            wraps.forEach((w) => {
+              const diff = Math.abs(w.offsetTop - targetMid);
+              if (diff < minDiff) { minDiff = diff; closest = Number(w.dataset.pageNum); }
+            });
+            viewerPageInput.value = closest;
+          }
+        }
+      });
+    }
+    window.addEventListener("resize", () => {
+      if (!viewer.classList.contains("hidden")) syncViewerViewport();
+    });
+    if (viewerFitWidth) viewerFitWidth.addEventListener("click", fitToWidth);
+    if (viewerFitPage) viewerFitPage.addEventListener("click", fitToPage);
+    viewerPages.addEventListener("scroll", onViewerScroll, { passive: true });
+    viewerPages.addEventListener("touchstart", onViewerTouchStart, { passive: true });
+    viewerPages.addEventListener("touchmove", onViewerTouchMove, { passive: false });
+    viewerPages.addEventListener("touchend", onViewerTouchEnd, { passive: true });
+    viewerPages.addEventListener("touchcancel", onViewerTouchEnd, { passive: true });
+    viewerPages.addEventListener("wheel", onViewerWheel, { passive: false });
+    viewerPages.addEventListener("dblclick", onViewerDblClick);
+    // iOS Safari has its own pinch gesture events; keep it from zooming the whole page instead.
+    ["gesturestart", "gesturechange", "gestureend"].forEach((t) => viewerPages.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeViewer();
+
+      // Keyboard navigation for PDF viewer (PageUp/PageDown)
+      if (!viewer.classList.contains("hidden")) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); openViewerSearch(); return; }
+        if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          // Laptop shortcuts: ←/→ page, + / − zoom, F fit width, D reading mode, / find
+          if (e.key === "ArrowRight") { e.preventDefault(); nextPage(); }
+          else if (e.key === "ArrowLeft") { e.preventDefault(); prevPage(); }
+          else if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomIn(); }
+          else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomOut(); }
+          else if (e.key === "f" || e.key === "F") { e.preventDefault(); fitToWidth(); }
+          else if (e.key === "d" || e.key === "D") { e.preventDefault(); cycleReadMode(); }
+          else if (e.key === "/") { e.preventDefault(); openViewerSearch(); }
+        }
+        if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") {
+          if (e.key === "PageDown" || (e.key === "ArrowDown" && e.altKey)) {
+            e.preventDefault();
+            nextPage();
+          } else if (e.key === "PageUp" || (e.key === "ArrowUp" && e.altKey)) {
+            e.preventDefault();
+            prevPage();
+          }
+        }
+      }
+
+      // Block the obvious save/print shortcuts while a PDF is open.
+      // This deters casual attempts, not determined ones — anyone
+      // using DevTools directly can still get around it, same as any
+      // browser-rendered PDF viewer (Google Drive's included).
+      if (!viewer.classList.contains("hidden") && (e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "p")) {
+        e.preventDefault();
+      }
+    });
+    viewerPages.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // Subtle magnetic pull on the gate CTA — a single deliberate
+    // hover moment, not applied anywhere else.
+    if (gateBtn && matchMedia("(hover: hover)").matches) {
+      gateBtn.addEventListener("mousemove", (e) => {
+        const r = gateBtn.getBoundingClientRect();
+        const x = (e.clientX - r.left - r.width / 2) * 0.15;
+        const y = (e.clientY - r.top - r.height / 2) * 0.3;
+        gateBtn.style.transform = `translate(${x}px, ${y}px)`;
+      });
+      gateBtn.addEventListener("mouseleave", () => {
+        gateBtn.style.transform = "";
+      });
+    }
+  }
+
+  // ── Name Gate ──────────────────────────────────────────
+  // ── Student PIN ─────────────────────────────────────────
+  // Optional 4–6 digit PIN. State machine for the gate:
+  //   pinMode null      → not asked yet (first submit asks the server)
+  //   pinMode "create"  → name has no PIN: offer to make one (can skip)
+  //   pinMode "enter"   → name has a PIN: must type it (unless this device is trusted)
+  // Network trouble NEVER blocks login here (fails open) — the server
+  // still refuses PDF tokens for PIN-protected names without proof.
+  let pinMode = null;
+  let pinStateP = null; // started in parallel with the other login checks
+  const dtKey = (name) => "c12_dt_" + normalizeName(name);
+  function getDt(name) { try { return localStorage.getItem(dtKey(name)) || ""; } catch { return ""; } }
+  function setDt(name, v) { try { if (v) localStorage.setItem(dtKey(name), v); else localStorage.removeItem(dtKey(name)); } catch {} }
+
+  // Talks to the password endpoint. A slow answer is NOT treated as a failure:
+  // the same request is quietly sent again after 2.5 s and 6 s while the first
+  // is still running, and whichever answers first wins. Checking a password
+  // carries an id, so the server never counts one wrong try twice. Creating a
+  // password is sent once (plus one retry) because it must not run twice.
+  // First names that two students share: these must be typed together with the surname.
+  const SURNAME_REQUIRED = ["rutva"];
+
+  async function pinApi(body) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return null;
+    const payload = JSON.stringify(Object.assign({ type: "pin", rid: body.op === "check" ? makeId() : "" }, body));
+    const send = async (ms) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: payload,
+          signal: controller.signal
+        });
+        return await res.json();
+      } finally { clearTimeout(timer); }
+    };
+    if (body.op !== "state" && body.op !== "check") {
+      try { return await send(12000); } catch { try { return await send(12000); } catch { return null; } }
+    }
+    return new Promise((resolve) => {
+      let finished = false, running = 0, launched = 0, lastBad = null;
+      const done = (v) => { if (!finished) { finished = true; resolve(v); } };
+      const fire = (ms) => {
+        if (finished) return;
+        launched++; running++;
+        send(ms).then((j) => {
+          if (j && j.ok) done(j); else if (j) lastBad = j;
+        }).catch(() => {}).finally(() => {
+          running--;
+          if (!finished && running === 0 && launched >= 3) done(lastBad);
+        });
+      };
+      fire(15000);
+      setTimeout(() => fire(12000), 2500);
+      setTimeout(() => fire(9000), 6000);
+      setTimeout(() => done(lastBad), 16500);
+    });
+  }
+
+  function resetPinUI() {
+    pinMode = null;
+    gatePinBox.classList.add("hidden");
+    gatePinInput.value = "";
+    gatePinConfirm.value = "";
+    gatePinConfirmField.classList.add("hidden");
+    gatePinForgot.classList.add("hidden");
+    if (gatePinAsk) { gatePinAsk.classList.add("hidden"); gatePinAsk.disabled = false; gatePinAsk.textContent = "Ask admin to reset it"; }
+  }
+
+  function showPinUI(mode, name, opts) {
+    pinMode = mode;
+    gatePinBox.classList.remove("hidden");
+    gatePinInput.value = "";
+    gatePinConfirm.value = "";
+    const create = mode === "create";
+    gatePinConfirmField.classList.toggle("hidden", !create);
+    gatePinInput.autocomplete = create ? "new-password" : "current-password";
+    gatePinInput.placeholder = "Password";
+    gatePinForgot.classList.toggle("hidden", create);
+    if (gatePinAsk) { gatePinAsk.classList.toggle("hidden", create); gatePinAsk.dataset.name = name; }
+    gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my password for the Class 12 portal. My name: " + name);
+    gatePinHint.textContent = create
+      ? "Choose a password (4–32 characters) — you need it every time you sign in, so nobody else can use your name. The admin can also see which files you tick as revised."
+      : "Enter your password to continue.";
+    if (!(opts && opts.noFocus)) gatePinInput.focus();
+  }
+
+  if (gatePinAsk) gatePinAsk.addEventListener("click", async () => {
+    const nm = gatePinAsk.dataset.name || "";
+    if (!nm) return;
+    gatePinAsk.disabled = true;
+    gatePinAsk.textContent = "Sending…";
+    const r = await pinApi({ type: "pinReset", op: "x", name: nm });
+    if (r && r.ok) {
+      gatePinAsk.textContent = "Request sent";
+      gatePinHint.textContent = "Request sent. The admin will confirm it is you and reset your password — then sign in again and choose a new one.";
+    } else {
+      gatePinAsk.disabled = false;
+      gatePinAsk.textContent = "Ask admin to reset it";
+      gatePinHint.textContent = "Couldn't send the request right now. Use \"Forgot password?\" (WhatsApp) instead.";
+    }
+  });
+
+  // Returns "ok" to carry on logging in, or "wait" when the gate is
+  // now showing a PIN box and the person must act.
+  let lastLoginPw = "";   // kept only until the browser has been offered "save password"
+  let gateLoginT0 = 0;
+  function noteLoginFail(name, what) {
+    try { logEvent("login", name, what, `${location.href} || loginMs:${Math.round(performance.now() - (gateLoginT0 || performance.now()))}`); } catch (e) {}
+  }
+
+  async function runPinStep(name) {
+    if (pinMode === null) {
+      // Fast path: the list of password-holders already arrived with the login
+      // check, so the password box can appear at once — no waiting on the server.
+      const lc = cachedLoginCheck;
+      if (lc && lc.pinPrefixes) {
+        const h = await hashName(name);
+        if (lc.pinPrefixes.indexOf(h.slice(0, 12)) !== -1) {
+          pinStateP = null;
+          showPinUI("enter", name);
+          return "wait";
+        }
+        // Not in the quick list: ask the server before offering "create a password" —
+        // the same student may already have one under another spelling of their name
+        // (first name / first + surname / full name all share ONE password).
+        pinStateP = null;
+      }
+      const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
+      pinStateP = null;
+      if (!st) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
+      if (!st.ok || !st.state) return "ok"; // an older backend that doesn't know passwords yet
+      if (st.state === "trusted") return "ok";
+      if (st.state === "none") {
+        showPinUI("create", name); // mandatory: no way past this without choosing a password
+        return "wait";
+      }
+      showPinUI("enter", name);
+      return "wait";
+    }
+
+    if (pinMode === "create") {
+      const pin = gatePinInput.value;
+      if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
+      if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
+      lastLoginPw = pin;
+      const r = await pinApi({ op: "set", name, pin });
+      if (!r) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
+      if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
+      if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
+      if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
+      showGateError("Couldn't save your password — please try again."); return "wait";
+    }
+
+    // enter
+    const pin = gatePinInput.value;
+    if (!pin) { gatePinInput.focus(); return "wait"; }
+    lastLoginPw = pin;
+    let r = null;
+    const fast = await authFast({ op: "check", name, pin });
+    if (fast && fast.valid && fast.dt) r = fast;
+    else if (fast && fast.locked) r = { ok: true, valid: false, locked: fast.locked };
+    else r = await pinApi({ op: "check", name, pin });
+    if (!r || !r.ok) { noteLoginFail(name, "check_failed"); showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
+    if (r.valid && !r.dt) {
+      // The server has no password for this name (it was just reset) — choose a new one.
+      showPinUI("create", name);
+      showGateError("Please choose a new password to continue.");
+      return "wait";
+    }
+    if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
+    gatePinInput.value = "";
+    gatePinInput.focus();
+    if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot password.`);
+    else showGateError(`Wrong password.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);
+    return "wait";
+  }
+
+  // ── One-step form (like Instagram) ──────────────────────────────
+  // As soon as a name is typed, the password box appears under it — no extra
+  // "Continue" first. It needs no server call: the list of password-holders
+  // arrives with the login check. The browser's password manager sees one
+  // normal username + password form, so it can fill and offer to save.
+  let previewName = "", previewTimer = null;
+  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 220); }
+  async function previewPasswordBox() {
+    const raw = nameInput.value.trim();
+    const norm = normalizeName(raw);
+    if (norm.length < 2) { if (pinMode) resetPinUI(); previewName = ""; if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden"); return; }
+    const protectedList = (SITE_CONFIG.protectedAccounts && SITE_CONFIG.protectedAccounts.usernames) || [];
+    if (protectedList.includes(norm)) {
+      if (pinMode) resetPinUI();
+      previewName = norm;
+      gatePasswordField.classList.remove("hidden");
+      return;
+    }
+    if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden");
+    const lc = cachedLoginCheck;
+    if (!lc || !lc.pinPrefixes) return;               // not loaded yet: the Continue button still handles it
+    const h = await hashName(raw);
+    if (normalizeName(nameInput.value) !== norm) return; // they kept typing
+    const list = SITE_CONFIG.accessList;
+    const allowed = !list || !list.enabled || (list.hashes || []).includes(h) || (lc.accessHashes || []).includes(h);
+    if (!allowed) { if (pinMode) resetPinUI(); previewName = ""; return; }
+    const mode = lc.pinPrefixes.indexOf(h.slice(0, 12)) !== -1 ? "enter" : "create";
+    if (mode === "create") { if (pinMode && previewName) resetPinUI(); previewName = ""; return; }   // the server decides on Continue
+    if (pinMode === mode && previewName === norm) return;
+    previewName = norm;
+    showPinUI(mode, raw, { noFocus: true });
+  }
+
+  const EYE_ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A16.6 16.6 0 0 0 2 12s3.6 7 10 7a10 10 0 0 0 4.4-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+  function addEyeButton(input) {
+    if (!input || !input.parentElement || input.parentElement.querySelector(".gate__eye")) return;
+    const wrap = input.parentElement;
+    wrap.classList.add("gate__field--eye");
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "gate__eye"; b.setAttribute("aria-label", "Show password"); b.innerHTML = EYE_ON;
+    b.addEventListener("click", () => {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      b.innerHTML = show ? EYE_OFF : EYE_ON;
+      b.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      input.focus();
+    });
+    wrap.appendChild(b);
+  }
+
+  async function onNameSubmit(e) {
+    e.preventDefault();
+    const name = nameInput.value.trim();
+    if (!name) return;
+    const loginT0 = performance.now();
+    gateLoginT0 = loginT0;
+    try { localStorage.setItem("c12_lastname", name); } catch (e) {}
+
+    // Instant feedback the moment Continue is tapped/clicked — before
+    // any of the network-bound checks below even start. Those checks
+    // (device/IP lookups) can take a second or two on a slow
+    // connection, and with no visual change on tap it looked like the
+    // press hadn't registered, so people tapped again (or gave up).
+    setGateBusy(true);
+    hideGateError();
+
+    try {
+      // Admin entry: checked before anything else, and returns early
+      // so this never touches the Log sheet, the access list, or
+      // localStorage — the admin secret leaves no trace of itself in
+      // your own student-facing data. Compared as a salted hash, same
+      // model as the access list, so the real phrase never sits in
+      // config.js as plain text.
+      if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled && SITE_CONFIG.admin.secretHash) {
+        const candidateHash = await hashAdminSecret(name);
+        if (candidateHash === SITE_CONFIG.admin.secretHash) {
+          // The admin API key is derived from the passphrase but is NOT
+          // the public hash. The legacy key only works until the Apps
+          // Script has ADMIN_API_KEY filled in.
+          adminPhrase = name.trim(); // kept in memory only; sent with each admin request so the server can check it
+          nameInput.value = "";
+          hideGateError();
+          enterAdmin();
+          return;
+        }
+      }
+
+      // Protected accounts (name + password) — checked before the
+      // normal abuse/suspended/authorized flow below, since this is a
+      // fundamentally different kind of login. A correct password
+      // substitutes for the normal "on the approved list" check
+      // further down (that's the whole point of a password), but
+      // NOT for the suspended check — even a password holder can
+      // still be suspended if something goes wrong.
+      const normalizedEntry = normalizeName(name);
+      const protectedList = (SITE_CONFIG.protectedAccounts && SITE_CONFIG.protectedAccounts.usernames) || [];
+      let credentialsVerified = false;
+      if (protectedList.includes(normalizedEntry)) {
+        const password = gatePasswordInput.value;
+        if (!password) {
+          gatePasswordField.classList.remove("hidden");
+          gatePasswordInput.focus();
+          setGateBusy(false);
+          return;
+        }
+        const result = await checkCredentialsRemote(name, password);
+        if (result === "invalid") {
+          showGateError("Incorrect password.");
+          gatePasswordInput.value = "";
+          gatePasswordInput.focus();
+          return;
+        }
+        if (result === "error") {
+          // The check itself couldn't complete (even after the
+          // built-in retry) — genuinely different from a wrong
+          // password, so it gets an honest message instead, and the
+          // password is deliberately NOT cleared: whatever they typed
+          // was never actually verified either way, so there's no
+          // reason to make them retype it.
+          noteLoginFail(name, "check_failed");
+          showGateError("The server didn't answer in time. Nothing was lost — just press Continue again.");
+          return;
+        }
+        credentialsVerified = true;
+        lastLoginPw = password;
+      } else if (!gatePasswordField.classList.contains("hidden")) {
+        // They'd triggered the password field for an earlier name,
+        // then changed the name field to something that isn't
+        // protected — clear it out so it doesn't linger irrelevantly.
+        gatePasswordField.classList.add("hidden");
+        gatePasswordInput.value = "";
+      }
+
+      // Tagged distinctly as "suspended" (not folded into "unauthorized")
+      // so the Apps Script backend can tell this specific case apart and
+      // auto-add the device fingerprint (parsed out of the page field
+      // below) to its own blocklist — see the backend's doPost. This
+      // needs the fresh Apps Script deployment to understand the tag;
+      // it's safe now since that's being redeployed anyway.
+      //
+      // All three network-bound lookups fire together instead of one
+      // after another, AND the remote lookup itself is now a single
+      // consolidated call (fetchLoginCheck) instead of 4 separate
+      // ones — see its comment above. Prefetching it here means
+      // isSuspended()/isAuthorized()/isNameActive() below just read
+      // the already-resolved, cached result instead of each firing
+      // their own request.
+      if (pinMode === null && !credentialsVerified && !(cachedLoginCheck && cachedLoginCheck.pinPrefixes)) pinStateP = pinApi({ op: "state", name });
+      const [deviceId, ip] = await Promise.all([
+        getDeviceId(),
+        getClientIp(),
+        fetchLoginCheck(name)
+      ]);
+      const trace = `${location.href} || device:${deviceId} || ip:${ip || "unknown"} || label:${parseDeviceLabel()}`;
+
+      // Harassment/abuse in the name field itself (e.g. someone typing
+      // slurs or taunts instead of a real name) gets the device
+      // auto-blocked outright — tagged "abusive" so the backend's
+      // doPost treats it exactly like a suspended-name login: the
+      // device fingerprint goes straight into BlockedDevices, no
+      // admin action needed. This is a best-effort word/phrase list
+      // (see ABUSIVE_WHOLE_WORDS/ABUSIVE_PHRASES below), not a
+      // guarantee — extend the lists if something gets through, and
+      // the manual Suspend button in admin still works independently
+      // of this for anything the filter misses.
+      if (SURNAME_REQUIRED.includes(normalizeName(name))) {
+        showGateError("Two students in our class share the first name “" + name.trim() + "”. Please type your first name AND surname (for example: " + name.trim() + " Shah).");
+        return;
+      }
+
+      if (looksAbusive(name)) {
+        logEvent("login", name, "abusive", trace);
+        showGateError("You're not authorized to view this page. Please enter your actual name.");
+        return;
+      }
+
+      if (await isSuspended(name)) {
+        logEvent("login", name, "suspended", trace);
+        showGateError((SITE_CONFIG.suspended && SITE_CONFIG.suspended.message) || "You are not able to access this page.");
+        return;
+      }
+
+      if (!credentialsVerified && !(await isAuthorized(name))) {
+        logEvent("login", name, "unauthorized", trace);
+        // Framed as "not yet approved" rather than a flat rejection —
+        // this used to read like a locked door ("you're not
+        // authorized"), which doesn't fit a free, word-of-mouth
+        // resource where you WANT people to ask for access. The
+        // in-form button below is now the actual way to request it —
+        // WhatsApp/Email further down the page still work too, for
+        // anyone who'd rather message directly.
+        showGateError("You're not authorized to view this page yet.");
+        showGateApprovalOption(name, trace);
+        return;
+      }
+
+      // One active session per identity at a time — now handled by
+      // kicking the OLDER device out (see claimActiveSession, called
+      // from showApp right after this) instead of blocking the NEW
+      // login attempt the way this used to. The old approach also had
+      // a real annoyance built in: your own reload or reopened tab
+      // could trip it and lock YOU out for up to ~90 seconds. Letting
+      // the new login through and force-logging-out the old session
+      // is both what was actually asked for and doesn't have that
+      // failure mode.
+
+      if (!credentialsVerified) {
+        hideGateError();
+        if ((await runPinStep(name)) === "wait") return;
+      }
+
+      hideGateError();
+      const sid = makeId();
+      saveSession(name, sid);
+      logEvent("login", name, "authorized", `${trace} || loginMs:${Math.round(performance.now() - loginT0)}`);
+      // Stay signed in (only if ticked), and offer the browser's "save password" prompt.
+      try {
+        if (gateKeep && gateKeep.checked) localStorage.setItem("c12_keep", JSON.stringify({ name, until: Date.now() + 12 * 3600 * 1000 }));
+        else localStorage.removeItem("c12_keep");
+      } catch (e) {}
+      try {
+        if (lastLoginPw && window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
+          navigator.credentials.store(new PasswordCredential({ id: name, password: lastLoginPw, name })).catch(() => {});
+        }
+      } catch (e) {}
+      lastLoginPw = "";
+      gatePasswordField.classList.add("hidden");
+      gatePasswordInput.value = "";
+      gate.classList.add("fade-out");
+      setTimeout(() => { gate.classList.add("hidden"); showApp(name); }, 300);
+    } finally {
+      // Always release the busy state — on a rejected path the person
+      // needs the button back immediately to retry; on the success
+      // path it's harmless since the gate is already fading out.
+      setGateBusy(false);
+    }
+  }
+
+  // Instant visual proof that the tap/click registered, before any of
+  // the network checks above resolve: button dims, label swaps, and
+  // the arrow spins in place instead of nothing appearing to happen
+  // for a couple of seconds.
+  const gateBtnLabel = gateBtn.querySelector(".gate__btn-label");
+  const gateBtnLabelText = gateBtnLabel ? gateBtnLabel.textContent : "";
+  let gateBusyTimer = null, gateRetryTimer = null;
+  const gateProgress = document.getElementById("gateProgress");
+  const gateRetry = document.getElementById("gateRetry");
+  const gateKeep = document.getElementById("gateKeep");
+  if (gateRetry) gateRetry.addEventListener("click", () => location.reload());
+  function setGateBusy(isBusy) {
+    if (gateProgress) gateProgress.classList.toggle("on", isBusy);
+    clearTimeout(gateRetryTimer);
+    if (gateRetry) {
+      if (isBusy) gateRetryTimer = setTimeout(() => { if (gateBtn.disabled) gateRetry.classList.remove("hidden"); }, 8000);
+      else gateRetry.classList.add("hidden");
+    }
+    gateBtn.disabled = isBusy;
+    gateBtn.classList.toggle("is-busy", isBusy);
+    if (gateBtnLabel) gateBtnLabel.textContent = isBusy ? "Signing in…" : gateBtnLabelText;
+    clearTimeout(gateBusyTimer);
+    // If the server is slow, say so instead of looking frozen.
+    if (isBusy && gateBtnLabel) gateBusyTimer = setTimeout(() => { if (gateBtn.disabled) gateBtnLabel.textContent = "Still working — hang on…"; }, 3500);
+  }
+
+  function showGateError(msg) {
+    gateError.textContent = msg;
+    gateError.classList.remove("hidden");
+    gateField.classList.remove("shake");
+    // Force reflow so the shake animation can re-trigger on repeat attempts
+    void gateField.offsetWidth;
+    gateField.classList.add("shake");
+  }
+
+  function hideGateError() {
+    gateError.classList.add("hidden");
+    hideGateApprovalOption(); // the two are always shown/cleared together — see showGateApprovalOption's comment
+  }
+
+  // Holds whatever name+trace the "Send my name for approval" button
+  // should submit if tapped right now — set only when the unauthorized
+  // branch below actually shows the button, so a click can never fire
+  // for a stale name from an earlier attempt.
+  let pendingApprovalName = null;
+  let pendingApprovalTrace = null;
+
+  // Reveals the explicit "Send my name for approval" button — this is
+  // the ONLY path that adds someone to the admin's approval queue.
+  // Previously, the backend's pending-queue was built from every
+  // single "unauthorized" login attempt automatically — meaning a
+  // mistyped name, a curious stranger, or someone just poking at the
+  // login screen all cluttered the admin dashboard identically to a
+  // genuine request. Logging "unauthorized" (a couple of lines above
+  // each call site below) still happens every time, for the audit-log
+  // attempt counts — this button is the one thing that actually
+  // surfaces a person to the admin, and only once they've deliberately
+  // asked to be.
+  function showGateApprovalOption(name, trace) {
+    if (!gateRequestApproval) return;
+    pendingApprovalName = name;
+    pendingApprovalTrace = trace;
+    gateRequestApproval.classList.remove("hidden");
+    if (gateRequestEmail) gateRequestEmail.value = "";
+    if (gateRequestEmailHint) gateRequestEmailHint.classList.add("hidden");
+    if (gateRequestBtn) {
+      gateRequestBtn.classList.remove("hidden", "is-busy");
+      gateRequestBtn.disabled = true; // stays disabled until a valid email is entered
+      gateRequestBtn.textContent = "Send my name for approval";
+    }
+    if (gateRequestSent) gateRequestSent.classList.add("hidden");
+  }
+
+  function hideGateApprovalOption() {
+    pendingApprovalName = null;
+    pendingApprovalTrace = null;
+    if (gateRequestApproval) gateRequestApproval.classList.add("hidden");
+  }
+
+  // Fetches the live file catalog and slots it into
+  // SITE_CONFIG.subjects[i].subfolders in place of whatever's
+  // hardcoded there — this is what lets a file added via the admin
+  // dashboard's "Scan Backblaze" feature show up without a GitHub
+  // edit. If the catalog sheet has nothing for a subject yet (a
+  // brand-new deployment before the first scan-and-confirm ever
+  // runs, or a network hiccup), that subject's hardcoded config.js
+  // list is left untouched as a safety net rather than wiped to empty.
+  // Called from showApp() without being awaited — see the comment
+  // there — so this runs in the background after the home screen is
+  // already visible, and showApp() just calls render() again once
+  // this settles, to pick up anything new.
+  // Public read-only requests (catalog / login lists / gate stats) go
+  // through the optional API-cache Worker when config-extra.js gives
+  // its address; otherwise (or if it fails) straight to Apps Script.
+  function cacheBase() {
+    const u = SITE_CONFIG.apiCache && SITE_CONFIG.apiCache.url;
+    return (u && /^https:\/\//.test(u)) ? u.replace(/\/+$/, "") : "";
+  }
+  async function fetchPublic(action, extraQuery, timeoutMs) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
+    const once = async (base, q) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(`${base}?action=${action}${q || ""}`, { signal: controller.signal });
+        const data = await res.json();
+        if (!data || data.ok !== true) throw new Error("bad");
+        return data;
+      } finally { clearTimeout(timer); }
+    };
+    const cb = cacheBase();
+    if (cb) { try { return await once(cb, ""); } catch {} }
+    return once(endpoint, extraQuery);
+  }
+
+  async function loadGateStats() {
+    const box = $("#gateStats");
+    if (!box) return;
+    try {
+      const d = await fetchPublic("stats", "", 6000);
+      const parts = [];
+      if (d.files >= 10) parts.push(`${d.files} files`);
+      parts.push("3 subjects", "Practicals");
+      let html = `<span>${parts.join(" · ")}</span>`;
+      if (d.studiedToday >= 3) html += `<span class="gate__stats-live"><i aria-hidden="true"></i>${d.studiedToday} studied today</span>`;
+      box.innerHTML = html;
+      box.classList.remove("hidden");
+    } catch { /* line stays hidden */ }
+  }
+
+  async function fetchAndApplyCatalog() {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
+    try {
+      const data = await fetchPublic("catalog", "", 6000);
+      if (data && data.ok) liveAnnouncement = data.announcement || null;
+      fileSubjectMap = null;
+      if (!data || !data.ok || !data.catalog) return;
+      SITE_CONFIG.subjects.forEach((s) => {
+        const liveSubfolders = data.catalog[s.id];
+        if (liveSubfolders && liveSubfolders.length) {
+          s.subfolders = liveSubfolders.map((f) => {
+            const existing = (s.subfolders || []).find((oldF) => oldF.name.toLowerCase() === f.name.toLowerCase() || (oldF.id && f.id && oldF.id === f.id));
+            const id = f.id || (existing && existing.id) || (s.id + "-" + f.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""));
+            return {
+              id: id,
+              name: f.name,
+              files: f.files || []
+            };
+          });
+        }
+      });
+    } catch {
+      // network hiccup — config.js's existing hardcoded list stands in as-is, site still works
+    }
+  }
+
+  async function showApp(name) {
+    try { sessionStorage.setItem("c12_authok", String(Date.now())); } catch (e) {}
+    currentName = name;
+    sessionId = readSessionId() || makeId(); // reuses the one saved at login — a plain reload must NOT look like a different device logging in, or claimActiveSession below would kick out its own just-abandoned previous instance every single time
+    sessionStart = Date.now();
+    tmStart();
+    app.classList.remove("hidden");
+    greeting.textContent = `Hi, ${name}`;
+    focusRefresh();
+    ensurePdfLib(); // start the PDF library download now that the person is signed in
+    syncOnLogin();
+    startHeartbeat();
+    claimActiveSession(name); // fire-and-forget — see its own comment below for why this can't slow anything down
+    ensurePdfToken(); // kick off in the background — don't make the very first thumbnail wait on it
+    // Render immediately from config.js's own static subject list —
+    // that's already everything needed for the home screen, zero
+    // network calls. fetchAndApplyCatalog() used to be awaited RIGHT
+    // HERE, meaning the entire home screen (every subject icon) sat
+    // blank until a Google Apps Script round-trip finished — that
+    // round-trip is genuinely a few seconds on Apps Script's own cold
+    // start, which is exactly the "5-7 seconds before icons appear"
+    // delay. The catalog only ever ADDS newly-scanned files on top of
+    // the static list (see fetchAndApplyCatalog's own comment) — it's
+    // an enhancement, not something the first paint should ever wait
+    // on. Now it runs in the background and just redraws whatever's
+    // currently on screen if it actually changed anything.
+    // Landed here from one of the public /physics /chemistry /maths
+    // preview pages (via ?subject=xxx) — drop them straight into that
+    // subject instead of the home grid, so the click that brought them
+    // here from search actually goes somewhere relevant. Only consumed
+    // once: replaceState strips it from the URL immediately after, so
+    // a later reload or manual "Home" tap behaves completely normally.
+    const qs = new URLSearchParams(location.search);
+    // Sent here by a Practicals page because they weren't signed in: now they are, so take them back.
+    const nextPath = qs.get("next");
+    if (nextPath && /^practicals\/[a-z0-9\/_-]*$/i.test(nextPath)) {
+      location.replace(APP_BASE + nextPath);
+      return;
+    }
+    const requestedSubject = qs.get("subject");
+    // A phone that restarted the tab while a PDF was open: put the person back in that PDF.
+    let restoreFile = null;
+    try { if (Date.now() - Number(sessionStorage.getItem("c12_alive") || 0) < 90000) restoreFile = sessionStorage.getItem("c12_openfile"); } catch (e) {}
+    const requestedFile = qs.get("file") || restoreFile; // a shared link to one PDF (or the one that was open before a reload)
+    const subjectMatch = requestedSubject && SITE_CONFIG.subjects.find((s) => s.id === requestedSubject);
+    const requestedView = qs.get("view");   // coming back from the Practicals pages: ?view=progress
+    const requestedQuery = qs.get("q");     // ... or a search typed up there
+    let openedShared = false;
+    if (requestedFile) openedShared = openRequestedFile(requestedFile);
+    if (!openedShared) {
+      if (subjectMatch) {
+        nav("subject", subjectMatch.id, null, "replace"); // also rewrites ?subject=x into /x/
+      } else if (requestedView === "progress") {
+        nav("progress", null, null, "replace");
+      } else {
+        nav("home", null, null, "replace");
+        if (requestedQuery && searchInput) { searchInput.value = requestedQuery.slice(0, 80); render(); }
+        else if (requestedView === "search" && searchInput) { document.body.classList.add("search-open"); setTimeout(() => searchInput.focus(), 200); }
+      }
+      if (requestedView || requestedQuery) { try { history.replaceState(history.state, "", location.pathname); } catch (e) {} }
+    }
+    fetchAndApplyCatalog().then(() => {
+      // The page is already on screen — redraw quietly (no second intro animation).
+      document.body.classList.add("no-anim");
+      setTimeout(() => document.body.classList.remove("no-anim"), 400);
+      if (requestedFile && !openedShared) {
+        if (!openRequestedFile(requestedFile)) render();
+      } else {
+        render();
+      }
+    });
+  }
+
+  // ── Heartbeat ("who's on the site right now") ───────────
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(sendHeartbeat, 120000);
+    sendHeartbeat(); // so Presence shows them immediately, not after 45s
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  // One readable request per minute does three jobs: marks the student
+  // as online, brings back any admin message / forced logout, and
+  // returns "studied today". (It used to be three separate requests
+  // every 45s.) An older backend only answers {ok:true}; then we fall
+  // back to the old separate calls so nothing breaks mid-deploy.
+  let hbBusy = false;
+  async function sendHeartbeat() {
+    if (!sessionId || hbBusy) return;
+    if (document.hidden && !sendHeartbeat.force) return; // nobody is looking — don't bother Google
+    sendHeartbeat.force = false;
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
+    const where = currentViewId
+      ? `viewing: ${currentViewName}`
+      : (curFolder ? curFolder.name : curSubject ? curSubject.name : "home");
+    hbBusy = true;
+    let data = null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: buildLogPayload("heartbeat", currentName, where),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      data = await res.json();
+    } catch { data = null; } finally { hbBusy = false; }
+    if (data && data.ok && data.cmd !== undefined) {
+      applyCommand(data.cmd);
+      if (typeof data.todaySeconds === "number" && studyTimeEl) {
+        const mins = Math.round(data.todaySeconds / 60);
+        studyTimeEl.textContent = mins > 0 ? `Studied ${mins}m today` : "";
+      }
+    } else if (data && data.ok) {
+      checkCommands(); refreshStudyTime(); // older backend
+    } else {
+      logEvent("heartbeat", currentName, where); // couldn't read a reply — at least record presence the old way
+    }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && sessionId) { sendHeartbeat.force = true; sendHeartbeat(); }
+  });
+
+  // Refetches "studied Xm today" and updates the nav display. Called
+  // once right after login and then again on every heartbeat (~45s),
+  // so it stays current through a session without hammering the
+  // backend on every page interaction. Scoped by sessionId server-
+  // side (see getTodayStatsForSession) — nothing here can be used to
+  // read anyone else's study time.
+  async function refreshStudyTime() {
+    if (!sessionId || !studyTimeEl) return;
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`${endpoint}?action=todayStats&sessionId=${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await res.json();
+      if (data && data.ok) {
+        const mins = Math.round(data.todaySeconds / 60);
+        studyTimeEl.textContent = mins > 0 ? `Studied ${mins}m today` : "";
+      }
+    } catch {
+      // silent — this is a nice-to-have, not worth surfacing an error for
+    }
+  }
+
+  // Heartbeats go out via a no-cors POST (see logEvent above), which
+  // means the response body is opaque and unreadable — so an admin
+  // message or forced logout can't ride along on that request. This
+  // is a separate, plain GET instead (readable, same pattern as
+  // adminFetch below) asking "anything waiting for my sessionId?".
+  // Not gated behind admin.enabled — every student's browser needs to
+  // be able to poll this, admin or not.
+  // One-active-device-per-person. Fired once from showApp right after
+  // login, never awaited and never on the critical path — if it's
+  // slow or fails outright, login and the home screen are completely
+  // unaffected either way, same fire-and-forget spirit as logEvent.
+  // The actual kick-out isn't instant: the OTHER device only finds
+  // out on its next heartbeat poll (every 45s, same as the admin's
+  // manual force-logout already had) — going faster than that would
+  // mean polling far more often just for this, which trades away the
+  // "still very fast" you asked to keep. Up to ~45s where both
+  // devices could technically still be in, then the older one is cut.
+  function claimActiveSession(name) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0 || !sessionId) return;
+    try {
+      const url = new URL(endpoint);
+      url.searchParams.set("action", "claimSession");
+      url.searchParams.set("name", name);
+      url.searchParams.set("sessionId", sessionId);
+      fetch(url.toString()).catch(() => {});
+    } catch {
+      // Never let this block login.
+    }
+  }
+
+  function applyCommand(data) {
+    if (!data) return;
+    if (data.forceLogout) {
+      const other = data.message && /another device/i.test(data.message);
+      showAdminNotice(
+        data.message || "You've been signed out by the admin.",
+        () => performLogout(other ? "other_device" : "admin_logout")
+      );
+      return;
+    }
+    if (data.message) {
+      showAdminNotice(data.message);
+    }
+  }
+
+  async function checkCommands() {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0 || !sessionId) return;
+    try {
+      const url = new URL(endpoint);
+      url.searchParams.set("action", "checkCommands");
+      url.searchParams.set("sessionId", sessionId);
+      const res = await fetch(url.toString());
+      const data = await res.json();
+      if (!data || !data.ok) return;
+      applyCommand(data);
+    } catch {
+      // Silent — a missed poll just means the message/logout arrives on the next heartbeat instead.
+    }
+  }
+
+  // Minimal popup for an admin-sent message (or the "you've been
+  // logged out" notice). Built on demand rather than living in
+  // index.html permanently, since it's rare enough not to need its
+  // own static markup cluttering the page.
+  function showAdminNotice(text, onClose) {
+    const existing = $("#adminNotice");
+    if (existing) existing.remove();
+
+    const wrap = el("div", "admin-notice");
+    wrap.id = "adminNotice";
+    wrap.innerHTML = `
+      <div class="admin-notice__overlay"></div>
+      <div class="admin-notice__panel">
+        <p class="admin-notice__text"></p>
+        <button type="button" class="admin-notice__btn">OK</button>
+      </div>`;
+    wrap.querySelector(".admin-notice__text").textContent = text;
+    document.body.appendChild(wrap);
+
+    const dismiss = () => {
+      wrap.remove();
+      if (onClose) onClose();
+    };
+    wrap.querySelector(".admin-notice__btn").addEventListener("click", dismiss);
+    // Deliberately no overlay-click-to-dismiss when it's a forced
+    // logout (onClose set) — that one should require an explicit tap
+    // to acknowledge, not vanish by an accidental tap outside it.
+    if (!onClose) {
+      wrap.querySelector(".admin-notice__overlay").addEventListener("click", dismiss);
+    }
+  }
+
+  // Generic activity logger — fires a silent background POST to the
+  // Google Apps Script Web App URL in config.js, which appends a row
+  // to a Google Sheet. Used for logins, PDF views, navigation, and
+  // session start/end.
+  //
+  // type:   "login" | "session_start" | "session_end" | "view" |
+  //         "view_end" | "navigate" | "heartbeat"
+  // detail: free-form extra info (e.g. the file name, or whether a
+  //         login attempt was authorized)
+  // extra:  optional { viewId, duration } — duration is in seconds
+  //
+  // Note on mode: "no-cors" — Apps Script Web Apps don't answer the
+  // CORS preflight browsers send for JSON POSTs, so a normal fetch
+  // would fail silently anyway. "no-cors" plus a text/plain content
+  // type keeps this a "simple request" (no preflight), and the sheet
+  // still gets the row even though we can't read the response — same
+  // fire-and-forget shape as the old Formspree call.
+  // ── Time tracker: "open", "active" and "reading" seconds for this visit ──
+  //  open   = how long the site has been open since sign-in
+  //  active = seconds the tab was visible AND the person touched/scrolled/typed within the last 2.5 min
+  //  read   = the part of "active" that was spent inside a PDF
+  const TM = { active: 0, read: 0, lastTick: 0, lastInput: 0, timer: null, wired: false };
+  const TM_IDLE_MS = 150000;
+  function tmSave() {
+    try { sessionStorage.setItem("c12_tm", JSON.stringify({ sid: sessionId, start: sessionStart, active: TM.active, read: TM.read })); } catch (e) {}
+  }
+  function tmTick() {
+    const now = Date.now();
+    let dt = now - TM.lastTick;
+    TM.lastTick = now;
+    if (dt < 0 || dt > 5000) return; // computer slept / tab was frozen: don't guess
+    if (document.hidden || now - TM.lastInput > TM_IDLE_MS) return;
+    TM.active += dt;
+    if (currentViewId) TM.read += dt;
+    if (!tmTick.n) tmTick.n = 0;
+    if (++tmTick.n % 5 === 0) tmSave();
+  }
+  function tmStart() {
+    let prev = null;
+    try { const o = JSON.parse(sessionStorage.getItem("c12_tm") || "null"); if (o && o.sid === sessionId) prev = o; } catch (e) {}
+    if (prev) { sessionStart = prev.start || sessionStart; TM.active = prev.active || 0; TM.read = prev.read || 0; }
+    else { TM.active = 0; TM.read = 0; }
+    TM.lastTick = Date.now(); TM.lastInput = Date.now();
+    if (!TM.wired) {
+      TM.wired = true;
+      const touch = () => { TM.lastInput = Date.now(); };
+      ["pointerdown", "keydown", "touchstart", "wheel", "scroll", "mousemove"].forEach((ev) => window.addEventListener(ev, touch, { passive: true, capture: true }));
+      document.addEventListener("visibilitychange", () => {
+        TM.lastTick = Date.now();
+        if (document.hidden) {
+          tmSave();
+          // Phones often kill a hidden page without warning — hand over the latest totals now.
+          if (sessionId && currentName) logEventBeacon("heartbeat", currentName, "hidden");
+        }
+      });
+      window.addEventListener("pagehide", tmSave);
+    }
+    if (!TM.timer) TM.timer = setInterval(tmTick, 1000);
+  }
+  function tmNumbers() {
+    return {
+      openSec: sessionStart ? Math.round((Date.now() - sessionStart) / 1000) : 0,
+      activeSec: Math.round(TM.active / 1000),
+      readSec: Math.round(TM.read / 1000)
+    };
+  }
+
+  function buildLogPayload(type, name, detail, pageOverride, extra) {
+    return JSON.stringify(Object.assign({ openSec: 0, activeSec: 0, readSec: 0 }, (type === "heartbeat" || type === "session_end") ? tmNumbers() : {}, {
+      type,
+      name: name || "",
+      detail: detail || "",
+      time: new Date().toISOString(),
+      page: pageOverride || location.href,
+      sessionId: sessionId || "",
+      viewId: (extra && extra.viewId) || "",
+      duration: (extra && extra.duration !== undefined && extra.duration !== null) ? extra.duration : ""
+    }));
+  }
+
+
+  // ── Quietly record real browser errors (so the admin can spot problems) ──
+  const errSeen = new Set();
+  function recordClientError(msg, where) {
+    try {
+      msg = String(msg || "").replace(/\s+/g, " ").slice(0, 160);
+      if (!msg || errSeen.size >= 5) return;
+      if (/ResizeObserver|^Script error|Network|Failed to fetch|Load failed|AbortError|aborted|RenderingCancelled|cancelled|NetworkError/i.test(msg)) return;
+      if (errSeen.has(msg)) return;
+      errSeen.add(msg);
+      if (!currentName) return;
+      logEvent("client_error", currentName, msg, String(where || location.pathname).slice(0, 200));
+    } catch (e) {}
+  }
+  window.addEventListener("error", (e) => recordClientError(e.message, (e.filename || "").split("/").pop() + ":" + (e.lineno || 0)));
+  window.addEventListener("unhandledrejection", (e) => recordClientError(e.reason && (e.reason.message || e.reason), "promise"));
+
+  function logEvent(type, name, detail, pageOverride, extra) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
+    fetch(endpoint, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: buildLogPayload(type, name, detail, pageOverride, extra)
+    }).catch(() => {});
+  }
+
+  // Same as logEvent, but for events that need to survive the tab
+  // actually closing (session end, a PDF view ending as someone
+  // leaves). A normal fetch can get killed mid-flight when the page
+  // unloads; sendBeacon is built specifically to still deliver in
+  // that moment. Falls back to a keepalive fetch on old browsers.
+  function logEventBeacon(type, name, detail, pageOverride, extra) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
+    const payload = buildLogPayload(type, name, detail, pageOverride, extra);
+    if (navigator.sendBeacon) {
+      try {
+        if (navigator.sendBeacon(endpoint, payload)) return;
+      } catch {
+        // fall through to fetch below
+      }
+    }
+    fetch(endpoint, {
+      method: "POST",
+      mode: "no-cors",
+      keepalive: true,
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: payload
+    }).catch(() => {});
+  }
+
+  // ── Navigation ─────────────────────────────────────────
+  // ── Real URLs for subjects ──────────────────────────────────
+  // Home is <base>/ ; a subject is <base>/physics/, <base>/maths/,
+  // <base>/chemistry/. Folders inside a subject stay on the subject's
+  // URL. APP_BASE is captured once at load, BEFORE any pushState, so
+  // it always means "the folder index.html lives in" (e.g. /isc/).
+  // Those subject URLs are also real static pages (the public preview
+  // pages) — a reload of one while signed in bounces straight back
+  // into the app at that subject (see the redirect in those pages).
+  const APP_BASE = location.pathname.replace(/index\.html$/, "").replace(/(?:physics|chemistry|maths)\/?$/, "").replace(/\/?$/, "/");
+
+  function urlForView(view, subject) {
+    return (view === "home" || !subject) ? APP_BASE : APP_BASE + subject.id + "/";
+  }
+
+  // mode: "push" (normal click), "replace" (initial landing / deep
+  // link — shouldn't add a Back-button stop), "none" (already handled
+  // by the browser, e.g. Back/Forward — don't touch history at all).
+  let lastLoggedWhere = null;
+
+  function nav(view, subjectId, folderId, historyMode) {
+    curView = view;
+    curSubject = subjectId ? SITE_CONFIG.subjects.find((s) => s.id === subjectId) : null;
+    curFolder = folderId && curSubject ? curSubject.subfolders.find((f) => (f.id && f.id === folderId) || f.name === folderId) : null;
+    updateCrumbs();
+    applyAccent();
+    render();
+    syncTabbar();
+    if (content && !document.body.classList.contains("no-anim")) {
+      content.classList.remove("view-in"); void content.offsetWidth; content.classList.add("view-in");
+    }
+
+    if (historyMode !== "none") {
+      const target = urlForView(view, curSubject);
+      const state = { view, subjectId: subjectId || null, folderId: folderId || null };
+      const cur = history.state;
+      const sameSpot = cur && cur.view === state.view && cur.subjectId === state.subjectId &&
+        cur.folderId === state.folderId && location.pathname === target && !location.search;
+      try {
+        if (historyMode === "replace") history.replaceState(state, "", target);
+        else if (!sameSpot) history.pushState(state, "", target); // folders share their subject's URL but still get their own Back step
+      } catch (e) { /* history API unavailable — the app works fine without URL updates */ }
+    }
+
+    // Log only the home screen and which subject someone opens (not
+    // every folder click), and never the same spot twice in a row.
+    if (sessionId && !curFolder) {
+      const where = curSubject ? `subject:${curSubject.name}` : "home";
+      if (where !== lastLoggedWhere) { lastLoggedWhere = where; logEvent("navigate", currentName, where); }
+    }
+  }
+
+  function syncTabbar() {
+    const bar = document.getElementById("tabbar");
+    if (!bar) return;
+    const searching = document.body.classList.contains("search-open");
+    const active = searching ? "search" : (curView === "progress" ? "progress" : "home");
+    bar.querySelectorAll("[data-tab]").forEach((b) => {
+      const on = b.dataset.tab === active;
+      b.classList.toggle("tabbar__btn--on", on);
+      if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
+  }
+
+  function updateCrumbs() {
+    let h = `<button class="crumb ${curView === 'home' ? 'crumb--active' : ''}" ${curView === 'home' ? 'aria-current="page"' : ''} onclick="window.__nav('home')">Home</button>`;
+    if (curView === "progress") {
+      h += `<span class="crumb-sep">/</span>`;
+      h += `<button class="crumb crumb--active">My Progress</button>`;
+    }
+    if (curView === "feedback") {
+      h += `<span class="crumb-sep">/</span>`;
+      h += `<button class="crumb crumb--active">Feedback</button>`;
+    }
+    if (curSubject) {
+      h += `<span class="crumb-sep">/</span>`;
+      h += `<button class="crumb ${curView === 'subject' ? 'crumb--active' : ''}" onclick="window.__nav('subject','${curSubject.id}')">${curSubject.name}</button>`;
+    }
+    if (curFolder) {
+      h += `<span class="crumb-sep">/</span>`;
+      h += `<button class="crumb crumb--active">${curFolder.name}</button>`;
+    }
+    breadcrumb.innerHTML = h;
+  }
+
+  window.__nav = (v, s, f) => nav(v, s, f);
+
+  // ── Render ─────────────────────────────────────────────
+  function render() {
+    content.innerHTML = "";
+    const query = searchInput ? searchInput.value.trim() : "";
+    if (query) { renderSearchResults(query); return; }
+    switch (curView) {
+      case "home":      renderSubjects(); break;
+      case "subject":   renderSubjectView(); break;
+      case "subfolder": renderFiles();    break;
+      case "progress":  renderProgress(); break;
+      case "feedback":  renderFeedback(); break;
+    }
+  }
+
+  // Flat search across every subject/folder/file — matches on the
+  // file name, case-insensitive substring. Doesn't touch curView or
+  // the breadcrumb, so clearing the box drops you back exactly where
+  // you were, not back at Home.
+  // ── My Progress ────────────────────────────────────────
+  // Combines two different kinds of data on purpose: "opened" comes
+  // from the server (the Log already tracks it, scoped by sessionId
+  // so nobody can read anyone else's — same pattern as todayStats),
+  // while "revised" is the self-marked, local-only checkbox above.
+  // Percentage shown is based on REVISED, not opened — opening a file
+  // isn't the same as being done with it, and revised is the number
+  // that's actually the student's own judgment of their progress.
+  // ── Feedback ───────────────────────────────────────────
+
+  // A deliberately stricter check than the loose one-liners floating
+  // around online — requires a real-looking domain with a proper,
+  // alphabetic top-level domain (2–24 letters), and rejects
+  // consecutive dots and leading/trailing dots. This is format
+  // validation only — no code here can confirm the address actually
+  // exists or belongs to the person without sending a real
+  // verification email, which this feature doesn't do — but it does
+  // reliably reject things like "asdf@asdf", "a@b.c", or
+  // "test@@test.com" instead of letting anything with an @ sign through.
+  function isValidEmail(email) {
+    const trimmed = email.trim();
+    if (!trimmed || /\s/.test(trimmed) || trimmed.includes("..")) return false;
+    const pattern = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,24}$/;
+    return pattern.test(trimmed);
+  }
+
+  function renderFeedback() {
+    const IMPROVEMENT_OPTIONS = ["More PDFs", "Faster loading", "Easier navigation", "Better design", "Nothing, it's great!"];
+    let rating = 0;
+    const selectedImprovements = new Set();
+
+    const wrap = el("div", "feedback-page fade-up");
+    wrap.innerHTML = `
+      <div class="feedback-page__head">
+        <span class="feedback-page__title">Help us improve</span>
+        <span class="feedback-page__subtitle">Two quick questions — takes 15 seconds</span>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">Your email <span class="feedback-required">*</span></p>
+        <div class="feedback-email-wrap">
+          <input type="email" id="feedbackEmail" class="feedback-input" placeholder="you@example.com" autocomplete="email" inputmode="email">
+          <span class="feedback-email-check" id="feedbackEmailCheck"></span>
+        </div>
+        <p class="feedback-email-hint" id="feedbackEmailHint"></p>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">How would you rate this portal overall?</p>
+        <div class="feedback-stars" id="feedbackStars"></div>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">What could we improve? (pick any)</p>
+        <div class="feedback-chips" id="feedbackChips"></div>
+      </div>
+      <div class="feedback-page__section">
+        <p class="feedback-page__question">Anything specific to add?</p>
+        <textarea id="feedbackSuggestion" class="feedback-textarea" placeholder="Optional — a chapter that's missing, a bug you hit, anything at all" rows="4"></textarea>
+      </div>
+      <button type="button" id="feedbackSubmitBtn" class="feedback-submit-btn" disabled>Submit feedback</button>
+    `;
+    content.appendChild(wrap);
+
+    const emailInput = wrap.querySelector("#feedbackEmail");
+    const emailCheck = wrap.querySelector("#feedbackEmailCheck");
+    const emailHint = wrap.querySelector("#feedbackEmailHint");
+    const submitBtn = wrap.querySelector("#feedbackSubmitBtn");
+
+    // Live — checked on every keystroke, not just on submit — so
+    // someone typing "asdf" sees it's invalid immediately instead of
+    // filling out the whole form first and only finding out at the end.
+    // The submit button itself stays disabled the entire time the
+    // email is invalid or empty, so there's no way to submit gibberish
+    // by just ignoring the hint text.
+    emailInput.addEventListener("input", () => {
+      const value = emailInput.value;
+      const valid = isValidEmail(value);
+      submitBtn.disabled = !valid;
+      emailInput.classList.toggle("feedback-input--valid", valid);
+      emailInput.classList.toggle("feedback-input--invalid", value.length > 0 && !valid);
+      emailCheck.innerHTML = valid ? "✓" : "";
+      emailHint.textContent = value.length > 0 && !valid ? "Enter a real email address (e.g. name@gmail.com)" : "";
+    });
+
+    const starsEl = wrap.querySelector("#feedbackStars");
+    for (let i = 1; i <= 5; i++) {
+      const star = document.createElement("button");
+      star.type = "button";
+      star.className = "feedback-star";
+      star.dataset.value = String(i);
+      star.innerHTML = ICONS.star;
+      star.addEventListener("click", () => {
+        rating = i;
+        starsEl.querySelectorAll(".feedback-star").forEach((s) => {
+          s.classList.toggle("feedback-star--active", Number(s.dataset.value) <= rating);
+        });
+      });
+      starsEl.appendChild(star);
+    }
+
+    const chipsEl = wrap.querySelector("#feedbackChips");
+    IMPROVEMENT_OPTIONS.forEach((opt) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "feedback-chip";
+      chip.textContent = opt;
+      chip.addEventListener("click", () => {
+        if (selectedImprovements.has(opt)) selectedImprovements.delete(opt);
+        else selectedImprovements.add(opt);
+        chip.classList.toggle("feedback-chip--active");
+      });
+      chipsEl.appendChild(chip);
+    });
+
+    submitBtn.addEventListener("click", async () => {
+      const email = emailInput.value.trim();
+      if (!isValidEmail(email)) {
+        // Re-checked here too (not just trusting the live check /
+        // disabled-button state) since the button's disabled attribute
+        // can't be relied on as the only gate — belt and braces.
+        emailInput.classList.add("feedback-input--invalid");
+        emailHint.textContent = "Enter a real email address (e.g. name@gmail.com)";
+        return;
+      }
+      const suggestion = wrap.querySelector("#feedbackSuggestion").value.trim();
+      const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (endpoint && endpoint.indexOf("PASTE_YOUR") !== 0) {
+        try {
+          // mode: "no-cors" + this exact Content-Type is required for
+          // ANY POST to an Apps Script web app to actually work — this
+          // was the real bug behind "reviews aren't getting submitted":
+          // without it, the request fails silently (Apps Script
+          // redirects through googleusercontent.com, which a plain
+          // CORS-mode request doesn't survive), and the try/catch below
+          // swallowed that failure completely, showing "Thanks!"
+          // regardless of whether anything was ever actually saved.
+          // logEvent elsewhere in this file already does this correctly
+          // — this just brings feedback submission in line with it.
+          await fetch(endpoint, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({
+              type: "feedback",
+              name: currentName,
+              email,
+              rating: rating || "",
+              improvements: Array.from(selectedImprovements),
+              suggestion
+            })
+          });
+        } catch {
+          // best-effort — still show the thank-you either way, no point making someone retry a review
+        }
+      }
+      wrap.innerHTML = `
+        <div class="feedback-page__thanks">
+          <span class="feedback-page__thanks-icon">${ICONS.star}</span>
+          <p>Thanks — this genuinely helps.</p>
+        </div>`;
+      setTimeout(() => nav("home"), 1400);
+    });
+  }
+
+  async function renderProgress() {
+    const label = el("p", "section-label", "My Progress");
+    content.appendChild(label);
+
+    if (!sessionId) return;
+    const skeletons = [0, 1, 2].map(() => el("div", "sk sk-card"));
+    skeletons.forEach((n) => content.appendChild(n));
+
+    let viewedNames = new Set();
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (endpoint && endpoint.indexOf("PASTE_YOUR") !== 0) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(`${endpoint}?action=myProgress&sessionId=${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+        clearTimeout(timeout);
+        const data = await res.json();
+        if (data && data.ok) viewedNames = new Set((data.viewedFiles || []).map((f) => f.file));
+      } catch {
+        // network hiccup — falls back to showing 0 opened rather than blocking the page
+      }
+    }
+
+    skeletons.forEach((n) => n.remove());
+    if (curView !== "progress") return; // they went somewhere else while this was loading
+    SITE_CONFIG.subjects.forEach((s) => {
+      const allFiles = s.subfolders.flatMap((f) => f.files.map((file) => ({ ...file, folderName: f.name })));
+      const total = allFiles.length;
+      if (!total) return;
+      const openedCount = allFiles.filter((f) => viewedNames.has(f.name)).length;
+
+      const card = el("div", "progress-subject fade-up");
+      card.style.setProperty("--subject-color", s.color);
+
+      const paintHeader = () => {
+        const revisedCount = allFiles.filter((f) => getRevisedSet().has(f.path)).length;
+        const pct = Math.round((revisedCount / total) * 100);
+        card.querySelector(".progress-subject__pct").textContent = `${pct}%`;
+        card.querySelector(".progress-bar__fill").style.width = `${pct}%`;
+        card.querySelector(".progress-subject__stat").textContent = `${revisedCount}/${total} done \u00B7 ${openedCount}/${total} opened`;
+      };
+
+      card.innerHTML = `
+        <div class="progress-subject__head">
+          <span class="progress-subject__icon">${ICONS[s.id] || ICONS.maths}</span>
+          <div class="progress-subject__title">
+            <h3>${s.name}</h3>
+            <span class="progress-subject__stat"></span>
+          </div>
+          <span class="progress-subject__pct"></span>
+        </div>
+        <div class="progress-bar"><div class="progress-bar__fill"></div></div>
+        <button type="button" class="progress-subject__toggle" data-toggle>Show files</button>
+        <div class="progress-file-list hidden"></div>`;
+
+      const fileList = card.querySelector(".progress-file-list");
+      allFiles.forEach((f) => {
+        const opened = viewedNames.has(f.name);
+        const row = el("div", "progress-file-row");
+        // Deliberately a plain <span>, not a button — this list is
+        // for seeing what's left, not a shortcut to skip straight to
+        // a file bypassing the normal subject/folder browsing.
+        row.innerHTML = `
+          <span class="progress-file-row__status ${opened ? "progress-file-row__status--opened" : ""}" title="${opened ? "Opened" : "Not opened yet"}">${opened ? "\u25CF" : "\u25CB"}</span>
+          <span class="progress-file-row__name">${f.name}</span>
+          <span class="progress-file-row__folder">${f.folderName}</span>
+          <label class="progress-file-row__check">
+            <input type="checkbox" ${getRevisedSet().has(f.path) ? "checked" : ""}>
+            Done
+          </label>`;
+        row.querySelector('input[type="checkbox"]').addEventListener("change", (e) => {
+          setRevised(f.path, e.target.checked);
+          paintHeader();
+        });
+        fileList.appendChild(row);
+      });
+
+      card.querySelector("[data-toggle]").addEventListener("click", () => {
+        const willShow = fileList.classList.contains("hidden");
+        fileList.classList.toggle("hidden");
+        card.querySelector("[data-toggle]").textContent = willShow ? "Hide files" : "Show files";
+      });
+
+      paintHeader();
+      content.appendChild(card);
+    });
+  }
+
+  function renderSearchResults(query) {
+    const q = query.toLowerCase();
+    const matches = [];
+    SITE_CONFIG.subjects.forEach((s) => {
+      s.subfolders.forEach((f) => {
+        f.files.forEach((file) => {
+          if (file.name.toLowerCase().includes(q)) {
+            matches.push({ file, subject: s, folder: f });
+          }
+        });
+      });
+    });
+
+    const label = el("p", "section-label", `${matches.length} result${matches.length === 1 ? "" : "s"} for "${query}"`);
+
+    if (!matches.length) {
+      const empty = el("div", "empty fade-up");
+      empty.innerHTML = `
+        <div class="empty__icon empty__icon--art">${EMPTY_ART.search}</div>
+        <p class="empty__title"></p>
+        <p class="empty__sub">Try a shorter word or check the spelling — or ask for it and I'll look into adding it.</p>
+        <div class="empty__actions">
+          <button type="button" class="empty__btn empty__btn--go" data-act="req">Request this file</button>
+          <button type="button" class="empty__btn" data-act="clear">Clear search</button>
+        </div>`;
+      empty.querySelector(".empty__title").textContent = `Nothing matches "${query}"`;
+      empty.querySelector('[data-act="req"]').addEventListener("click", () => openRequestBox(query));
+      empty.querySelector('[data-act="clear"]').addEventListener("click", () => { searchInput.value = ""; render(); });
+      content.append(label, empty);
+      return;
+    }
+
+    const grid = el("div", "files stagger");
+    matches.forEach(({ file, subject, folder }) => grid.appendChild(buildFileCard(file, subject, folder, false)));
+    content.append(label, grid);
+  }
+
+  // ── Round 2 helpers ────────────────────────────────────
+  const EMPTY_ART = {
+    search: `<svg viewBox="0 0 120 90" width="120" height="90" fill="none" aria-hidden="true"><rect x="22" y="14" width="46" height="60" rx="6" stroke="currentColor" stroke-width="1.6" opacity=".55"/><path d="M32 30h26M32 40h18M32 50h22" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".4"/><circle cx="76" cy="52" r="17" stroke="var(--accent, var(--brass))" stroke-width="2.4"/><path d="m89 65 14 14" stroke="var(--accent, var(--brass))" stroke-width="2.8" stroke-linecap="round"/><path d="M70 48c1-3 5-4 7-2s1 4-1 5-2 2-2 4" stroke="var(--accent, var(--brass))" stroke-width="1.8" stroke-linecap="round"/><circle cx="74" cy="60" r="1.2" fill="var(--accent, var(--brass))"/></svg>`,
+    folder: `<svg viewBox="0 0 120 90" width="120" height="90" fill="none" aria-hidden="true"><path d="M14 30a6 6 0 0 1 6-6h24l8 9h48a6 6 0 0 1 6 6v33a6 6 0 0 1-6 6H20a6 6 0 0 1-6-6z" stroke="currentColor" stroke-width="1.6" opacity=".6"/><path d="M14 42h92" stroke="currentColor" stroke-width="1.4" opacity=".35"/><path d="M92 12v10M87 17h10" stroke="var(--accent, var(--brass))" stroke-width="2.2" stroke-linecap="round"/><path d="M104 28v6M101 31h6" stroke="var(--accent, var(--brass))" stroke-width="1.8" stroke-linecap="round"/><circle cx="60" cy="62" r="7" stroke="var(--accent, var(--brass))" stroke-width="1.8" stroke-dasharray="3 3"/></svg>`
+  };
+
+  // ── Haptics (light taps on phones) ──────────────────────
+  // Android uses vibrate(); iPhones (iOS 17.4+) have no vibrate, but a
+  // hidden "switch" checkbox gives a tiny tick when toggled by a tap.
+  let hapticLabel = null;
+  function haptic(kind) {
+    try {
+      if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      if (localStorage.getItem("c12_nohaptic") === "1") return;
+    } catch {}
+    try {
+      if (navigator.vibrate) { navigator.vibrate(kind === "success" ? [10, 40, 16] : 8); return; }
+      if (!hapticLabel) {
+        hapticLabel = document.createElement("label");
+        hapticLabel.setAttribute("aria-hidden", "true");
+        hapticLabel.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none";
+        const i = document.createElement("input");
+        i.type = "checkbox"; i.setAttribute("switch", ""); i.tabIndex = -1;
+        hapticLabel.appendChild(i);
+        document.body.appendChild(hapticLabel);
+      }
+      hapticLabel.click();
+      if (kind === "success") setTimeout(() => hapticLabel.click(), 90);
+    } catch {}
+  }
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest && e.target.closest(".tabbar__btn,.viewer__btn,.viewer__zoom-btn,.seg__btn,.subject,.chapter-card,.file-card,.chapter-chip,.recent-chip,.empty__btn,.focus-pill button,.focus-card button,#themeBtn,.help-row button");
+    if (t) haptic(t.id === "viewerDoneBtn" ? "success" : "light");
+  }, true);
+
+  // Small friendly message at the bottom (student side).
+  let sToastTimer = null;
+  function studentToast(msg) {
+    let t = document.getElementById("studentToast");
+    if (!t) { t = document.createElement("div"); t.id = "studentToast"; t.className = "s-toast"; t.setAttribute("role", "status"); document.body.appendChild(t); }
+    t.textContent = msg;
+    t.classList.add("s-toast--on");
+    clearTimeout(sToastTimer);
+    sToastTimer = setTimeout(() => t.classList.remove("s-toast--on"), 3200);
+  }
+
+  // ── Focus timer (25 min) ────────────────────────────────
+  const FOCUS_KEY = "c12_focus_run";
+  let focusTimerId = null;
+  function readFocus() { try { return JSON.parse(localStorage.getItem(FOCUS_KEY) || "null"); } catch { return null; } }
+  function writeFocus(v) { try { if (v) localStorage.setItem(FOCUS_KEY, JSON.stringify(v)); else localStorage.removeItem(FOCUS_KEY); } catch {} }
+  function focusLeftMs(f) { return f.paused != null ? f.paused : Math.max(0, f.end - Date.now()); }
+  function fmtClock(ms) { const s = Math.ceil(ms / 1000); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }
+  function focusStart(min) { writeFocus({ end: Date.now() + min * 60000, dur: min, paused: null }); focusRefresh(); }
+  function focusPauseToggle() {
+    const f = readFocus(); if (!f) return;
+    if (f.paused != null) { f.end = Date.now() + f.paused; f.paused = null; } else { f.paused = Math.max(0, f.end - Date.now()); }
+    writeFocus(f); focusRefresh();
+  }
+  function focusStop() { writeFocus(null); focusRefresh(); }
+  function focusTotalKey() { return "c12_focusmin_" + normalizeName(currentName || ""); }
+  function focusComplete(f) {
+    writeFocus(null);
+    try { localStorage.setItem(focusTotalKey(), String((Number(localStorage.getItem(focusTotalKey())) || 0) + f.dur)); } catch {}
+    noteStudyDay();
+    haptic("success");
+    studentToast(`Focus session done — ${f.dur} minutes. Nice work!`);
+    focusRefresh();
+  }
+  function focusRefresh() {
+    const f = readFocus();
+    let pill = document.getElementById("focusPill");
+    if (f && f.paused == null && focusLeftMs(f) <= 0) { focusComplete(f); return; }
+    if (f && !pill && currentName) {
+      pill = document.createElement("div");
+      pill.id = "focusPill"; pill.className = "focus-pill";
+      pill.innerHTML = `<span class="focus-pill__dot" aria-hidden="true"></span><span class="focus-pill__time" aria-live="off"></span><button type="button" class="focus-pill__pause" aria-label="Pause or resume"></button><button type="button" class="focus-pill__stop" aria-label="Stop timer">${ICONS.close || "×"}</button>`;
+      pill.querySelector(".focus-pill__pause").addEventListener("click", focusPauseToggle);
+      pill.querySelector(".focus-pill__stop").addEventListener("click", focusStop);
+      document.body.appendChild(pill);
+    }
+    if (pill) {
+      if (!f) pill.remove();
+      else {
+        pill.querySelector(".focus-pill__time").textContent = fmtClock(focusLeftMs(f));
+        pill.classList.toggle("focus-pill--paused", f.paused != null);
+        pill.querySelector(".focus-pill__pause").textContent = f.paused != null ? "Resume" : "Pause";
+      }
+    }
+    document.querySelectorAll("[data-focus-label]").forEach((n) => { n.textContent = f ? (f.paused != null ? "Paused · " : "") + fmtClock(focusLeftMs(f)) : "Start 25 min"; });
+    document.querySelectorAll("[data-focus-card]").forEach((n) => n.classList.toggle("focus-card--on", !!f));
+    if (f && !focusTimerId) focusTimerId = setInterval(focusRefresh, 1000);
+    if (!f && focusTimerId) { clearInterval(focusTimerId); focusTimerId = null; }
+  }
+
+  // ── Progress that follows the student's login ────────────
+  // Ticks, bookmarks, recent files, streak days, last pages and focus
+  // minutes are saved to the Sheet (keyed to the name, proven by the
+  // password-session token) so they survive a new phone or cleared
+  // browser. Pushes are small and rare: when the tab is hidden, at
+  // sign-out, and every 2 minutes if something changed.
+  let syncReady = false, syncTimer = null, syncBusy = false;
+  const nk = () => normalizeName(currentName || "");
+  const SYNC_H = () => "c12_sync_h_" + nk();
+  const SYNC_T = () => "c12_sync_ts_" + nk();
+  function lsJSON(key, fallback) { try { const v = JSON.parse(localStorage.getItem(key) || "null"); return v == null ? fallback : v; } catch { return fallback; } }
+  function collectProgress() {
+    const n = nk();
+    return {
+      revised: lsJSON("c12_revised_" + n, []),
+      bookmarks: lsJSON("c12_bookmarks_" + n, []),
+      recent: lsJSON("c12_recent_" + n, []),
+      days: lsJSON("c12_days_" + n, []),
+      pos: lsJSON("c12_pos_" + n, {}),
+      focus: Number(localStorage.getItem("c12_focusmin_" + n)) || 0,
+      labs: lsJSON("c12_labs_" + n, [])
+    };
+  }
+  function applyProgress(p) {
+    const n = nk();
+    try {
+      localStorage.setItem("c12_revised_" + n, JSON.stringify(p.revised || []));
+      localStorage.setItem("c12_bookmarks_" + n, JSON.stringify(p.bookmarks || []));
+      localStorage.setItem("c12_recent_" + n, JSON.stringify((p.recent || []).slice(0, 5)));
+      localStorage.setItem("c12_days_" + n, JSON.stringify((p.days || []).slice(-400)));
+      localStorage.setItem("c12_pos_" + n, JSON.stringify(p.pos || {}));
+      localStorage.setItem("c12_focusmin_" + n, String(p.focus || 0));
+      localStorage.setItem("c12_labs_" + n, JSON.stringify(p.labs || []));
+    } catch {}
+  }
+  function mergeProgress(a, b) {
+    const byPath = (x, y) => { const seen = new Set(); return [...x, ...y].filter((i) => !seen.has(i.path) && seen.add(i.path)); };
+    const pos = Object.assign({}, b.pos || {});
+    Object.keys(a.pos || {}).forEach((k) => { if (!pos[k] || (a.pos[k].t || 0) >= (pos[k].t || 0)) pos[k] = a.pos[k]; });
+    return {
+      revised: Array.from(new Set([...(a.revised || []), ...(b.revised || [])])),
+      bookmarks: byPath(a.bookmarks || [], b.bookmarks || []),
+      recent: byPath(a.recent || [], b.recent || []).sort((x, y) => (y.ts || 0) - (x.ts || 0)).slice(0, 5),
+      days: Array.from(new Set([...(a.days || []), ...(b.days || [])])).sort(),
+      pos,
+      focus: Math.max(a.focus || 0, b.focus || 0),
+      labs: Array.from(new Set([...(a.labs || []), ...(b.labs || [])]))
+    };
+  }
+  function hashStr(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return String(h); }
+  function progressHash(p) { return hashStr(JSON.stringify(p)); }
+
+  async function progressApi(body, keepalive) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch(endpoint, {
+        method: "POST", keepalive: !!keepalive,
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(Object.assign({ type: "progress", name: currentName, pt: getDt(currentName) }, body)),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      return await res.json();
+    } catch { return null; }
+  }
+
+  async function syncPush(final) {
+    if (!syncReady || !currentName || syncBusy) return;
+    const p = collectProgress(), h = progressHash(p);
+    if (h === localStorage.getItem(SYNC_H())) return;
+    const data = JSON.stringify(p);
+    if (data.length > 44000) return;
+    syncBusy = true;
+    const r = await progressApi({ op: "put", data }, final);
+    syncBusy = false;
+    if (r && r.ok) { try { localStorage.setItem(SYNC_H(), h); localStorage.setItem(SYNC_T(), String(r.ts)); } catch {} }
+  }
+
+  async function syncOnLogin() {
+    if (!currentName || !getDt(currentName)) return; // protected accounts / no password proof: stay local
+    const r = await progressApi({ op: "get" });
+    if (!r || !r.ok || r.ts === undefined) return; // older backend or offline: just stay local this time
+    let server = null;
+    try { server = r.data ? JSON.parse(r.data) : null; } catch { server = null; }
+    const local = collectProgress(), lh = progressHash(local);
+    const lastH = localStorage.getItem(SYNC_H()), lastTs = localStorage.getItem(SYNC_T());
+    let changedLocalView = false;
+    if (!server) {
+      syncReady = true; // nothing on the server yet — first push will create it
+      localStorage.removeItem(SYNC_H()); localStorage.removeItem(SYNC_T());
+      await syncPush(false);
+    } else if (lastTs && String(r.ts) === lastTs) {
+      syncReady = true; // server unchanged since we last looked; push our edits if any
+      await syncPush(false);
+    } else {
+      const localUnchanged = lastH && lh === lastH;
+      const next = localUnchanged ? server : mergeProgress(local, server);
+      if (progressHash(next) !== lh) { applyProgress(next); changedLocalView = true; }
+      try { localStorage.setItem(SYNC_H(), progressHash(collectProgress())); localStorage.setItem(SYNC_T(), String(r.ts)); } catch {}
+      syncReady = true;
+      if (!localUnchanged) { localStorage.removeItem(SYNC_H()); await syncPush(false); }
+    }
+    if (changedLocalView) {
+      document.body.classList.add("no-anim");
+      setTimeout(() => document.body.classList.remove("no-anim"), 400);
+      render();
+    }
+    if (!syncTimer) syncTimer = setInterval(() => syncPush(false), 120000);
+  }
+  document.addEventListener("visibilitychange", () => { if (document.hidden) syncPush(true); });
+  window.addEventListener("pagehide", () => syncPush(true));
+
+  // ── Formula of the day ──────────────────────────────────
+  function todaysFormula() {
+    const list = window.DAILY_FORMULAS;
+    if (!list || !list.length) return null;
+    const d = new Date();
+    const dayNum = Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+    return list[dayNum % list.length];
+  }
+
+  // ── Find inside the open PDF ────────────────────────────
+  // Lists the pages where a word appears (pages are drawn as pictures,
+  // so exact words can't be highlighted — jumping to the page is the
+  // useful part). Text of each page is read once and remembered.
+  const pdfTextCache = new WeakMap();
+  let vsToken = 0, vsTimer = null;
+  function vsEls() { return { box: document.getElementById("viewerSearch"), input: document.getElementById("viewerSearchInput"), status: document.getElementById("viewerSearchStatus"), hits: document.getElementById("viewerSearchHits") }; }
+  function openViewerSearch() {
+    if (!currentPdf) return;
+    const { box, input } = vsEls();
+    box.classList.remove("hidden");
+    const sb = document.getElementById("viewerSearchBtn"); if (sb) sb.classList.add("viewer__btn--on");
+    input.focus(); input.select();
+  }
+  function closeViewerSearch() {
+    const { box, input, status, hits } = vsEls();
+    if (!box) return;
+    vsToken++;
+    box.classList.add("hidden");
+    const sb = document.getElementById("viewerSearchBtn"); if (sb) sb.classList.remove("viewer__btn--on");
+    input.value = ""; status.textContent = ""; hits.innerHTML = "";
+  }
+  async function pageText(pdf, n) {
+    let cache = pdfTextCache.get(pdf);
+    if (!cache) { cache = {}; pdfTextCache.set(pdf, cache); }
+    if (cache[n] === undefined) {
+      try {
+        const page = await pdf.getPage(n);
+        const tc = await page.getTextContent();
+        cache[n] = tc.items.map((i) => i.str).join(" ").toLowerCase();
+      } catch { cache[n] = ""; }
+    }
+    return cache[n];
+  }
+  async function runViewerSearch(q, jump) {
+    const { status, hits } = vsEls();
+    const my = ++vsToken;
+    q = q.trim().toLowerCase();
+    hits.innerHTML = "";
+    if (q.length < 2 || !currentPdf) { status.textContent = ""; return; }
+    const pdf = currentPdf, total = pdf.numPages, found = [];
+    let anyText = false;
+    for (let n = 1; n <= total; n++) {
+      if (my !== vsToken || pdf !== currentPdf) return;
+      status.textContent = `Searching… ${n}/${total}`;
+      const t = await pageText(pdf, n);
+      if (t.trim()) anyText = true;
+      let c = 0, i = 0;
+      while ((i = t.indexOf(q, i)) !== -1) { c++; i += q.length; }
+      if (c) {
+        found.push([n, c]);
+        const b = el("button", "viewer__hit", `p.${n}${c > 1 ? " ×" + c : ""}`);
+        b.type = "button";
+        b.addEventListener("click", () => scrollToPage(n));
+        hits.appendChild(b);
+        if (found.length === 1 && jump) scrollToPage(n);
+      }
+    }
+    if (my !== vsToken) return;
+    status.textContent = found.length
+      ? `${found.reduce((a, f) => a + f[1], 0)} match${found.reduce((a, f) => a + f[1], 0) === 1 ? "" : "es"} on ${found.length} page${found.length === 1 ? "" : "s"}`
+      : (anyText ? "No matches" : "No searchable text (this PDF is scanned images)");
+  }
+  function wireViewerSearch() {
+    const { input } = vsEls();
+    const btn = document.getElementById("viewerSearchBtn");
+    if (!input || !btn) return;
+    btn.addEventListener("click", () => { const { box } = vsEls(); if (box.classList.contains("hidden")) openViewerSearch(); else closeViewerSearch(); });
+    document.getElementById("viewerSearchClose").addEventListener("click", closeViewerSearch);
+    input.addEventListener("input", () => { clearTimeout(vsTimer); vsTimer = setTimeout(() => runViewerSearch(input.value, true), 350); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); closeViewerSearch(); }
+      else if (e.key === "Enter") { e.preventDefault(); clearTimeout(vsTimer); const first = vsEls().hits.querySelector(".viewer__hit"); if (first && document.activeElement === input && input.dataset.last === input.value) { const all = Array.from(vsEls().hits.children); const cur = all.findIndex((b) => b.classList.contains("viewer__hit--on")); const nxt = all[(cur + 1) % all.length]; all.forEach((b) => b.classList.remove("viewer__hit--on")); nxt.classList.add("viewer__hit--on"); nxt.click(); } else { input.dataset.last = input.value; runViewerSearch(input.value, true); } }
+    });
+  }
+
+  // ── Reading modes in the PDF viewer ─────────────────────
+  const READ_MODES = [["normal", "Normal"], ["dark", "Dark pages"], ["sepia", "Sepia"], ["dim", "Dimmed"]];
+  function readMode() { try { return localStorage.getItem("c12_readmode") || "normal"; } catch { return "normal"; } }
+  function applyReadMode(announce) {
+    const m = readMode();
+    const v = document.getElementById("viewer");
+    if (v) v.dataset.read = m;
+    const b = document.getElementById("viewerModeBtn");
+    if (b) {
+      b.dataset.mode = m;
+      const label = (READ_MODES.find((x) => x[0] === m) || READ_MODES[0])[1];
+      b.title = "Reading mode: " + label; b.setAttribute("aria-label", "Reading mode: " + label + ". Tap to change");
+      if (announce) { b.dataset.tip = label; b.classList.add("viewer__btn--tip"); setTimeout(() => b.classList.remove("viewer__btn--tip"), 1300); }
+    }
+  }
+  function cycleReadMode() {
+    const i = READ_MODES.findIndex((x) => x[0] === readMode());
+    try { localStorage.setItem("c12_readmode", READ_MODES[(i + 1) % READ_MODES.length][0]); } catch {}
+    applyReadMode(true);
+  }
+
+  const ICON_CHECK = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  const ICON_FLAME = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2c.4 3.1-1.3 4.8-2.9 6.6C7.6 10.3 6 12.1 6 14.8 6 18.2 8.7 21 12 21s6-2.8 6-6.2c0-2.2-1-3.8-2.2-5.1-.2 1.2-.8 2-1.6 2.4.5-3.4-.3-6.9-2.2-10.1z"/></svg>`;
+  const ICON_MEGAPHONE = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
+  const ICON_PLUS = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>`;
+  const ICON_X = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+  let liveAnnouncement = null;
+
+  // Chapter number, type tag (Notes / Formulas / …) and a tidy title,
+  // worked out from the file and folder names — nothing to configure.
+  const TYPE_RULES = [
+    [/formula/i, "Formulas"], [/solution/i, "Solutions"], [/numerical/i, "Numericals"],
+    [/revision/i, "Revision"], [/question|pyq|paper|sample/i, "Questions"], [/notes?\b/i, "Notes"]
+  ];
+  function detectType(name, folderName) {
+    for (const [re, label] of TYPE_RULES) if (re.test(name)) return label;
+    for (const [re, label] of TYPE_RULES) if (re.test(folderName || "")) return label;
+    return "PDF";
+  }
+  function fileMeta(file, folder) {
+    const name = file.name || "";
+    const m = name.match(/^\s*(?:ch(?:apter)?\.?\s*)?0*(\d{1,2})\s*[.\-—–:)]\s*/i);
+    const type = detectType(name, folder && folder.name);
+    let title = m ? name.slice(m[0].length) : name;
+    if (type === "Notes" || type === "Formulas") title = title.replace(/\s+(Notes?|Formulas?)$/i, "");
+    title = title.trim() || name;
+    return { chapter: m ? Number(m[1]) : null, type, title };
+  }
+
+  // Page counts are only known once a PDF has loaded; remember them so
+  // later visits show "24 pages" instantly. (Same for everyone — it's a fact about the file.)
+  function pageCounts() { try { return JSON.parse(localStorage.getItem("c12_pagecounts") || "{}"); } catch { return {}; } }
+  function pageLabel(n) { return n ? `${n} page${n === 1 ? "" : "s"}` : ""; }
+  function notePageCount(path, n) {
+    if (!n) return;
+    try {
+      const all = pageCounts();
+      if (all[path] !== n) { all[path] = n; localStorage.setItem("c12_pagecounts", JSON.stringify(all)); }
+    } catch { /* storage unavailable */ }
+    document.querySelectorAll("[data-pages-for]").forEach((node) => {
+      if (node.dataset.pagesFor === path) node.textContent = pageLabel(n);
+    });
+  }
+
+  function allFilesFlat() {
+    const out = [];
+    SITE_CONFIG.subjects.forEach((s) => s.subfolders.forEach((f) => f.files.forEach((file) => out.push({ file, subject: s, folder: f }))));
+    return out;
+  }
+  function findFileByPath(path) {
+    return allFilesFlat().find((x) => x.file.path === path) || null;
+  }
+  function subjectForPath(path) {
+    const first = String(path || "").split("/")[0].toLowerCase();
+    return SITE_CONFIG.subjects.find((s) => s.id === first) || null;
+  }
+
+  // The colour of whatever subject you're inside — used for small accents.
+  function applyAccent() {
+    const root = document.documentElement;
+    if (curSubject && curSubject.color) root.style.setProperty("--accent", curSubject.color);
+    else root.style.removeProperty("--accent");
+  }
+
+  // ── Light / dark mode ──
+  function currentTheme() { return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark"; }
+  function setTheme(t) {
+    const root = document.documentElement;
+    root.classList.add("theme-fade");
+    if (t === "light") root.setAttribute("data-theme", "light"); else root.removeAttribute("data-theme");
+    try { localStorage.setItem("c12_theme", t); } catch { /* fine */ }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", t === "light" ? "#f6f2e9" : "#121218");
+    setTimeout(() => root.classList.remove("theme-fade"), 450);
+  }
+  (function initTheme() {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && currentTheme() === "light") meta.setAttribute("content", "#f6f2e9");
+    const btn = document.getElementById("themeBtn");
+    if (btn) btn.addEventListener("click", () => setTheme(currentTheme() === "light" ? "dark" : "light"));
+  })();
+
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate(8); } catch { /* not supported */ } }
+
+  // ── Study streak (days in a row you opened a file; this device) ──
+  function daysKey() { return `c12_days_${normalizeName(currentName || "")}`; }
+  function dayStr(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+  function noteStudyDay() {
+    if (!currentName) return;
+    try {
+      const days = JSON.parse(localStorage.getItem(daysKey()) || "[]");
+      const today = dayStr(new Date());
+      if (days[days.length - 1] === today) return;
+      days.push(today);
+      localStorage.setItem(daysKey(), JSON.stringify(days.slice(-400)));
+    } catch { /* storage unavailable */ }
+  }
+  function getStreak() {
+    let days;
+    try { days = new Set(JSON.parse(localStorage.getItem(daysKey()) || "[]")); } catch { return { count: 0, alive: false }; }
+    const d = new Date();
+    const doneToday = days.has(dayStr(d));
+    if (!doneToday) d.setDate(d.getDate() - 1); // yesterday still keeps the streak going
+    let count = 0;
+    while (days.has(dayStr(d))) { count++; d.setDate(d.getDate() - 1); }
+    return { count, alive: count > 0, doneToday };
+  }
+
+  // ── Share a file link ──
+  async function shareFile(path, name) {
+    const url = `${location.origin}${APP_BASE}?file=${encodeURIComponent(path)}`;
+    try {
+      if (navigator.share && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        await navigator.share({ title: name, text: `${name} — Class 12 Study Portal`, url });
+        return;
+      }
+    } catch (e) { if (e && e.name === "AbortError") return; }
+    let ok = false;
+    try { await navigator.clipboard.writeText(url); ok = true; } catch {
+      const ta = document.createElement("textarea");
+      ta.value = url; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+    }
+    showToast(ok ? "Link copied — they'll need an approved name to open it." : "Couldn't copy the link.", !ok);
+  }
+
+  // Opens a file named in ?file=… (a shared link). Returns true if it was found.
+  function openRequestedFile(path) {
+    const hit = findFileByPath(path);
+    if (!hit) return false;
+    nav("subfolder", hit.subject.id, hit.folder.id || hit.folder.name, "replace");
+    openViewer(hit.file.path, hit.file.name);
+    return true;
+  }
+
+  // ── Request a file ──
+  function openRequestBox(prefill) {
+    if (!currentName || document.querySelector(".req-overlay")) return;
+    const ov = el("div", "req-overlay");
+    ov.innerHTML = `
+      <div class="req-box" role="dialog" aria-modal="true" aria-label="Request a file">
+        <h3>Request a file</h3>
+        <p>Tell me what's missing — a chapter, topic or type of material. I'll see it straight away.</p>
+        <textarea id="reqText" maxlength="300" placeholder="e.g. Physics Ch 10 Wave Optics solutions"></textarea>
+        <div class="req-box__foot">
+          <span class="req-box__count" id="reqCount">0 / 300</span>
+          <div class="req-box__btns">
+            <button type="button" class="req-btn" id="reqCancel">Cancel</button>
+            <button type="button" class="req-btn req-btn--go" id="reqSend" disabled>Send request</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const ta = ov.querySelector("#reqText"), send = ov.querySelector("#reqSend"), cnt = ov.querySelector("#reqCount");
+    const close = () => { ov.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    const sync = () => { cnt.textContent = `${ta.value.length} / 300`; send.disabled = ta.value.trim().length < 4; };
+    ta.addEventListener("input", sync);
+    if (prefill) ta.value = prefill;
+    sync();
+    ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+    ov.querySelector("#reqCancel").addEventListener("click", close);
+    send.addEventListener("click", async () => {
+      const last = Number(localStorage.getItem("c12_lastreq") || 0);
+      if (Date.now() - last < 30000) { showToast("Please wait a few seconds before sending another.", true); return; }
+      const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) { showToast("Requests aren't set up yet.", true); return; }
+      send.disabled = true;
+      try {
+        await fetch(endpoint, {
+          method: "POST", mode: "no-cors",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ type: "fileRequest", name: currentName, text: ta.value.trim() })
+        });
+        try { localStorage.setItem("c12_lastreq", String(Date.now())); } catch { /* fine */ }
+        showToast("Request sent — thanks!");
+        close();
+      } catch {
+        showToast("Couldn't send — check your connection and try again.", true);
+        send.disabled = false;
+      }
+    });
+    setTimeout(() => ta.focus(), 50);
+  }
+
+  function whenLabel(ts) {
+    const d = new Date(Number(ts)); if (isNaN(d)) return "";
+    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+    return days <= 0 ? "Posted today" : days === 1 ? "Posted yesterday" : `Posted ${days} days ago`;
+  }
+
+  function folderProgress(folder, doneSet) {
+    const total = folder.files.length;
+    const done = folder.files.filter((f) => doneSet.has(f.path)).length;
+    return { total, done, fresh: folder.files.filter((f) => f.n).length };
+  }
+
+  function makeThumbSkeleton() {
+    const sk = el("div", "file-card__skeleton");
+    sk.innerHTML = `<div class="sk-page"><span class="sk-line sk-line--title"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-line"></span><span class="sk-block"></span><span class="sk-line"></span><span class="sk-line"></span></div><span class="sk-ico">${ICONS.doc}</span><span class="file-card__skeleton-text"></span>`;
+    return sk;
+  }
+
+  // ── Subjects ───────────────────────────────────────────
+  function renderSubjects() {
+    const doneSet = getRevisedSet();
+    const allFiles = SITE_CONFIG.subjects.flatMap((s) => s.subfolders.flatMap((f) => f.files));
+    const totalFiles = allFiles.length;
+
+    // Announcement from the admin
+    if (liveAnnouncement && liveAnnouncement.text) {
+      let dismissed = "";
+      try { dismissed = localStorage.getItem("c12_ann_dismissed") || ""; } catch { /* fine */ }
+      if (dismissed !== String(liveAnnouncement.id)) {
+        const ann = el("div", "ann-banner fade-up" + (liveAnnouncement.kind === "important" ? " ann-banner--important" : ""));
+        ann.innerHTML = `<span class="ann-banner__ico">${ICON_MEGAPHONE}</span>
+          <div class="ann-banner__body"><div class="ann-banner__text"></div><div class="ann-banner__when"></div></div>
+          <button type="button" class="ann-banner__x" aria-label="Dismiss">${ICON_X}</button>`;
+        ann.querySelector(".ann-banner__text").textContent = liveAnnouncement.text;
+        ann.querySelector(".ann-banner__when").textContent = whenLabel(liveAnnouncement.at);
+        ann.querySelector(".ann-banner__x").addEventListener("click", () => {
+          try { localStorage.setItem("c12_ann_dismissed", String(liveAnnouncement.id)); } catch { /* fine */ }
+          ann.remove();
+        });
+        content.appendChild(ann);
+      }
+    }
+
+    // Continue studying: the last file, back at the page you stopped on
+    const recent = getRecentFiles();
+    if (recent.length && currentName) {
+      const r = recent[0];
+      const hit = findFileByPath(r.path);
+      const subj = (hit && hit.subject) || subjectForPath(r.path);
+      const pos = loadPositions()[r.path];
+      const pages = pageCounts()[r.path];
+      const bits = [];
+      if (subj) bits.push(subj.name);
+      if (hit) bits.push(hit.folder.name);
+      if (pos && pos.p > 1) bits.push(`page ${pos.p}${pages ? " of " + pages : ""}`);
+      const card = el("button", "resume-card fade-up");
+      card.type = "button";
+      if (subj && subj.color) card.style.setProperty("--accent", subj.color);
+      card.innerHTML = `
+        <span class="resume-card__icon">${(subj && ICONS[subj.id]) || ICONS.doc}</span>
+        <span class="resume-card__text">
+          <span class="resume-card__kicker">Continue studying</span>
+          <span class="resume-card__title"></span>
+          <span class="resume-card__meta"></span>
+        </span>
+        <span class="resume-card__go">Resume <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>`;
+      card.querySelector(".resume-card__title").textContent = hit ? fileMeta(hit.file, hit.folder).title : r.name;
+      card.querySelector(".resume-card__meta").textContent = bits.join(" · ");
+      card.addEventListener("click", () => openViewer(r.path, r.name));
+      content.appendChild(card);
+    }
+
+    // Progress + streak
+    if (totalFiles && currentName) {
+      const doneCount = allFiles.filter((f) => doneSet.has(f.path)).length;
+      const pct = Math.round((doneCount / totalFiles) * 100);
+      const st = getStreak();
+      const banner = el("button", "progress-banner fade-up");
+      banner.innerHTML = `
+        <div class="progress-banner__text">
+          <span class="progress-banner__label">My Progress</span>
+          <span class="progress-banner__stat">${doneCount}/${totalFiles} chapters done</span>
+        </div>
+        <div class="progress-banner__right">
+          ${st.alive ? `<span class="streak${st.doneToday ? "" : " streak--cold"}" title="${st.doneToday ? "Keep it going tomorrow!" : "Open a file today to keep your streak"}">${ICON_FLAME}${st.count}-day streak</span>` : ""}
+          <div class="progress-banner__pct">${pct}%</div>
+        </div>`;
+      banner.addEventListener("click", () => nav("progress"));
+      content.appendChild(banner);
+    }
+
+    const others = recent.slice(1);
+    if (others.length) {
+      const rLabel = el("p", "section-label", "Recently opened");
+      const rRow = el("div", "recent-row stagger");
+      others.forEach((r) => {
+        const chip = el("button", "recent-chip fade-up");
+        chip.innerHTML = `${ICONS.doc}<span class="recent-chip__name"></span>`;
+        chip.querySelector(".recent-chip__name").textContent = r.name;
+        chip.addEventListener("click", () => openViewer(r.path, r.name));
+        rRow.appendChild(chip);
+      });
+      content.append(rLabel, rRow);
+    }
+
+    const bookmarks = getBookmarks();
+    if (bookmarks.length) {
+      const bLabel = el("p", "section-label", "Bookmarked");
+      const bRow = el("div", "recent-row stagger");
+      bookmarks.forEach((b) => {
+        const chip = el("button", "recent-chip recent-chip--bookmark fade-up");
+        chip.innerHTML = `${ICONS.star}<span class="recent-chip__name"></span>`;
+        chip.querySelector(".recent-chip__name").textContent = b.name;
+        chip.addEventListener("click", () => openViewer(b.path, b.name));
+        bRow.appendChild(chip);
+      });
+      content.append(bLabel, bRow);
+    }
+
+    // Formula of the day + focus timer
+    const dailyF = todaysFormula();
+    const todayRow = el("div", "today-row stagger");
+    if (dailyF) {
+      const fc = el("div", "formula-card fade-up");
+      fc.style.setProperty("--subject-color", (SITE_CONFIG.subjects.find((x) => x.id === dailyF[0]) || {}).color || "var(--brass)");
+      fc.innerHTML = `<p class="formula-card__tag"></p><p class="formula-card__title"></p><p class="formula-card__f"></p>`;
+      fc.querySelector(".formula-card__tag").textContent = "Formula of the day · " + dailyF[0].charAt(0).toUpperCase() + dailyF[0].slice(1);
+      fc.querySelector(".formula-card__title").textContent = dailyF[1];
+      fc.querySelector(".formula-card__f").textContent = dailyF[2];
+      todayRow.appendChild(fc);
+    }
+    const focusCard = el("div", "focus-card fade-up");
+    focusCard.setAttribute("data-focus-card", "");
+    const focTotal = Number(localStorage.getItem(focusTotalKey())) || 0;
+    focusCard.innerHTML = `<p class="formula-card__tag">Focus timer</p>
+      <p class="focus-card__sub">25 quiet minutes, then a break. Counts toward your streak.</p>
+      <button type="button" class="focus-card__btn" data-focus-label>Start 25 min</button>
+      ${focTotal ? `<p class="focus-card__total">${focTotal >= 60 ? (Math.round(focTotal / 6) / 10) + " h" : focTotal + " min"} focused so far</p>` : ""}`;
+    focusCard.querySelector(".focus-card__btn").addEventListener("click", () => { const f = readFocus(); if (!f) focusStart(25); else focusPauseToggle(); });
+    todayRow.appendChild(focusCard);
+    focusRefresh();
+
+    const label = el("p", "section-label", "Select a subject");
+    const grid = el("div", "subjects stagger");
+
+    SITE_CONFIG.subjects.forEach((s) => {
+      const folderPreview = s.subfolders.map((f) => f.name).join(" · ");
+      const files = s.subfolders.flatMap((f) => f.files);
+      const done = files.filter((f) => doneSet.has(f.path)).length;
+      const fresh = files.filter((f) => f.n).length;
+      const pctS = files.length ? Math.round((done / files.length) * 100) : 0;
+      const card = el("div", "subject fade-up");
+      card.style.setProperty("--subject-color", s.color);
+      card.onclick = () => nav("subject", s.id);
+      card.innerHTML = `
+        <span class="subject__icon">${ICONS[s.id] || ICONS.maths}</span>
+        <h2 class="subject__name">${s.name}</h2>
+        <p class="subject__meta">${folderPreview}</p>
+        ${files.length && currentName ? `<div class="mini-progress"><span style="width:${pctS}%"></span></div>
+        <div class="subject__stat"><span><b>${done}</b> of ${files.length} done</span>${fresh ? `<span class="pill-new">${fresh} new</span>` : ""}</div>` : ""}
+        <span class="subject__arrow">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+        </span>`;
+      grid.appendChild(card);
+    });
+
+    // Fourth tile: Practicals (virtual labs). These are separate public
+    // pages, so this one is a real link instead of an in-app view.
+    const pr = el("div", "subject subject--wide fade-up");
+    pr.style.setProperty("--subject-color", "#c9a34e");
+    pr.setAttribute("role", "link");
+    pr.tabIndex = 0;
+    function labsMeta() {
+      const n = lsJSON("c12_labs_" + nk(), []).length;
+      return n ? `Physics &amp; Chemistry labs &middot; ${n} done` : "Physics &amp; Chemistry virtual labs";
+    }
+    const goPracticals = () => { location.href = APP_BASE + "practicals/"; };
+    pr.onclick = goPracticals;
+    pr.addEventListener("keydown", (e) => { if (e.key === "Enter") goPracticals(); });
+    pr.innerHTML = `
+      <span class="subject__icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3"/><path d="M7.5 15h9"/></svg></span>
+      <div class="subject__text">
+        <h2 class="subject__name">Practicals</h2>
+        <p class="subject__meta">${labsMeta()}</p>
+      </div>
+      <span class="subject__arrow">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+      </span>`;
+    grid.appendChild(pr);
+
+    content.append(label, grid);
+    content.appendChild(todayRow);
+
+    if (currentName) {
+      const help = el("div", "help-row fade-up");
+      const reqBtn = el("button", "help-btn");
+      reqBtn.type = "button";
+      reqBtn.innerHTML = `${ICON_PLUS}<span>Request a file</span>`;
+      reqBtn.addEventListener("click", () => openRequestBox());
+      const fbBtn = el("button", "help-btn");
+      fbBtn.type = "button";
+      fbBtn.innerHTML = `${ICONS.star}<span>Leave feedback</span>`;
+      fbBtn.addEventListener("click", () => nav("feedback"));
+      help.append(reqBtn, fbBtn);
+      content.appendChild(help);
+    }
+  }
+
+  // ── Subfolders ─────────────────────────────────────────
+  function renderFolders(headless) {
+    if (!curSubject) return;
+    const label = headless ? null : el("p", "section-label", curSubject.name);
+    const list = el("div", "subfolders stagger");
+    const doneSet = getRevisedSet();
+
+    curSubject.subfolders.forEach((f) => {
+      const pg = folderProgress(f, doneSet);
+      const row = el("div", "subfolder fade-up");
+      row.onclick = () => nav("subfolder", curSubject.id, f.id || f.name);
+      const doneTxt = currentName && pg.total
+        ? `<span class="subfolder__done${pg.done === pg.total ? " subfolder__done--all" : ""}">${pg.done === pg.total ? "All done" : `${pg.done}/${pg.total} done`}</span>` : "";
+      row.innerHTML = `
+        <div class="subfolder__icon">${ICONS.folder}</div>
+        <div class="subfolder__info">
+          <div class="subfolder__name">${f.name}</div>
+          <div class="subfolder__count"><span>${f.files.length} file${f.files.length !== 1 ? 's' : ''}</span>${doneTxt}${pg.fresh ? `<span class="pill-new">${pg.fresh} new</span>` : ""}</div>
+          ${currentName && pg.total ? `<div class="mini-progress mini-progress--row"><span style="width:${Math.round(pg.done / pg.total * 100)}%"></span></div>` : ""}
+        </div>
+        <span class="subfolder__chevron">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </span>`;
+      list.appendChild(row);
+    });
+
+    if (label) content.append(label, list); else content.appendChild(list);
+  }
+
+  // ── Subject page: by chapter (default) or by type ──────
+  const TYPE_ORDER = ["Notes", "Formulas", "Solutions", "Numericals", "Revision", "Questions", "PDF"];
+  function subjectMode() { try { return localStorage.getItem("c12_subjmode") === "type" ? "type" : "chapter"; } catch { return "chapter"; } }
+
+  function buildChapters(subject) {
+    const groups = new Map();
+    const others = [];
+    subject.subfolders.forEach((folder) => folder.files.forEach((file) => {
+      const meta = fileMeta(file, folder);
+      const item = { file, folder, meta };
+      if (meta.chapter == null) { others.push(item); return; }
+      let g = groups.get(meta.chapter);
+      if (!g) { g = { chapter: meta.chapter, items: [] }; groups.set(meta.chapter, g); }
+      g.items.push(item);
+    }));
+    const chapters = Array.from(groups.values()).sort((a, b) => a.chapter - b.chapter);
+    chapters.forEach((g) => {
+      g.items.sort((a, b) => TYPE_ORDER.indexOf(a.meta.type) - TYPE_ORDER.indexOf(b.meta.type));
+      const primary = g.items.find((i) => i.meta.type === "Notes") || g.items[0];
+      g.title = primary.meta.title;
+      const seen = {};
+      g.items.forEach((i) => { seen[i.meta.type] = (seen[i.meta.type] || 0) + 1; i.label = seen[i.meta.type] > 1 ? `${i.meta.type} ${seen[i.meta.type]}` : i.meta.type; });
+    });
+    return { chapters, others };
+  }
+
+  function chapterChip(item, doneSet) {
+    const chip = el("button", "chapter-chip" + (doneSet.has(item.file.path) ? " chapter-chip--done" : ""));
+    chip.type = "button";
+    chip.dataset.path = item.file.path;
+    chip.title = item.file.name;
+    chip.innerHTML = `<span class="chapter-chip__tick">${ICON_CHECK}</span><span class="chapter-chip__label"></span>${item.file.n ? '<span class="chapter-chip__new">new</span>' : ""}`;
+    chip.querySelector(".chapter-chip__label").textContent = item.label || item.meta.type;
+    chip.addEventListener("click", (e) => { e.stopPropagation(); openViewer(item.file.path, item.file.name); });
+    return chip;
+  }
+
+  function renderSubjectView() {
+    if (!curSubject) return;
+    const mode = subjectMode();
+    const doneSet = getRevisedSet();
+    const all = curSubject.subfolders.flatMap((f) => f.files);
+    const doneN = all.filter((f) => doneSet.has(f.path)).length;
+
+    const head = el("div", "subject-head fade-up");
+    head.innerHTML = `<div class="subject-head__text"><p class="section-label"></p>${currentName && all.length ? `<span class="subject-head__stat"><b>${doneN}</b> of ${all.length} done</span>` : ""}</div>
+      <div class="seg" role="tablist" aria-label="How to browse">
+        <button type="button" class="seg__btn${mode === "chapter" ? " seg__btn--on" : ""}" data-mode="chapter" role="tab" aria-selected="${mode === "chapter"}">By chapter</button>
+        <button type="button" class="seg__btn${mode === "type" ? " seg__btn--on" : ""}" data-mode="type" role="tab" aria-selected="${mode === "type"}">By type</button>
+      </div>`;
+    head.querySelector(".section-label").textContent = curSubject.name;
+    head.querySelector(".seg").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-mode]");
+      if (!b || b.dataset.mode === mode) return;
+      try { localStorage.setItem("c12_subjmode", b.dataset.mode); } catch { /* fine */ }
+      render();
+    });
+    content.appendChild(head);
+    if (currentName && all.length) {
+      const bar = el("div", "mini-progress mini-progress--wide");
+      bar.innerHTML = `<span style="width:${Math.round(doneN / all.length * 100)}%"></span>`;
+      content.appendChild(bar);
+    }
+
+    if (mode === "type") { renderFolders(true); return; }
+
+    const { chapters, others } = buildChapters(curSubject);
+    if (!chapters.length && !others.length) { renderFolders(true); return; }
+    const list = el("div", "chapters stagger");
+    chapters.forEach((g) => {
+      const done = g.items.filter((i) => doneSet.has(i.file.path)).length;
+      const card = el("div", "chapter-card fade-up" + (done === g.items.length ? " chapter-card--done" : ""));
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Chapter ${g.chapter}: ${g.title}, ${g.items.length} file${g.items.length === 1 ? "" : "s"}${done === g.items.length ? ", all revised" : ""}`);
+      card.innerHTML = `<div class="chapter-card__num"><span></span></div>
+        <div class="chapter-card__main"><div class="chapter-card__title"></div><div class="chapter-card__chips"></div></div>
+        <div class="chapter-card__state">${done === g.items.length ? `<span class="chapter-card__all">${ICON_CHECK}</span>` : `<span class="chapter-card__count">${done}/${g.items.length}</span>`}</div>`;
+      card.querySelector(".chapter-card__num span").textContent = g.chapter;
+      card.querySelector(".chapter-card__title").textContent = g.title;
+      const chips = card.querySelector(".chapter-card__chips");
+      g.items.forEach((i) => chips.appendChild(chapterChip(i, doneSet)));
+      const open = () => { const first = g.items[0]; openViewer(first.file.path, first.file.name); };
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === card) { e.preventDefault(); open(); } });
+      list.appendChild(card);
+    });
+    if (others.length) {
+      list.appendChild(el("p", "chapters__sub", "More material"));
+      others.forEach((i) => {
+        const card = el("div", "chapter-card chapter-card--plain fade-up" + (doneSet.has(i.file.path) ? " chapter-card--done" : ""));
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", i.file.name);
+        card.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === card) { e.preventDefault(); openViewer(i.file.path, i.file.name); } });
+        card.innerHTML = `<div class="chapter-card__num chapter-card__num--icon">${ICONS.doc}</div>
+          <div class="chapter-card__main"><div class="chapter-card__title"></div><div class="chapter-card__chips"></div></div>`;
+        card.querySelector(".chapter-card__title").textContent = i.file.name;
+        i.label = i.meta.type;
+        card.querySelector(".chapter-card__chips").appendChild(chapterChip(i, doneSet));
+        card.addEventListener("click", () => openViewer(i.file.path, i.file.name));
+        list.appendChild(card);
+      });
+    }
+    content.appendChild(list);
+  }
+
+  // One file card — used by folders and by search results.
+  function buildFileCard(file, subject, folder, withOverlay) {
+    const meta = fileMeta(file, folder);
+    const doneSet = getRevisedSet();
+    const isDone = doneSet.has(file.path);
+    const card = el("div", "file-card fade-up" + (isDone ? " file-card--done" : ""));
+    card.tabIndex = 0;
+    if (subject && subject.color) card.style.setProperty("--accent", subject.color);
+
+    const preview = el("div", "file-card__preview");
+    const skeleton = makeThumbSkeleton();
+    preview.appendChild(skeleton);
+    const canvas = document.createElement("canvas");
+    canvas.style.display = "none";
+    preview.appendChild(canvas);
+    observeThumbnail(preview, file.path, canvas, skeleton);
+
+    if (withOverlay) {
+      const overlay = el("div", "file-card__overlay");
+      const viewBtn = document.createElement("button");
+      viewBtn.className = "file-card__overlay-btn file-card__overlay-btn--view";
+      viewBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> View`;
+      viewBtn.addEventListener("click", (e) => { e.stopPropagation(); openViewer(file.path, file.name); });
+      overlay.append(viewBtn);
+      preview.appendChild(overlay);
+    }
+
+    // Tick = "I'm done with this one" (feeds the progress bars)
+    const doneBtn = document.createElement("button");
+    doneBtn.type = "button";
+    doneBtn.className = "file-card__done" + (isDone ? " file-card__done--on" : "");
+    doneBtn.setAttribute("aria-label", "Mark as done");
+    doneBtn.setAttribute("aria-pressed", isDone ? "true" : "false");
+    doneBtn.title = "Mark as done";
+    doneBtn.innerHTML = ICON_CHECK;
+    doneBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const on = !getRevisedSet().has(file.path);
+      setRevised(file.path, on);
+      doneBtn.classList.toggle("file-card__done--on", on);
+      doneBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      card.classList.toggle("file-card--done", on);
+      if (on) buzz();
+    });
+    preview.appendChild(doneBtn);
+
+    const bookmarkBtn = document.createElement("button");
+    bookmarkBtn.className = "file-card__bookmark" + (isBookmarked(file.path) ? " file-card__bookmark--active" : "");
+    bookmarkBtn.setAttribute("aria-label", "Bookmark this file");
+    bookmarkBtn.innerHTML = ICONS.star;
+    bookmarkBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleBookmark(file.path, file.name);
+      bookmarkBtn.classList.toggle("file-card__bookmark--active");
+      buzz();
+    });
+    preview.appendChild(bookmarkBtn);
+
+    if (file.n) preview.appendChild(el("span", "pill-new file-card__new", "New"));
+
+    card.addEventListener("click", () => openViewer(file.path, file.name));
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter") openViewer(file.path, file.name); });
+
+    const info = el("div", "file-card__info");
+    const metaRow = el("div", "file-card__meta");
+    if (meta.chapter != null) metaRow.appendChild(el("span", "file-card__chip", `Ch ${meta.chapter}`));
+    metaRow.appendChild(el("span", "file-card__tag", meta.type));
+    const pagesEl = el("span", "file-card__pages", pageLabel(pageCounts()[file.path]));
+    pagesEl.dataset.pagesFor = file.path;
+    metaRow.appendChild(pagesEl);
+    const nameP = el("p", "file-card__name");
+    nameP.textContent = meta.title;
+    nameP.title = file.name;
+    info.append(metaRow, nameP);
+    if (subject && folder && withOverlay === false) info.appendChild(el("p", "file-card__type", `${subject.name} · ${folder.name}`));
+
+    card.append(preview, info);
+    return card;
+  }
+
+  // ── Files (Grid with PDF Thumbnails) ───────────────────
+  function renderFiles() {
+    if (!curFolder) return;
+
+    const label = el("p", "section-label", curFolder.name);
+
+    if (curFolder.files.length === 0) {
+      const empty = el("div", "empty fade-up");
+      empty.innerHTML = `
+        <div class="empty__icon empty__icon--art">${EMPTY_ART.folder}</div>
+        <p class="empty__title">Nothing filed here yet</p>
+        <p class="empty__sub">Materials will appear once they're added to this folder. Want something specific?</p>
+        <div class="empty__actions">
+          <button type="button" class="empty__btn empty__btn--go" data-act="req">Request a file</button>
+          <button type="button" class="empty__btn" data-act="back">Go back</button>
+        </div>`;
+      empty.querySelector('[data-act="req"]').addEventListener("click", () => openRequestBox(`${curSubject ? curSubject.name + " — " : ""}${curFolder.name}: `));
+      empty.querySelector('[data-act="back"]').addEventListener("click", () => nav("subject", curSubject && curSubject.id));
+      content.append(label, empty);
+      return;
+    }
+
+    const grid = el("div", "files stagger");
+    curFolder.files.forEach((file) => grid.appendChild(buildFileCard(file, curSubject, curFolder, true)));
+    content.append(label, grid);
+  }
+
+  // ── PDF Thumbnail Rendering (pdf.js) ───────────────────
+  // Caches a small JPEG snapshot of each rendered thumbnail so the
+  // viewer can show it instantly as a placeholder — see openViewer.
+  const thumbnailImageCache = new Map();
+
+  function renderThumbnail(path, canvas, skeleton) {
+    const textEl = skeleton.querySelector(".file-card__skeleton-text");
+    if (!window.pdfjsLib) {
+      return ensurePdfLib().then((ok) => {
+        if (ok) return renderThumbnail(path, canvas, skeleton);
+        textEl.textContent = "PDF";
+        skeleton.classList.add("file-card__skeleton--failed");
+      });
+    }
+
+    const loading = getPdfLoadingTask(path);
+
+    // Only wire progress onto the skeleton if nothing else (e.g. an
+    // already-open viewer for this same file) has claimed the task's
+    // progress callback since.
+    loading.onProgress = (p) => {
+      if (p.total) {
+        textEl.textContent = `Loading… ${Math.min(100, Math.round((p.loaded / p.total) * 100))}%`;
+      }
+    };
+
+    return loading.promise.then((pdf) => {
+      notePageCount(path, pdf.numPages);
+      return withTimeout(
+        pdf.getPage(1).then((page) => {
+          const desiredWidth = 400;
+          const unscaledViewport = page.getViewport({ scale: 1 });
+          const scale = desiredWidth / unscaledViewport.width;
+          const viewport = page.getViewport({ scale });
+
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+
+          const ctx = canvas.getContext("2d");
+          return page.render({ canvasContext: ctx, viewport: viewport }).promise.then(() => {
+            skeleton.style.display = "none";
+            canvas.style.display = "block";
+            try {
+              // Low quality is fine — this is only ever shown briefly,
+              // scaled up, as a stand-in for the real page.
+              thumbnailImageCache.set(path, canvas.toDataURL("image/jpeg", 0.7));
+            } catch {
+              // toDataURL can throw in odd browser/security configs —
+              // just skip the placeholder for this file, not fatal.
+            }
+          });
+        }),
+        15000,
+        "Thumbnail render timed out"
+      );
+    }).catch(() => {
+      textEl.textContent = "PDF";
+      skeleton.classList.add("file-card__skeleton--failed");
+    });
+  }
+
+  // ── PDF Viewer ─────────────────────────────────────────
+  // Renders every page to its own <canvas> via pdf.js, instead of
+  // pointing an <iframe> at the raw file. Two reasons:
+  //  1. No native browser/OS PDF handling involved at all — this is
+  //     what fixes the iOS "stuck on thumbnail" and Android
+  //     "just downloads instead of opening" behavior, since both of
+  //     those come from each platform's own PDF plugin, not from
+  //     this site. One consistent viewer now, same on every device.
+  //  2. There's no visible `src="yourfile.pdf"` sitting in the page's
+  //     HTML anymore for a "view source" to reveal instantly. It
+  //     doesn't stop a DevTools Network-tab download (nothing
+  //     browser-side can), but it closes the trivial route.
+  let viewerLoadToken = 0;
+  let currentPdf = null;
+  let viewerZoom = 1;
+  let pagesInner = null; // scaled independently of the scrolling outer container, so a live pinch can transform it without fighting scroll
+  let pageObserver = null;   // lazy-renders the main page canvases as they scroll near-view
+  let thumbObserver2 = null; // lazy-renders the thumbnail-strip canvases (separate from the folder-grid one above)
+  // Tracks each page-wrap's in-flight pdf.js RenderTask (if any). Needed
+  // wherever code is about to force a page to re-render despite one
+  // already being underway (currently: a zoom change) — pdf.js does not
+  // tolerate two concurrent render() calls sharing the same page
+  // object, and can leave that page permanently unable to render again
+  // for the rest of the session if it happens. Cancelling the old task
+  // first (see cancelActiveRender below) avoids that outright instead
+  // of hoping it never occurs.
+  const activeRenderTasks = new Map(); // wrap -> RenderTask
+  function cancelActiveRender(wrap) {
+    const task = activeRenderTasks.get(wrap);
+    if (task) {
+      try { task.cancel(); } catch (e) { /* already finished/cancelled */ }
+      activeRenderTasks.delete(wrap);
+    }
+  }
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 4;
+  const ZOOM_INCREMENT = 0.25;
+  // Memory limits for the page images (phones kill the whole tab if these are exceeded,
+  // which showed up as the site "logging out" and coming back a few seconds later).
+  const IS_TOUCH_DEVICE = (typeof matchMedia === "function") && matchMedia("(pointer: coarse)").matches;
+  const RENDER_MAX_PIXELS = IS_TOUCH_DEVICE ? 6e6 : 14e6;   // largest single page image
+  const LIVE_PIXEL_BUDGET = IS_TOUCH_DEVICE ? 36e6 : 90e6;   // all page images together
+  const RENDER_ZONE = 1200;                                    // px above/below the screen that stay rendered
+  const EVICT_DISTANCE = RENDER_ZONE + 1500;                   // pages farther than this are freed
+  let renderEpoch = 0;                                         // bumped on every zoom so stale renders are dropped
+
+  // ── Viewer viewport pinning ──────────────────────────────
+  // In-app browsers (WhatsApp's, Chrome Custom Tabs, etc.) animate
+  // their own toolbar in and out as you scroll, and some of them
+  // don't reliably re-fire layout for a `position: fixed; inset: 0`
+  // element when that happens — the toolbar collapses but the page
+  // keeps painting as if it were still there, leaving a dead gap the
+  // exact height of the vanished toolbar at the very top, above
+  // everything including our bar. CSS alone can't detect that; the
+  // VisualViewport API can, so we actively re-pin the viewer to it
+  // whenever the browser reports its chrome changed.
+  function syncViewerViewport() {
+    if (!window.visualViewport || viewer.classList.contains("hidden")) return;
+    const vv = window.visualViewport;
+    viewer.style.top = `${vv.offsetTop}px`;
+    viewer.style.height = `${vv.height}px`;
+  }
+
+  // ── Recently viewed (per-browser, scoped to this name) ──────────
+  // Plain localStorage, not synced anywhere — purely a personal
+  // convenience for "what was I just reading", so there's no reason
+  // for it to touch the network or the Log sheet at all.
+  function recentFilesKey() {
+    return `c12_recent_${normalizeName(currentName || "")}`;
+  }
+  function getRecentFiles() {
+    try {
+      return JSON.parse(localStorage.getItem(recentFilesKey()) || "[]");
+    } catch {
+      return [];
+    }
+  }
+  function addRecentFile(path, name) {
+    if (!currentName) return;
+    try {
+      const list = getRecentFiles().filter((r) => r.path !== path);
+      list.unshift({ path, name, ts: Date.now() });
+      localStorage.setItem(recentFilesKey(), JSON.stringify(list.slice(0, 5)));
+    } catch {
+      // localStorage unavailable (private browsing, quota, etc.) — fine to just skip
+    }
+  }
+
+  // ── Bookmarks (per-browser, scoped to this name) ────────────────
+  // Same storage model as recently-viewed above, but manual and
+  // uncapped — recently-viewed is "what did I just open" (automatic,
+  // short); this is "what do I keep coming back to all term" (a
+  // deliberate choice, kept until removed).
+  function bookmarksKey() {
+    return `c12_bookmarks_${normalizeName(currentName || "")}`;
+  }
+  function getBookmarks() {
+    try {
+      return JSON.parse(localStorage.getItem(bookmarksKey()) || "[]");
+    } catch {
+      return [];
+    }
+  }
+  function isBookmarked(path) {
+    return getBookmarks().some((b) => b.path === path);
+  }
+  function toggleBookmark(path, name) {
+    if (!currentName) return;
+    try {
+      const list = getBookmarks();
+      const idx = list.findIndex((b) => b.path === path);
+      if (idx === -1) list.unshift({ path, name, ts: Date.now() });
+      else list.splice(idx, 1);
+      localStorage.setItem(bookmarksKey(), JSON.stringify(list));
+    } catch {
+      // localStorage unavailable — fine to just skip
+    }
+  }
+
+  // ── Self-marked revision status (per-browser, scoped to this name) ──
+  // Deliberately local, not server-side: "opened" is an objective fact
+  // the Log already tracks; "revised" is a personal judgment call the
+  // student makes about themselves, closer in spirit to bookmarks than
+  // to anything admin needs to see or verify.
+  function revisedKey() {
+    return `c12_revised_${normalizeName(currentName || "")}`;
+  }
+  function getRevisedSet() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(revisedKey()) || "[]"));
+    } catch {
+      return new Set();
+    }
+  }
+  function setRevised(path, isRevised) {
+    if (!currentName) return;
+    try {
+      const set = getRevisedSet();
+      if (isRevised) set.add(path);
+      else set.delete(path);
+      localStorage.setItem(revisedKey(), JSON.stringify(Array.from(set)));
+    } catch {
+      // localStorage unavailable — fine to just skip
+    }
+  }
+
+  // ── Stuck-page watchdog ──────────────────────────────────
+  // Belt-and-braces on top of the timeout fixes above: every 5s, sweep
+  // for any page that's claimed to be "rendering" for more than 20s and
+  // force it back into a clean, retryable state. Whatever the actual
+  // cause of a hang — a slow connection, a server-side stall, anything
+  // this file didn't anticipate — this guarantees a page can never sit
+  // there indefinitely with no way for the person to do anything about
+  // it. It should rarely ever fire once the timeout/cancel fixes above
+  // are doing their job; it's here purely as a last-resort safety net.
+  let stuckPageWatchdog = null;
+  function resetStuckWrap(wrap) {
+    cancelActiveRender(wrap);
+    delete wrap.dataset.rendering;
+    delete wrap.dataset.rendered;
+    delete wrap.dataset.renderStartedAt;
+    const pageNum = Number(wrap.dataset.pageNum);
+    const shimmer = wrap.querySelector(".viewer__page-shimmer");
+    if (shimmer) {
+      shimmer.classList.add("viewer__page-shimmer--failed");
+      shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Couldn't load page ${pageNum} — tap to retry</span>`;
+      shimmer.onclick = () => {
+        shimmer.classList.remove("viewer__page-shimmer--failed");
+        shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Page ${pageNum}</span>`;
+        renderPageInto(wrap, pageNum);
+      };
+    }
+  }
+  function startStuckPageWatchdog() {
+    stopStuckPageWatchdog();
+    stuckPageWatchdog = setInterval(() => {
+      if (!pagesInner) return;
+      const now = Date.now();
+      pagesInner.querySelectorAll('.viewer__page-wrap[data-rendering="1"]').forEach((wrap) => {
+        const started = Number(wrap.dataset.renderStartedAt) || 0;
+        if (now - started > 8000) resetStuckWrap(wrap);
+      });
+    }, 1500);
+  }
+  function stopStuckPageWatchdog() {
+    if (stuckPageWatchdog) { clearInterval(stuckPageWatchdog); stuckPageWatchdog = null; }
+  }
+
+  let currentPdfIsDedicated = false; // true only when currentPdf is its own full-download copy, not the shared thumbnail document
+  let viewerAliveTimer = 0;   // while a PDF is open: "this page is alive" stamp, used to reopen it after a phone-forced reload
+  let currentPdfPath = null; // tracks which file's loading task to evict from cache once this document is destroyed
+
+  let lastFocusBeforeViewer = null;
+  // Small legend that explains the toolbar icons — shown on the first few opens only.
+  function maybeShowViewerHint() {
+    let n = 0;
+    try { n = Number(localStorage.getItem("c12_vhint") || 0); } catch {}
+    const shell = document.querySelector("#viewer .viewer__shell");
+    if (!shell || n >= 3 || shell.querySelector(".viewer__hint")) return;
+    try { localStorage.setItem("c12_vhint", String(n + 1)); } catch {}
+    const items = [["viewerThumbToggle", "Pages — jump to any page"], ["viewerDoneBtn", "Mark this chapter as revised"], ["viewerSearchBtn", "Find words inside this PDF"], ["viewerModeBtn", "Reading mode — tap to switch light / dark / sepia / dim"], ["viewerShareBtn", "Copy a link to this PDF"]];
+    const box = document.createElement("div");
+    box.className = "viewer__hint"; box.setAttribute("role", "note");
+    box.innerHTML = `<p class="viewer__hint-title">What the buttons do</p><ul>${items.map(([id, t]) => { const b = document.getElementById(id); return `<li><span class="ic">${b ? b.querySelector("svg").outerHTML : ""}</span><span>${t}</span></li>`; }).join("")}</ul><button type="button">Got it</button>`;
+    const close = () => { box.remove(); try { localStorage.setItem("c12_vhint", "9"); } catch {} };
+    box.querySelector("button").addEventListener("click", close);
+    shell.appendChild(box);
+    setTimeout(() => box.remove(), 12000);
+  }
+
+  function openViewer(path, name) {
+    maybeShowViewerHint();
+    endCurrentView(); // in case a different PDF was already open — close out its timer first
+    currentPdfPath = path;
+    try { sessionStorage.setItem("c12_openfile", path); sessionStorage.setItem("c12_alive", String(Date.now())); } catch (e) {}
+    clearInterval(viewerAliveTimer);
+    viewerAliveTimer = setInterval(() => { try { sessionStorage.setItem("c12_alive", String(Date.now())); } catch (e) {} }, 4000);
+    resetZoomState();
+    startStuckPageWatchdog();
+    viewerName.textContent = name;
+    viewer.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    document.body.classList.add("viewer-open");
+    lastFocusBeforeViewer = document.activeElement;
+    setTimeout(() => { const d = document.getElementById("viewerDoneBtn"); if (d && !viewer.classList.contains("hidden")) d.focus({ preventScroll: true }); }, 60);
+    syncViewerViewport();
+    currentViewId = makeId();
+    currentViewName = name;
+    currentViewActiveMs = 0;
+    currentViewResumedAt = document.hidden ? null : Date.now();
+    currentViewLogged = false; // the "view" is only logged once the PDF has really loaded
+    addRecentFile(path, name);
+    noteStudyDay();
+    const vSubj = subjectForPath(path);
+    viewer.style.setProperty("--accent", (vSubj && vSubj.color) || "");
+    syncViewerDoneBtn();
+
+    viewerPages.innerHTML = "";
+    currentPdf = null;
+    viewerZoom = 1;
+    updateZoomLabel();
+    pagesInner = el("div", "viewer__pages-inner");
+
+    const myToken = ++viewerLoadToken; // guards against a stale render finishing after the viewer's been closed/reopened
+
+    // The instant cached-thumbnail placeholder that used to render here
+    // is gone — it was showing up essentially all-black (a bad/undersized
+    // JPEG snapshot from the folder grid) for a moment before the real
+    // page swapped in, which is exactly the big dark block everyone kept
+    // reporting. Simpler and reliable beats "instant but sometimes
+    // broken": it's just the compact loading status below until the
+    // real page is ready — nothing that can ever render as a stray
+    // dark rectangle again.
+
+    // Real progress bar instead of a plain "Loading…" label — a
+    // determinate fill once the file size is known, falling back to
+    // an indeterminate sliding animation if the server doesn't report
+    // Content-Length. The point is just to keep showing the person
+    // something is actively happening so they don't give up and leave.
+    const status = el("div", "viewer__status");
+    const statusText = el("p", "viewer__status-text", "Loading document…");
+    const track = el("div", "viewer__progress-track viewer__progress-track--indeterminate");
+    const fill = el("div", "viewer__progress-fill");
+    track.appendChild(fill);
+    const skPages = el("div", "sk-viewer");
+    skPages.innerHTML = '<span class="sk-block"></span><span class="sk-block"></span>';
+    status.append(statusText, track, skPages);
+    viewerPages.appendChild(status);
+
+    if (!window.pdfjsLib) {
+      statusText.textContent = "Loading the viewer…";
+      skPages.remove();
+      track.remove();
+      ensurePdfLib().then((ok) => {
+        if (ok) openViewer(path, name);
+        else statusText.textContent = "Couldn't load the PDF viewer. Please refresh and try again.";
+      });
+      return;
+    }
+
+    // Downloads THIS file in full before showing it (see
+    // getPdfViewLoadingTask) so jumping to any page, including the
+    // last, never has to hit the network again. Only ever runs for the
+    // one PDF actually tapped — folder thumbnails keep using the
+    // light, page-1-only path and never trigger a full download.
+    const task = getPdfViewLoadingTask(path);
+    task.onProgress = (p) => {
+      if (myToken !== viewerLoadToken) return;
+      if (p.total) {
+        track.classList.remove("viewer__progress-track--indeterminate");
+        const pct = Math.min(100, Math.round((p.loaded / p.total) * 100));
+        fill.style.width = `${pct}%`;
+        statusText.textContent = `Loading… ${pct}%`;
+      }
+    };
+
+    task.promise.then((pdf) => {
+      if (myToken !== viewerLoadToken) {
+        // Closed (or another PDF opened) while this was still
+        // downloading — if this finished document is our own
+        // dedicated copy, nothing will ever use or destroy it now.
+        const shared = pdfLoadingTasks.get(path);
+        if (!(shared && shared.resolvedPdf === pdf)) {
+          try { pdf.destroy(); } catch (e) { /* already gone */ }
+          if (pdfViewLoadingTasks.get(path) === task) pdfViewLoadingTasks.delete(path);
+        }
+        return;
+      }
+      currentPdf = pdf;
+      // If this is the exact same document object the shared thumbnail
+      // cache holds (i.e. the full-download attempt fell back to it),
+      // closing the viewer must NOT destroy it — thumbnails and the
+      // next open still need it. Only a genuinely separate, dedicated
+      // full-download copy is ours to destroy.
+      const sharedTask = pdfLoadingTasks.get(path);
+      currentPdfIsDedicated = !(sharedTask && sharedTask.resolvedPdf === pdf);
+      if (viewerPageTotal) viewerPageTotal.textContent = String(pdf.numPages);
+      if (viewerPageInput) {
+        viewerPageInput.value = 1;
+        viewerPageInput.max = String(pdf.numPages);
+      }
+      status.remove();
+      viewerPages.appendChild(pagesInner);
+      if (!currentViewLogged && currentViewId) {
+        currentViewLogged = true;
+        logEvent("view", currentName, name, undefined, { viewId: currentViewId });
+      }
+      const rendered = renderAllPages(myToken);
+      resumeSavedPage(path, pdf.numPages, myToken);
+      return rendered;
+    }).catch((err) => {
+      if (myToken !== viewerLoadToken) return;
+      const reason = err && err.message;
+      // "suspended"/"unauthorized" are the Apps Script's own error
+      // codes (same convention as the rest of this backend) — surface
+      // them specifically instead of a generic retry message that
+      // would be actively wrong for someone who's actually been
+      // blocked: retrying will never work for them, and telling them
+      // to "try again" reads as a glitch rather than a real decision.
+      let canRetry = true;
+      if (reason === "suspended") {
+        statusText.textContent = (SITE_CONFIG.suspended && SITE_CONFIG.suspended.message) || "You've lost access to this content.";
+        canRetry = false;
+      } else if (reason === "unauthorized") {
+        statusText.textContent = "You're not authorized to view this file.";
+        canRetry = false;
+      } else if (reason === "pin_required") {
+        statusText.textContent = "Please sign out and sign in again to enter or set your password.";
+        canRetry = false;
+      } else {
+        // Most likely the server is just busy (exam rush): say so and try once more by itself.
+        if (busyRetryPath !== path) {
+          busyRetryPath = path;
+          statusText.textContent = "The server is busy right now. Trying again in a moment\u2026";
+          setTimeout(() => { if (myToken === viewerLoadToken) openViewer(path, name); }, 6000);
+          return;
+        }
+        busyRetryPath = "";
+        statusText.textContent = "The server is busy or your connection is weak. Please try again.";
+      }
+      track.remove();
+      skPages.remove();
+      // A dead-looking status line with no way forward is exactly what
+      // read as "just stays blank" — this makes the next step obvious
+      // and actually clickable, instead of requiring someone to work
+      // out that closing and reopening the viewer would retry it.
+      if (canRetry) {
+        const retryBtn = el("button", "viewer__btn viewer__retry-btn", "Tap to retry");
+        retryBtn.type = "button";
+        retryBtn.addEventListener("click", () => openViewer(path, name));
+        status.appendChild(retryBtn);
+      }
+    });
+  }
+
+  function drawWatermark(ctx, canvas) {
+    const label = SITE_CONFIG.siteUrl || "unknown";
+    ctx.save();
+    ctx.globalAlpha = 0.09;
+    ctx.fillStyle = "#000";
+    ctx.font = `${Math.round(canvas.width / 22)}px Archivo, sans-serif`;
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(-Math.PI / 6);
+    const stepX = canvas.width * 0.6;
+    const stepY = canvas.height * 0.22;
+    const who = (currentName || "").trim().slice(0, 30);
+    let row = 0;
+    for (let y = -canvas.height; y < canvas.height; y += stepY, row++) {
+      for (let x = -canvas.width; x < canvas.width; x += stepX) {
+        ctx.fillText(who && row % 2 ? who : label, x, y);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Renders ONE page into its already-placed, already-correctly-sized wrap div.
+  // Can be called lazily via IntersectionObserver or directly on thumbnail/link click
+  // so jumping to any page (e.g. page 45) renders immediately without a blank sheet.
+  function renderPageInto(wrap, pageNum) {
+    if (!wrap || !currentPdf) return Promise.resolve();
+    if (wrap.dataset.rendered || wrap.dataset.rendering) return Promise.resolve();
+    wrap.dataset.rendering = "1";
+    wrap.dataset.renderStartedAt = String(Date.now()); // lets the stuck-page watchdog below spot a render that never finished
+    const myToken = viewerLoadToken;
+    const myEpoch = renderEpoch;
+    const isStale = () => myToken !== viewerLoadToken || myEpoch !== renderEpoch;
+    const pdf = currentPdf;
+    const dpr = window.devicePixelRatio || 1;
+
+    // Returned (not fire-and-forget) so the concurrency queue this is
+    // now called through — see queuePageRender — actually knows when
+    // this page is done and can start the next queued one.
+    return withTimeout(pdf.getPage(pageNum), 8000, "Page load timed out").then((page) => {
+      if (isStale()) {
+        delete wrap.dataset.rendering;
+        return;
+      }
+      const unscaledViewport = page.getViewport({ scale: 1 });
+      wrap.dataset.aspect = String(unscaledViewport.height / unscaledViewport.width);
+
+      const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+      const displayWidth = Math.round(baseWidth * viewerZoom);
+      const displayHeight = Math.round(displayWidth * (unscaledViewport.height / unscaledViewport.width));
+
+      wrap.style.width = `${displayWidth}px`;
+      wrap.style.height = `${displayHeight}px`;
+
+      let renderScale = (displayWidth / unscaledViewport.width) * dpr;
+      // Never make a page image bigger than the device can safely hold.
+      const wantPixels = (unscaledViewport.width * renderScale) * (unscaledViewport.height * renderScale);
+      if (wantPixels > RENDER_MAX_PIXELS) renderScale *= Math.sqrt(RENDER_MAX_PIXELS / wantPixels);
+      const viewport = page.getViewport({ scale: renderScale });
+
+      const canvas = document.createElement("canvas");
+      canvas.className = "viewer__page";
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      const ctx = canvas.getContext("2d");
+      const renderTask = page.render({ canvasContext: ctx, viewport });
+      activeRenderTasks.set(wrap, renderTask);
+      return withRenderTimeout(
+        renderTask,
+        8000,
+        "Page render timed out"
+      ).then(() => {
+        if (activeRenderTasks.get(wrap) === renderTask) activeRenderTasks.delete(wrap);
+        if (isStale()) {
+          delete wrap.dataset.rendering;
+          try { canvas.width = 0; canvas.height = 0; } catch (e) {}
+          return;
+        }
+        delete wrap.dataset.rendering;
+        wrap.dataset.rendered = "1";
+        delete wrap.dataset.stale;
+
+        drawWatermark(ctx, canvas);
+
+        // Remove loading shimmer once rendered
+        const shimmer = wrap.querySelector(".viewer__page-shimmer");
+        if (shimmer) shimmer.remove();
+
+        // Swap canvas safely: remove any existing canvas and append new one (no flash)
+        const oldCanvas = wrap.querySelector("canvas.viewer__page");
+        if (oldCanvas) { try { oldCanvas.width = 0; oldCanvas.height = 0; } catch (e) {} oldCanvas.remove(); }
+        wrap.appendChild(canvas);
+        evictFarPages(); // keep memory bounded: free page images that are far from the screen
+
+        // Remove old annotation layer if present
+        const oldAnno = wrap.querySelector(".annotationLayer");
+        if (oldAnno) oldAnno.remove();
+
+        // ── Clickable PDF links (TOC, Index, External) ──
+        // No longer uses pdf.js's own AnnotationLayer class at all.
+        // That path has now been fixed twice — once for calling it the
+        // wrong way, once for the try/catch not actually covering it —
+        // and links still didn't work even on pages that had fully
+        // rendered. That leaves real doubt about whether
+        // pdfjsLib.AnnotationLayer is even present as a working export
+        // in this specific CDN build, or whether its internal DOM
+        // structure matches what the CSS expects — either way, that's
+        // two classes of uncertainty this project has no real way to
+        // pin down further from outside a live browser. So instead of
+        // depending on pdf.js's own annotation machinery at all, this
+        // computes each link's on-page position directly from its raw
+        // PDF coordinates and builds a plain <a> tag by hand, styled
+        // with inline styles set right here — nothing left that
+        // depends on an external class matching, or on a pdf.js
+        // feature this build may or may not actually expose.
+        page.getAnnotations({ intent: "display" }).then((annots) => {
+          if (isStale() || !annots || !annots.length) return;
+          try {
+            const cssScale = displayWidth / unscaledViewport.width;
+            const annoViewport = page.getViewport({ scale: cssScale });
+
+            const annoDiv = document.createElement("div");
+            annoDiv.className = "annotationLayer";
+            annoDiv.style.position = "absolute";
+            annoDiv.style.top = "0";
+            annoDiv.style.left = "0";
+            annoDiv.style.width = `${displayWidth}px`;
+            annoDiv.style.height = `${displayHeight}px`;
+            annoDiv.style.pointerEvents = "none"; // the div itself is just a positioning frame — only the individual links inside re-enable pointer events, so nothing here can block clicks meant for something else on the page
+            wrap.appendChild(annoDiv);
+
+            let builtAny = false;
+            annots.forEach((ann) => {
+              if (ann.subtype !== "Link" || !ann.rect) return;
+              const [rx1, ry1, rx2, ry2] = annoViewport.convertToViewportRectangle(ann.rect);
+              const left = Math.min(rx1, rx2);
+              const top = Math.min(ry1, ry2);
+              const width = Math.abs(rx2 - rx1);
+              const height = Math.abs(ry2 - ry1);
+              if (!width || !height) return;
+
+              const link = document.createElement("a");
+              link.className = "viewer__page-link";
+              link.style.position = "absolute";
+              link.style.left = `${left}px`;
+              link.style.top = `${top}px`;
+              link.style.width = `${width}px`;
+              link.style.height = `${height}px`;
+              link.style.display = "block";
+              link.style.cursor = "pointer";
+              link.style.pointerEvents = "auto";
+
+              if (ann.url) {
+                link.href = ann.url;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer nofollow";
+              } else if (ann.dest) {
+                link.href = "#";
+                link.addEventListener("click", (e) => {
+                  e.preventDefault();
+                  const destValue = ann.dest;
+                  const resolved = typeof destValue === "string" ? pdf.getDestination(destValue) : Promise.resolve(destValue);
+                  resolved.then((d) => {
+                    if (d && d[0]) pdf.getPageIndex(d[0]).then((idx) => scrollToPage(idx + 1));
+                  }).catch((e2) => console.error("Couldn't resolve link destination:", e2));
+                });
+              } else {
+                return; // an annotation with neither a URL nor a destination isn't a navigable link
+              }
+              annoDiv.appendChild(link);
+              builtAny = true;
+            });
+
+            if (!builtAny) annoDiv.remove(); // nothing actually clickable on this page — don't leave an empty frame sitting in the DOM
+          } catch (annoErr) {
+            console.error("Link annotation layer failed:", annoErr);
+          }
+        }).catch((annoErr) => {
+          console.error("Couldn't read this page's annotations:", annoErr);
+        });
+      });
+    }).catch((err) => {
+      // Was previously a silent dead end: dataset.rendering never got
+      // cleared on a hang (there was nothing to time it out), so this
+      // page could never be retried by anything — not a re-scroll, not
+      // an explicit jump. Now a failure/timeout clears both flags and
+      // turns the shimmer itself into a retry button, so the page can
+      // actually recover instead of staying blank forever.
+      activeRenderTasks.delete(wrap);
+      delete wrap.dataset.rendering;
+      delete wrap.dataset.rendered;
+      delete wrap.dataset.renderStartedAt;
+      // A cancellation (from cancelActiveRender, e.g. a zoom change
+      // superseding this render) isn't a failure — a fresh render for
+      // this same page is already on its way in, so don't flash an
+      // error state for it.
+      if (err && err.name === "RenderingCancelledException") return;
+      const shimmer = wrap.querySelector(".viewer__page-shimmer");
+      if (shimmer) {
+        shimmer.classList.add("viewer__page-shimmer--failed");
+        shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Couldn't load page ${pageNum} — tap to retry</span>`;
+        shimmer.onclick = () => {
+          shimmer.classList.remove("viewer__page-shimmer--failed");
+          shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Page ${pageNum}</span>`;
+          renderPageInto(wrap, pageNum);
+        };
+      }
+    });
+  }
+
+  function renderAllPages(token) {
+    if (!pagesInner) return Promise.resolve();
+    pagesInner.querySelectorAll(".viewer__page-wrap").forEach((c) => { cancelActiveRender(c); c.remove(); });
+    viewerThumbStrip.innerHTML = "";
+    if (pageObserver) pageObserver.disconnect();
+    if (thumbObserver2) thumbObserver2.disconnect();
+    const pdf = currentPdf;
+    if (!pdf) return Promise.resolve();
+
+    // Generous rootMargin (2000px) ensures fast scrolling loads smoothly in advance
+    pageObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const wrap = entry.target;
+        const pageNum = Number(wrap.dataset.pageNum);
+        queuePageRender(() => renderPageInto(wrap, pageNum), pageNum);
+      });
+    }, { root: viewerPages, rootMargin: `${RENDER_ZONE}px 0px ${RENDER_ZONE}px 0px` });
+
+    // Thumbnail strip observer
+    thumbObserver2 = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const item = entry.target;
+        if (item.dataset.rendered) return;
+        item.dataset.rendered = "1";
+        const pageNum = Number(item.dataset.pageNum);
+        const canvas = item.querySelector("canvas");
+        pdf.getPage(pageNum).then((page) => {
+          if (token !== viewerLoadToken) return;
+          const unscaledViewport = page.getViewport({ scale: 1 });
+          const scale = 90 / unscaledViewport.width;
+          const viewport = page.getViewport({ scale });
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          return page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        }).catch(() => {});
+      });
+    }, { root: viewerThumbStrip, rootMargin: "400px 0px 400px 0px" });
+
+    // Fetch ONLY Page 1 to obtain initial aspect ratio (Page 1 is already cached from thumbnail!)
+    // Generating placeholders for all pages takes <1ms with zero extra network requests!
+    // Wrapped in withTimeout: this used to be the single point of
+    // failure for the entire document — if this one call hung, NOTHING
+    // downstream of it ever ran, so not one page-wrap, shimmer, or
+    // error message ever appeared. That's what a truly blank viewer
+    // with no loading indicator at all (not even the per-page shimmer,
+    // since nothing had been created yet to show one) actually was.
+    return withTimeout(pdf.getPage(1), 15000, "Couldn't load page 1").then((firstPage) => {
+      if (token !== viewerLoadToken) return;
+      const unscaledFirst = firstPage.getViewport({ scale: 1 });
+      const defaultAspect = unscaledFirst.height / unscaledFirst.width;
+      const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+      const displayWidth = Math.round(baseWidth * viewerZoom);
+      const displayHeight = Math.round(displayWidth * defaultAspect);
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const wrap = el("div", "viewer__page-wrap");
+        wrap.dataset.pageNum = String(pageNum);
+        wrap.dataset.aspect = String(defaultAspect);
+        wrap.style.width = `${displayWidth}px`;
+        wrap.style.height = `${displayHeight}px`;
+
+        // Page number label visible on each page in the main viewer
+        const pageLabel = el("span", "viewer__page-num", String(pageNum));
+        wrap.appendChild(pageLabel);
+
+        // Loading shimmer until page canvas renders
+        const shimmer = el("div", "viewer__page-shimmer");
+        shimmer.innerHTML = `<span class="viewer__page-shimmer-text">Page ${pageNum}</span>`;
+        wrap.appendChild(shimmer);
+
+        pagesInner.appendChild(wrap);
+        pageObserver.observe(wrap);
+
+        // Thumbnail item
+        const thumbItem = el("div", "viewer__thumb-item");
+        thumbItem.dataset.pageNum = String(pageNum);
+        if (pageNum === 1) thumbItem.classList.add("viewer__thumb-item--current");
+        const thumbCanvas = document.createElement("canvas");
+        thumbCanvas.style.aspectRatio = `${unscaledFirst.width} / ${unscaledFirst.height}`;
+        const thumbLabel = el("span", "viewer__thumb-item-num", String(pageNum));
+        thumbItem.append(thumbCanvas, thumbLabel);
+
+        // Clicking a thumbnail jumps directly to that page AND keeps thumbnail strip open
+        thumbItem.addEventListener("click", () => {
+          scrollToPage(pageNum);
+        });
+
+        viewerThumbStrip.appendChild(thumbItem);
+        thumbObserver2.observe(thumbItem);
+      }
+
+      // Render Page 1 immediately
+      const firstWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="1"]`);
+      if (firstWrap) renderPageInto(firstWrap, 1);
+    }).catch((err) => {
+      if (token !== viewerLoadToken) return;
+      // Nothing got created above — show a real, visible retry state
+      // in the empty viewer instead of leaving it blank.
+      const status = el("div", "viewer__status");
+      status.append(el("p", "viewer__status-text", "Couldn't load this PDF."));
+      const retryBtn = el("button", "viewer__btn viewer__retry-btn", "Tap to retry");
+      retryBtn.type = "button";
+      retryBtn.addEventListener("click", () => {
+        status.remove();
+        renderAllPages(token);
+      });
+      status.appendChild(retryBtn);
+      viewerPages.appendChild(status);
+    });
+  }
+
+  // ── Jump to Page / Scroll to Page ──────────────────────────
+  // Instantly renders the target page and adjacent pages so distant jumps (e.g. page 45)
+  // never sit on a blank screen.
+  function scrollToPage(pageNum) {
+    if (!currentPdf || !pagesInner) return;
+    pageNum = Math.max(1, Math.min(currentPdf.numPages, pageNum));
+    const wrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum}"]`);
+    if (!wrap) return;
+
+    wrap.scrollIntoView({ block: "start", behavior: "smooth" });
+    updateCurrentPageDisplay(pageNum);
+    highlightThumbnail(pageNum);
+
+    // Only recover a page that's genuinely stuck — flagged "rendered"
+    // with no canvas ever appended (a leftover from an older bug).
+    // Deliberately NOT touching dataset.rendering here: this function
+    // runs on every jump (a link click, a thumbnail tap, typing a page
+    // number), including jumps to a page that's already mid-render
+    // right now — e.g. one just prefetched a moment ago as the
+    // "next page" of a previous jump. Clearing that flag would let
+    // THIS call start a second, concurrent render of the very same
+    // PDF page on top of the one already running. pdf.js does not
+    // tolerate that: the two render tasks fight over the same shared
+    // page object, and it's left unable to ever render again for the
+    // rest of the session — that page then reads as permanently blank
+    // no matter how many times you click the link or scroll to it,
+    // which matches exactly what was being reported: works once,
+    // then never again, for that specific page.
+    if (wrap.dataset.rendered && !wrap.querySelector("canvas.viewer__page")) {
+      delete wrap.dataset.rendered;
+    }
+
+    // Drop any renders still queued from scrolling PAST pages on the
+    // way here (see focusPageRenderQueue) — they're not relevant anymore.
+    focusPageRenderQueue(pageNum, 6);
+
+    // Render target page with top priority — jumps straight to the front
+    // of the queue instead of waiting behind whatever the scroll observer
+    // already queued, but still counts against the same concurrency cap
+    // as everything else (see queuePageRender above).
+    queuePageRender(() => renderPageInto(wrap, pageNum), pageNum, { priority: true });
+
+    // Pre-render adjacent pages for instantaneous responsiveness
+    if (pageNum > 1) {
+      const prevWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum - 1}"]`);
+      if (prevWrap) queuePageRender(() => renderPageInto(prevWrap, pageNum - 1), pageNum - 1, { priority: true });
+    }
+    if (pageNum < currentPdf.numPages) {
+      const nextWrap = pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${pageNum + 1}"]`);
+      if (nextWrap) queuePageRender(() => renderPageInto(nextWrap, pageNum + 1), pageNum + 1, { priority: true });
+    }
+  }
+
+  function syncViewerDoneBtn() {
+    const b = document.getElementById("viewerDoneBtn");
+    if (!b) return;
+    const on = !!currentPdfPath && getRevisedSet().has(currentPdfPath);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = on ? "Marked as done (tap to undo)" : "Mark as done";
+  }
+
+  // ── Remember reading position per file (this device, per person) ──
+  let savePageTimer = null;
+  function readPosKey() { return "c12_pos_" + normalizeName(currentName || ""); }
+  function loadPositions() {
+    try { return JSON.parse(localStorage.getItem(readPosKey()) || "{}"); } catch (e) { return {}; }
+  }
+  function rememberPage(pageNum) {
+    if (!currentPdfPath) return;
+    const path = currentPdfPath;
+    clearTimeout(savePageTimer);
+    savePageTimer = setTimeout(() => {
+      try {
+        const all = loadPositions();
+        if (pageNum <= 1) delete all[path]; else all[path] = { p: pageNum, t: Date.now() };
+        const keys = Object.keys(all);
+        if (keys.length > 60) {
+          keys.sort((a, b) => all[a].t - all[b].t).slice(0, keys.length - 60).forEach((k) => delete all[k]);
+        }
+        localStorage.setItem(readPosKey(), JSON.stringify(all));
+      } catch (e) { /* storage unavailable — resume just won't work */ }
+    }, 600);
+  }
+  function resumeSavedPage(path, numPages, token) {
+    const saved = loadPositions()[path];
+    if (!saved || saved.p <= 1 || saved.p > numPages) return;
+    setTimeout(() => {
+      if (token !== viewerLoadToken || currentPdfPath !== path) return;
+      const wrap = pagesInner && pagesInner.querySelector(`.viewer__page-wrap[data-page-num="${saved.p}"]`);
+      if (!wrap) return;
+      scrollToPage(saved.p);
+      showToast(`Resumed at page ${saved.p}`);
+    }, 250);
+  }
+
+  function updateCurrentPageDisplay(pageNum) {
+    rememberPage(pageNum);
+    if (viewerPageInput && document.activeElement !== viewerPageInput) {
+      viewerPageInput.value = pageNum;
+    }
+    if (viewerPrevPage) viewerPrevPage.disabled = (pageNum <= 1);
+    if (viewerNextPage) viewerNextPage.disabled = (currentPdf && pageNum >= currentPdf.numPages);
+  }
+
+  function highlightThumbnail(pageNum) {
+    if (!viewerThumbStrip) return;
+    viewerThumbStrip.querySelectorAll(".viewer__thumb-item").forEach((t) => {
+      const isCurrent = Number(t.dataset.pageNum) === pageNum;
+      t.classList.toggle("viewer__thumb-item--current", isCurrent);
+      if (isCurrent && viewerThumbStrip.classList.contains("viewer__thumb-strip--open")) {
+        t.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    });
+  }
+
+  let viewerScrollDebounce = null;
+  function onViewerScroll() {
+    if (!currentPdf || !pagesInner) return;
+    if (viewerScrollDebounce) return;
+    viewerScrollDebounce = setTimeout(() => {
+      viewerScrollDebounce = null;
+      if (!pagesInner || !viewerPages) return;
+      const wraps = pagesInner.querySelectorAll(".viewer__page-wrap");
+      const targetMid = viewerPages.scrollTop + viewerPages.clientHeight / 3;
+      let closestPage = 1;
+      let minDiff = Infinity;
+      wraps.forEach((w) => {
+        const top = w.offsetTop;
+        const diff = Math.abs(top - targetMid);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestPage = Number(w.dataset.pageNum);
+        }
+      });
+      updateCurrentPageDisplay(closestPage);
+      highlightThumbnail(closestPage);
+      evictFarPages();
+    }, 80);
+  }
+
+  function prevPage() {
+    const cur = parseInt(viewerPageInput ? viewerPageInput.value : "1", 10) || 1;
+    if (cur > 1) scrollToPage(cur - 1);
+  }
+
+  function nextPage() {
+    if (!currentPdf) return;
+    const cur = parseInt(viewerPageInput ? viewerPageInput.value : "1", 10) || 1;
+    if (cur < currentPdf.numPages) scrollToPage(cur + 1);
+  }
+
+  function fitToWidth() {
+    if (!currentPdf || !pagesInner) return;
+    const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+    const availableWidth = viewerPages.clientWidth - 32;
+    const targetZoom = availableWidth / baseWidth;
+    setZoom(targetZoom);
+  }
+
+  function fitToPage() {
+    if (!currentPdf || !pagesInner) return;
+    const firstWrap = pagesInner.querySelector(".viewer__page-wrap");
+    const aspect = firstWrap ? (Number(firstWrap.dataset.aspect) || 1.414) : 1.414;
+    const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+    const availableHeight = viewerPages.clientHeight - 40;
+    const targetWidth = availableHeight / aspect;
+    const targetZoom = targetWidth / baseWidth;
+    setZoom(targetZoom);
+  }
+
+  function updateZoomLabel() {
+    const label = $("#viewerZoomLabel");
+    if (label) label.textContent = `${Math.round(viewerZoom * 100)}%`;
+    const inBtn = $("#viewerZoomIn");
+    const outBtn = $("#viewerZoomOut");
+    if (inBtn) inBtn.disabled = (viewerZoom >= ZOOM_MAX);
+    if (outBtn) outBtn.disabled = (viewerZoom <= ZOOM_MIN);
+  }
+
+  function clampZoom(z) {
+    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  }
+
+  // ── Zoom engine (pinch, double-tap, buttons, Ctrl+wheel) ────────────────
+  // Two stages, like the big PDF apps:
+  //  1) PREVIEW: while fingers move (or a button is pressed) the whole page stack is
+  //     moved/scaled with a GPU transform. It follows both the pinch AND the movement of the
+  //     fingers, costs almost nothing, and never touches the layout.
+  //  2) COMMIT: when the gesture ends, the pages are resized once, the scroll position is
+  //     set so the spot under the fingers stays under the fingers, and only the pages
+  //     near the screen are redrawn sharp. The old (stretched) image stays visible until
+  //     the new one is ready, so nothing blinks.
+  let zg = null;               // the zoom gesture in progress
+  let zoomCommitTimer = 0;
+  let pinch = null;            // two-finger state
+  let tapStart = null, lastTap = null;
+
+  function listWraps() { return pagesInner ? Array.from(pagesInner.querySelectorAll(".viewer__page-wrap")) : []; }
+
+  // The page (and the spot on it) that is under a screen point — stays put through the zoom.
+  function pickAnchorAt(cx, cy) {
+    const wraps = listWraps();
+    let best = null, bestD = Infinity;
+    for (let i = 0; i < wraps.length; i++) {
+      const r = wraps[i].getBoundingClientRect();
+      const d = cy < r.top ? r.top - cy : (cy > r.bottom ? cy - r.bottom : 0);
+      if (d < bestD) { bestD = d; best = { wrap: wraps[i], r }; if (d === 0) break; }
+    }
+    if (!best) return null;
+    const r = best.r;
+    return {
+      wrap: best.wrap,
+      fx: r.width ? (cx - r.left) / r.width : 0.5,
+      fy: r.height ? Math.min(1, Math.max(0, (cy - r.top) / r.height)) : 0.5
+    };
+  }
+
+  function zoomPreviewBegin(cx, cy) {
+    if (!currentPdf || !pagesInner) return null;
+    clearTimeout(zoomCommitTimer);
+    if (zg) return zg;
+    pagesInner.style.transition = "none";
+    pagesInner.style.transform = "";
+    const pr = pagesInner.getBoundingClientRect();
+    const anchor = pickAnchorAt(cx, cy);
+    if (!anchor) return null;
+    pagesInner.style.transformOrigin = `${cx - pr.left}px ${cy - pr.top}px`;
+    zg = { startZoom: viewerZoom, cur: viewerZoom, sx: cx, sy: cy, mx: cx, my: cy, anchor };
+    return zg;
+  }
+
+  function zoomPreviewApply(zoom, mx, my, animate) {
+    if (!zg || !pagesInner) return;
+    zoom = Math.min(ZOOM_MAX * 1.15, Math.max(ZOOM_MIN * 0.85, zoom)); // a little give past the limits, springs back on release
+    zg.cur = zoom; zg.mx = mx; zg.my = my;
+    pagesInner.style.transition = animate ? "transform 170ms cubic-bezier(.2,.8,.2,1)" : "none";
+    pagesInner.style.transform = `translate3d(${mx - zg.sx}px, ${my - zg.sy}px, 0) scale(${zoom / zg.startZoom})`;
+    const label = $("#viewerZoomLabel");
+    if (label) label.textContent = `${Math.round(clampZoom(zoom) * 100)}%`;
+  }
+
+  function zoomCommit() {
+    clearTimeout(zoomCommitTimer);
+    const g = zg;
+    zg = null;
+    if (!g || !pagesInner) return;
+    const next = Math.round(clampZoom(g.cur) * 100) / 100;
+
+    // Nothing really changed (or pushed past a limit): glide back.
+    if (!currentPdf || Math.abs(next - viewerZoom) < 0.005) {
+      pagesInner.style.transition = "transform 160ms ease-out";
+      pagesInner.style.transform = "";
+      const pi = pagesInner;
+      setTimeout(() => { if (pagesInner === pi && !zg) pi.style.transition = ""; }, 200);
+      updateZoomLabel();
+      return;
+    }
+
+    viewerZoom = next;
+    updateZoomLabel();
+    renderEpoch++; // anything still being drawn at the old zoom is now out of date
+
+    const wraps = listWraps();
+    const baseWidth = Math.min(viewerPages.clientWidth - 32, 900);
+    const newWidth = Math.round(baseWidth * viewerZoom);
+    wraps.forEach((wrap) => {
+      const aspect = Number(wrap.dataset.aspect) || 1.414;
+      const newHeight = Math.round(newWidth * aspect);
+      wrap.style.width = `${newWidth}px`;
+      wrap.style.height = `${newHeight}px`;
+      const annoLayer = wrap.querySelector(".annotationLayer");
+      if (annoLayer) { annoLayer.style.width = `${newWidth}px`; annoLayer.style.height = `${newHeight}px`; }
+      cancelActiveRender(wrap);
+      delete wrap.dataset.rendering;
+      if (wrap.dataset.rendered) { delete wrap.dataset.rendered; wrap.dataset.stale = "1"; }
+    });
+
+    pagesInner.style.transition = "none";
+    pagesInner.style.transform = "";
+    pagesInner.style.transformOrigin = "";
+
+    // Keep the spot that was under the fingers under the fingers.
+    const wr = g.anchor.wrap.getBoundingClientRect();
+    viewerPages.scrollLeft += (wr.left + g.anchor.fx * wr.width) - g.mx;
+    viewerPages.scrollTop += (wr.top + g.anchor.fy * wr.height) - g.my;
+
+    refreshZoomRender(wraps);
+  }
+
+  // Redraw sharp only what is near the screen; free the rest (they redraw when scrolled back).
+  function refreshZoomRender(wraps) {
+    const vr = viewerPages.getBoundingClientRect();
+    const lo = vr.top - RENDER_ZONE, hi = vr.bottom + RENDER_ZONE;
+    const mid = (vr.top + vr.bottom) / 2;
+    const todo = [];
+    wraps.forEach((w) => {
+      const r = w.getBoundingClientRect();
+      const c = w.querySelector("canvas.viewer__page");
+      if (!(r.bottom > lo && r.top < hi)) { if (c) dropPageCanvas(w, c); delete w.dataset.stale; return; }
+      if (w.dataset.stale || !c) todo.push({ w, visible: r.bottom > vr.top && r.top < vr.bottom, d: Math.abs((r.top + r.bottom) / 2 - mid) });
+    });
+    todo.sort((a, b) => b.d - a.d); // farthest first, so the page you are looking at is queued last with priority (= runs first)
+    todo.forEach((t) => {
+      const n = Number(t.w.dataset.pageNum);
+      queuePageRender(() => renderPageInto(t.w, n), n, { priority: t.visible });
+    });
+  }
+
+  function dropPageCanvas(w, c) {
+    try { c.width = 0; c.height = 0; } catch (e) {}
+    c.remove();
+    delete w.dataset.rendered;
+    const a = w.querySelector(".annotationLayer");
+    if (a) a.remove();
+  }
+
+  // Keeps memory bounded: page images far from the screen are freed, and the total is capped.
+  function evictFarPages() {
+    if (!pagesInner || viewer.classList.contains("hidden")) return;
+    const vr = viewerPages.getBoundingClientRect();
+    const lo = vr.top - EVICT_DISTANCE, hi = vr.bottom + EVICT_DISTANCE;
+    const zlo = vr.top - RENDER_ZONE, zhi = vr.bottom + RENDER_ZONE;
+    const mid = (vr.top + vr.bottom) / 2;
+    let total = 0;
+    const live = [];
+    pagesInner.querySelectorAll(".viewer__page-wrap[data-rendered]").forEach((w) => {
+      const c = w.querySelector("canvas.viewer__page");
+      if (!c) return;
+      const r = w.getBoundingClientRect();
+      if (r.bottom < lo || r.top > hi) { dropPageCanvas(w, c); return; }
+      total += c.width * c.height;
+      live.push({ w, c, d: Math.abs((r.top + r.bottom) / 2 - mid), inZone: r.bottom > zlo && r.top < zhi });
+    });
+    if (total > LIVE_PIXEL_BUDGET) {
+      live.sort((a, b) => b.d - a.d);
+      for (const e of live) {
+        if (total <= LIVE_PIXEL_BUDGET) break;
+        if (e.inZone) continue;
+        total -= e.c.width * e.c.height;
+        dropPageCanvas(e.w, e.c);
+      }
+    }
+  }
+
+  // Zoom to a level with a short smooth animation (buttons, double-tap, keyboard, fit).
+  function zoomAnimated(target, cx, cy) {
+    if (!currentPdf || !pagesInner) return;
+    if (cx == null) {
+      const vr = viewerPages.getBoundingClientRect();
+      cx = vr.left + vr.width / 2;
+      cy = vr.top + vr.height / 2;
+    }
+    if (!zg && !zoomPreviewBegin(cx, cy)) return;
+    zoomPreviewApply(clampZoom(target), zg.mx, zg.my, true);
+    clearTimeout(zoomCommitTimer);
+    zoomCommitTimer = setTimeout(zoomCommit, 190);
+  }
+  function setZoom(next) { zoomAnimated(next); }
+
+  function zoomIn() { zoomAnimated(Math.round(((zg ? zg.cur : viewerZoom) + ZOOM_INCREMENT) * 100) / 100); }
+  function zoomOut() { zoomAnimated(Math.round(((zg ? zg.cur : viewerZoom) - ZOOM_INCREMENT) * 100) / 100); }
+
+  // ── Touch: pinch (with two-finger moving) and double-tap ──────────────
+  function touchDistance(touches) {
+    const [a, b] = touches;
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+  function touchMidpoint(touches) {
+    const [a, b] = touches;
+    return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+  }
+
+  function onViewerTouchStart(e) {
+    if (e.touches.length === 2 && currentPdf && pagesInner) {
+      tapStart = null; lastTap = null;
+      if (zg) zoomCommit(); // a button zoom was still settling: finish it first
+      const m = touchMidpoint(e.touches);
+      if (!zoomPreviewBegin(m.x, m.y)) return;
+      pinch = { d0: Math.max(24, touchDistance(e.touches)) };
+      // Freeze native scrolling for the length of the pinch, so the page can't also scroll.
+      viewerPages.style.overflow = "hidden";
+    } else if (e.touches.length === 1) {
+      tapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };
+    } else {
+      tapStart = null;
+    }
+  }
+
+  function onViewerTouchMove(e) {
+    if (pinch && zg && e.touches.length === 2) {
+      if (e.cancelable) e.preventDefault();
+      const m = touchMidpoint(e.touches);
+      zoomPreviewApply(zg.startZoom * touchDistance(e.touches) / pinch.d0, m.x, m.y, false);
+    } else if (tapStart && e.touches.length === 1) {
+      const t = e.touches[0];
+      if (Math.hypot(t.clientX - tapStart.x, t.clientY - tapStart.y) > 12) tapStart = null; // it's a scroll, not a tap
+    }
+  }
+
+  function onViewerTouchEnd(e) {
+    if (pinch && e.touches.length < 2) {
+      pinch = null;
+      viewerPages.style.overflow = "";
+      zoomCommit();
+      tapStart = null; lastTap = null;
+      return;
+    }
+    if (tapStart && e.touches.length === 0 && e.changedTouches && e.changedTouches.length === 1) {
+      const now = Date.now();
+      const ct = e.changedTouches[0];
+      const quick = now - tapStart.t < 300;
+      tapStart = null;
+      if (!quick) { lastTap = null; return; }
+      if (e.target && e.target.closest && e.target.closest("a, button, input, textarea")) { lastTap = null; return; }
+      if (lastTap && now - lastTap.t < 320 && Math.hypot(ct.clientX - lastTap.x, ct.clientY - lastTap.y) < 40) {
+        lastTap = null;
+        zoomAnimated(viewerZoom < 1.4 ? 2 : 1, ct.clientX, ct.clientY);
+      } else {
+        lastTap = { x: ct.clientX, y: ct.clientY, t: now };
+      }
+    }
+  }
+
+  // Laptop: Ctrl + scroll wheel (also a trackpad pinch) zooms smoothly around the pointer.
+  function onViewerWheel(e) {
+    if (!(e.ctrlKey || e.metaKey) || !currentPdf || !pagesInner) return;
+    e.preventDefault();
+    if (!zg && !zoomPreviewBegin(e.clientX, e.clientY)) return;
+    const f = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.01));
+    zoomPreviewApply(zg.cur * f, zg.mx, zg.my, false);
+    clearTimeout(zoomCommitTimer);
+    zoomCommitTimer = setTimeout(zoomCommit, 160);
+  }
+
+  // Mouse double-click zooms too (touch is handled above).
+  function onViewerDblClick(e) {
+    if (!currentPdf || !pagesInner) return;
+    if (e.target && e.target.closest && e.target.closest("a, button, input, textarea")) return;
+    zoomAnimated(viewerZoom < 1.4 ? 2 : 1, e.clientX, e.clientY);
+  }
+
+  function resetZoomState() {
+    clearTimeout(zoomCommitTimer);
+    zg = null; pinch = null; tapStart = null; lastTap = null;
+    if (viewerPages) viewerPages.style.overflow = "";
+    if (pagesInner) { pagesInner.style.transition = ""; pagesInner.style.transform = ""; pagesInner.style.transformOrigin = ""; }
+  }
+
+  function closeViewer() {
+    closeViewerSearch();
+    endCurrentView();
+    stopStuckPageWatchdog();
+    viewer.classList.add("hidden");
+    viewer.style.top = "";
+    viewer.style.height = "";
+    viewerLoadToken++; // invalidate any render still in flight
+    resetZoomState();
+    clearInterval(viewerAliveTimer);
+    try { sessionStorage.removeItem("c12_openfile"); sessionStorage.removeItem("c12_alive"); } catch (e) {}
+    pageRenderQueue = []; // drop anything still queued for the document we're about to destroy
+    if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+    if (thumbObserver2) { thumbObserver2.disconnect(); thumbObserver2 = null; }
+    activeRenderTasks.forEach((task) => { try { task.cancel(); } catch (e) {} });
+    activeRenderTasks.clear();
+    // This is the real fix for "close a PDF, open another, nothing
+    // loads at all" (and, after enough of these pile up in one
+    // session, "pages stop loading partway through even in the SAME
+    // document"): setting currentPdf to null only drops this code's
+    // own reference to it — it does NOT tell pdf.js the document is
+    // done. Without calling .destroy() first, that document's
+    // dedicated worker thread and any still-open network connections
+    // keep running in the background forever, invisibly. Every PDF
+    // you'd ever opened in that browser tab was silently still alive,
+    // each one holding onto its own thread and connections — until
+    // the browser's hard cap on how many of either it allows kicked
+    // in, at which point NOTHING new could load anymore, in any PDF.
+    // Only destroy the document if it's this viewer's OWN dedicated
+    // full-download copy. If it turned out to be the shared one the
+    // folder thumbnails also use (the full-download attempt fell back
+    // to it), it stays alive — thumbnails and the next open still
+    // need it, and it was never this viewer's to throw away.
+    if (currentPdf && currentPdfIsDedicated) {
+      try { currentPdf.destroy(); } catch (e) { /* already gone */ }
+    }
+    // Same stale-cache reasoning as before, now aimed at the right
+    // cache: the dedicated view-task cache would otherwise keep
+    // handing back this now-destroyed document the next time the
+    // same file is opened, which reads as "this PDF just won't
+    // open." The shared thumbnail cache (pdfLoadingTasks) is
+    // deliberately left alone — its document is either a separate
+    // still-alive object, or the very one we just declined to destroy.
+    if (currentPdfPath && currentPdfIsDedicated) pdfViewLoadingTasks.delete(currentPdfPath);
+    currentPdfPath = null;
+    currentPdfIsDedicated = false;
+    currentPdf = null;
+    pagesInner = null;
+    viewerThumbStrip.classList.remove("viewer__thumb-strip--open");
+    viewerThumbStrip.innerHTML = "";
+    viewerPages.innerHTML = "";
+    viewerPages.scrollTop = 0;
+    document.body.style.overflow = "";
+    document.body.classList.remove("viewer-open");
+    try { if (lastFocusBeforeViewer && document.contains(lastFocusBeforeViewer)) lastFocusBeforeViewer.focus({ preventScroll: true }); } catch {}
+    lastFocusBeforeViewer = null;
+  }
+
+  // Ends the currently-open PDF's timer (if any) and logs how long it
+  // was actually on screen — foreground time only, since the pause on
+  // tab-hidden/visible below stops the clock while the tab is
+  // backgrounded. Sent via beacon so it survives the tab closing too.
+  function endCurrentView() {
+    if (!currentViewId) return;
+    if (currentViewResumedAt !== null) {
+      currentViewActiveMs += Date.now() - currentViewResumedAt;
+      currentViewResumedAt = null;
+    }
+    const seconds = Math.round(currentViewActiveMs / 1000);
+    // Only PDFs that really opened (every second counts).
+    if (currentViewLogged && seconds >= 1) {
+      logEventBeacon("view_end", currentName, currentViewName, undefined, { viewId: currentViewId, duration: seconds });
+    }
+    currentViewLogged = false;
+    currentViewId = null;
+    currentViewName = null;
+    currentViewActiveMs = 0;
+  }
+
+  // ── Admin Dashboard ──────────────────────────────────────
+  // How it talks to the server:
+  //  • Every call is a POST, so the admin key never shows up in a web
+  //    address (addresses end up in browser history and server logs).
+  //  • adminApiKey is derived from the passphrase and is NOT the public
+  //    hash in config.js. adminLegacyKey is only used until the Apps
+  //    Script has ADMIN_API_KEY filled in (see the yellow banner).
+  //  • Everything shown in the page is escaped with esc() first, so a
+  //    name like <b>x</b> can never run as code.
+
+  let adminPhrase = null;
+  let adminApiKey = null; // no longer used
+  let adminPresenceTimer = null;
+  let adminClockTimer = null;
+  let adminOrigTitle = "";
+  let fileSubjectMap = null;
+  let lastAdminError = "";
+
+  const esc = escapeHtml;
+  const $id = (id) => document.getElementById(id);
+
+  const S = {
+    people: [], queue: [], rejected: [], flags: {}, stats: [], log: [], online: [],
+    devices: [], feedback: { entries: [], averageRating: null, count: 0 },
+    announcement: null, requests: [],
+    overview: { activity: [], filesToday: 0, logRows: 0 },
+    bandwidth: null, keyMode: "", loadedAt: 0
+  };
+  const peopleUI = { filter: "all", sort: "active", selected: new Set() };
+  const queueSel = new Set();
+  const bannerState = { error: "", partial: "", legacy: false };
+
+  function adminErrText() { return lastAdminError || "Couldn't reach the server."; }
+
+  async function adminFetch(action, params) {
+    lastAdminError = "";
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint) { lastAdminError = "config.js has no server address (logging.endpoint)."; return null; }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45000);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ type: "admin", action, phrase: adminPhrase, params: params || {} }),
+        signal: controller.signal
+      });
+      let data = null;
+      try { data = await res.json(); } catch {
+        lastAdminError = "The server sent back something unreadable. In Apps Script use Deploy → Manage deployments → pencil → New version.";
+        return null;
+      }
+      if (data && data.keyMode) S.keyMode = data.keyMode;
+      if (data && data.keyFp !== undefined) S.serverKeyFp = data.keyFp;
+      if (data && data.ok && data.adminApi !== 2) {
+        lastAdminError = "The Apps Script is still the old version. Paste the new script and deploy a New version first.";
+        return null;
+      }
+      if (data && data.ok) return data;
+      const err = data && data.error;
+      if (err === "unauthorized") {
+        lastAdminError = "The server rejected the admin passphrase. In the Apps Script, ADMIN_KEY must equal admin.secretHash and ADMIN_SALT must equal admin.salt from config.js.";
+      } else if (err) lastAdminError = "Server said: " + err;
+      else lastAdminError = "The server refused the request.";
+      return null;
+    } catch (e) {
+      lastAdminError = (e && e.name === "AbortError")
+        ? "The server took too long to answer (over 45 seconds). Try Refresh in a moment."
+        : "Couldn't reach the server. Check your internet connection.";
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Runs one admin action and ALWAYS tells you if it failed.
+  async function act(action, params, okMsg, failLabel) {
+    const res = await adminFetch(action, params);
+    if (!res) { showToast(`${failLabel}: ${adminErrText()}`, true); return null; }
+    if (okMsg) showToast(okMsg);
+    return res;
+  }
+
+  // ── Small helpers ───────────────────────────────────────
+  function relTime(ts) {
+    if (!ts) return "never";
+    const t = new Date(ts).getTime();
+    if (isNaN(t)) return "";
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 0) return "soon";
+    if (s < 45) return "just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+    const d = Math.round(h / 24);
+    if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
+    return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  }
+  function fullTime(ts) { const d = new Date(ts); return isNaN(d) ? "" : d.toLocaleString(); }
+  function whenHtml(ts) { return `<span title="${esc(fullTime(ts))}">${esc(relTime(ts))}</span>`; }
+  // Exact to the second: 8s, 4m 05s, 1h 02m 09s
+  function fmtDur(sec) {
+    sec = Math.max(0, Math.round(sec || 0));
+    const hh = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), ss = sec % 60;
+    const p2 = (n) => String(n).padStart(2, "0");
+    return hh ? `${hh}h ${p2(mm)}m ${p2(ss)}s` : mm ? `${mm}m ${p2(ss)}s` : `${ss}s`;
+  }
+  const fmtMins = fmtDur;
+  function normName(n) { return String(n || "").trim().replace(/\s+/g, " ").toLowerCase(); }
+  function isEmail(v) { return /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(String(v || "").trim()); }
+  function sameDay(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
+  function emptyMsg(text) { return `<p class="adm-empty">${esc(text)}</p>`; }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch { /* nothing more to try */ }
+      ta.remove();
+    }
+    showToast("Copied.");
+  }
+
+  const ACTION_LABELS = {
+    approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
+    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setPassword: "Password changed", setBackup: "Weekly backup changed", sendBackupNow: "Backup emailed", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
+    archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
+    testEmail: "Test email", emailFailed: "Email failed"
+  };
+  const actionLabel = (a) => ACTION_LABELS[a] || a;
+
+  function subjectColor(name) {
+    const n = String(name || "").toLowerCase();
+    if (n.includes("math")) return "var(--maths)";
+    if (n.includes("phys")) return "var(--physics)";
+    if (n.includes("chem")) return "var(--chemistry)";
+    return "var(--brass)";
+  }
+
+  function subjectOfFile(detail, map) {
+    if (String(detail || "").indexOf("Practical: ") === 0) return "Practicals";
+    const m = (map || getFileSubjectMap())[detail];
+    return m ? m.subject : "Other";
+  }
+
+  function getFileSubjectMap() {
+    if (fileSubjectMap) return fileSubjectMap;
+    fileSubjectMap = {};
+    SITE_CONFIG.subjects.forEach((s) => {
+      s.subfolders.forEach((f) => {
+        f.files.forEach((file) => { fileSubjectMap[file.name] = { subject: s.name, folder: f.name }; });
+      });
+    });
+    return fileSubjectMap;
+  }
+
+  // ── Enter / exit / timers ───────────────────────────────
+  function enterAdmin() {
+    window.__c12Admin = true;
+    try { localStorage.setItem("c12_admin_ok", "1"); } catch (e) {} // the developer-tools guard never bothers the admin's own browser
+    gate.classList.add("hidden");
+    app.classList.add("hidden");
+    adminApp.classList.remove("hidden");
+    adminOrigTitle = document.title;
+    switchAdminTab("overview");
+    if (!S.loadedAt) showAdminSkeletons();
+    refreshAdmin();
+    stopAdminPolling();
+    // Pending requests and who's online refresh by themselves; the heavy
+    // full refresh only happens when you press Refresh or take an action.
+    adminPresenceTimer = setInterval(refreshLive, 30000);
+    adminClockTimer = setInterval(updateUpdatedLabel, 15000);
+  }
+
+  function exitAdmin() {
+    stopAdminPolling();
+    closeAdminDetail();
+    adminApp.classList.add("hidden");
+    gate.classList.remove("hidden");
+    if (adminOrigTitle) document.title = adminOrigTitle;
+  }
+
+  function stopAdminPolling() {
+    if (adminPresenceTimer) { clearInterval(adminPresenceTimer); adminPresenceTimer = null; }
+    if (adminClockTimer) { clearInterval(adminClockTimer); adminClockTimer = null; }
+  }
+
+  function updateUpdatedLabel() {
+    const l = $id("admUpdated");
+    if (l) l.textContent = S.loadedAt ? `Updated ${relTime(S.loadedAt)}` : "";
+  }
+
+  // Light refresh: just the two things that change by the minute.
+  async function refreshLive() {
+    if (adminApp.classList.contains("hidden") || document.hidden) return;
+    const [q, o] = await Promise.all([adminFetch("unauthorizedQueue"), adminFetch("presenceLive")]);
+    if (q) { S.queue = q.queue || []; renderQueue(); }
+    if (o) { S.online = o.online || []; renderOnline(); }
+    if (q || o) { S.loadedAt = Date.now(); updateUpdatedLabel(); renderStats(); }
+  }
+
+  // ── Toast + confirm (replaces browser alert()/confirm()) ─
+  function showToast(message, isError) {
+    const toast = el("div", `toast${isError ? " toast--error" : ""}`, message);
+    toastStack.appendChild(toast);
+    setTimeout(() => toast.remove(), isError ? 7000 : 4000);
+  }
+
+  function showConfirm(message, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      confirmMessage.textContent = message;
+      confirmInput.classList.add("hidden");
+      confirmOkBtn.textContent = opts.ok || "Confirm";
+      confirmOkBtn.className = "adm-btn" + (opts.danger ? " adm-btn--danger" : "");
+      confirmOverlay.classList.remove("hidden");
+      const cleanup = (result) => {
+        confirmOverlay.classList.add("hidden");
+        confirmOkBtn.removeEventListener("click", onOk);
+        confirmCancelBtn.removeEventListener("click", onCancel);
+        resolve(result);
+      };
+      const onOk = () => cleanup(true);
+      const onCancel = () => cleanup(false);
+      confirmOkBtn.addEventListener("click", onOk);
+      confirmCancelBtn.addEventListener("click", onCancel);
+    });
+  }
+
+  function showPrompt(message, defaultValue, inputType) {
+    return new Promise((resolve) => {
+      confirmMessage.textContent = message;
+      confirmInput.type = inputType || "text";
+      confirmInput.value = defaultValue || "";
+      confirmInput.classList.remove("hidden");
+      confirmOkBtn.textContent = "OK";
+      confirmOkBtn.className = "adm-btn";
+      confirmOverlay.classList.remove("hidden");
+      confirmInput.focus();
+      const cleanup = (result) => {
+        confirmOverlay.classList.add("hidden");
+        confirmInput.classList.add("hidden");
+        confirmInput.type = "text";
+        confirmOkBtn.removeEventListener("click", onOk);
+        confirmCancelBtn.removeEventListener("click", onCancel);
+        confirmInput.removeEventListener("keydown", onKeydown);
+        resolve(result);
+      };
+      const onOk = () => cleanup(confirmInput.value);
+      const onCancel = () => cleanup(null);
+      const onKeydown = (e) => {
+        if (e.key === "Enter") onOk();
+        if (e.key === "Escape") onCancel();
+      };
+      confirmOkBtn.addEventListener("click", onOk);
+      confirmCancelBtn.addEventListener("click", onCancel);
+      confirmInput.addEventListener("keydown", onKeydown);
+    });
+  }
+
+  // ── Tabs, banners, badges ───────────────────────────────
+  function switchAdminTab(tabName) {
+    $$(".adm-tab", adminTabs).forEach((btn) => btn.classList.toggle("adm-tab--active", btn.dataset.tab === tabName));
+    $$(".adm-panel").forEach((p) => p.classList.toggle("adm-panel--active", p.dataset.panel === tabName));
+    if (tabName === "overview") renderChart();
+    if (tabName === "content") { refreshDigestUI(); refreshBackupUI(); refreshTidyUI(); }
+    window.scrollTo(0, 0);
+    adminApp.scrollTop = 0;
+  }
+
+  function renderBanners() {
+    const b = $id("admBanner");
+    const parts = [];
+    if (bannerState.error) {
+      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text"><strong>Couldn't load the dashboard.</strong> ${esc(bannerState.error)}${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? ` Press <em>Copy my key</em>, paste it over the old key in the Apps Script, save, then deploy a New version.<span class="adm-code">This page's key starts ${esc(adminApiKey ? adminApiKey.slice(0, 8) : "")} and ends ${esc(adminApiKey ? adminApiKey.slice(-6) : "")} \u00B7 fingerprint ${esc(S.myKeyFp || "\u2026")}<br>Key in the deployed Apps Script: fingerprint ${esc(S.serverKeyFp || "(not reported \u2014 the deployed script is an older version)")}${S.serverKeyFp && S.myKeyFp && S.serverKeyFp === S.myKeyFp ? " \u2014 same, so try again" : ""}</span>` : ""}</div><div class="adm-banner__actions">${S.keyMode === "secure" && /key was rejected/.test(bannerState.error) ? '<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-banner="copykey">Copy my key</button>' : ""}<button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
+    } else if (bannerState.partial) {
+      parts.push(`<div class="adm-banner adm-banner--error"><div class="adm-banner__text">${esc(bannerState.partial)}</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="retry">Try again</button></div></div>`);
+    }
+    if (bannerState.legacy) {
+      parts.push(`<div class="adm-banner"><div class="adm-banner__text"><strong>One more step to lock this page down.</strong> Right now the admin key is the same as the public one in config.js, so anyone who reads the website's code could use it. To fix it: (1) press <em>Copy new key</em>; (2) in the Apps Script paste it between the quotes in <code>var ADMIN_API_KEY = ""</code>; (3) Deploy → Manage deployments → pencil → New version → Deploy. This banner disappears by itself once it's done. Use a long passphrase (3–4 random words) for best protection.</div><div class="adm-banner__actions"><button type="button" class="adm-btn adm-btn--sm" data-banner="copykey">Copy new key</button></div></div>`);
+    }
+    b.innerHTML = parts.join("");
+    b.classList.toggle("hidden", !parts.length);
+  }
+
+  function updateBadges() {
+    const n = S.queue.length;
+    const ab = $id("admApprovalBadge");
+    ab.textContent = n; ab.classList.toggle("hidden", !n);
+    const f = S.flags || {};
+    const fc = (f.deviceCycling || []).length + (f.rapidRepeat || []).length + (f.bulkView || []).length;
+    const fb = $id("admFlagBadge");
+    fb.textContent = fc; fb.classList.toggle("hidden", !fc);
+    const rb = $id("admRequestBadge");
+    if (rb) { const rn = (S.requests || []).length; rb.textContent = rn; rb.classList.toggle("hidden", !rn); }
+    document.title = (n ? `(${n}) ` : "") + "Admin";
+  }
+
+  // ── Loading everything ──────────────────────────────────
+  // Short one-way fingerprint of the key this page sends, so a mismatch with
+  // the Apps Script can be spotted at a glance.
+  async function showKeyDiagnosis() {
+    if (!adminApiKey) return;
+    S.myKeyFp = (await sha256Hex(adminApiKey)).slice(0, 8);
+    renderBanners();
+  }
+
+
+  // ── Round 7: reset requests, class progress, browser errors ──
+  async function loadResetRequests() {
+    const host = $id("admResetList"); if (!host) return;
+    const d = await adminFetch("resetRequests");
+    if (!d) return;
+    S.resets = d.requests || [];
+    const c = $id("admResetCount"); if (c) c.textContent = S.resets.length ? `· ${S.resets.length} open` : "";
+    host.innerHTML = S.resets.length ? S.resets.map((r) => `
+      <div class="adm-req" data-name="${esc(r.name)}">
+        <div class="adm-row__main"><div class="adm-row__title">${esc(r.name)}</div><div class="adm-row__meta"><span>${whenHtml(r.timestamp)}</span></div></div>
+        <div class="adm-req__actions">
+          <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-reset="go">Reset now</button>
+          <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-reset="no">Dismiss</button>
+        </div></div>`).join("") : emptyMsg("No reset requests.");
+  }
+  async function loadStuck() {
+    const host = $id("admStuckList"); if (!host) return;
+    const d = await adminFetch("stuckList");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.stuck || [];
+    const c = $id("admStuckCount"); if (c) c.textContent = l.length ? `· ${l.length}` : "";
+    host.innerHTML = l.length ? l.map((x) => `
+      <div class="adm-req" data-name="${esc(x.name)}">
+        <div class="adm-row__main"><div class="adm-row__title">${esc(x.name)}</div>
+        <div class="adm-row__meta">${x.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</div></div>
+        <div class="adm-req__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-stuck="reset">Reset password</button></div>
+      </div>`).join("") : emptyMsg("Nobody is stuck right now. 🎉");
+  }
+  async function loadClassProgress() {
+    const host = $id("admClassProgress"); if (!host) return;
+    const d = await adminFetch("classProgress");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    S.classProg = d;
+    const total = allFilesFlat().length || 1;
+    const st = d.students || [];
+    const sum = $id("admClassSummary");
+    if (sum) sum.textContent = st.length ? `${st.length} students synced` : "";
+    if (!st.length) { host.innerHTML = emptyMsg("Nobody has ticked a file yet."); return; }
+    const files = Object.keys(d.perPath || {}).map((p) => { const hit = findFileByPath(p); return hit ? { name: hit.file.name, n: d.perPath[p] } : null; }).filter(Boolean).sort((a, b) => a.n - b.n);
+    const top = st.slice(0, 5).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${x.revised} of ${total} revised</span></div>`).join("");
+    const least = files.slice(0, 5).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${x.n} student${x.n === 1 ? "" : "s"}</span></div>`).join("");
+    host.innerHTML = `<div class="adm-row__meta">Most revised</div>${top}<div class="adm-row__meta" style="margin-top:10px">Least revised files</div>${least || emptyMsg("—")}`;
+  }
+  async function loadClientErrors() {
+    const host = $id("admErrList"); if (!host) return;
+    const d = await adminFetch("clientErrors");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.errors || [];
+    host.innerHTML = l.length ? l.map((e) => `<div class="adm-row" style="display:block"><div class="adm-row__title">${esc(e.message)}</div><div class="adm-row__meta"><span>${e.count}× · ${e.people} student${e.people === 1 ? "" : "s"}</span><span>${esc(e.page)}</span><span>${whenHtml(e.last)}</span></div></div>`).join("") : emptyMsg("No browser errors recorded. 🎉");
+  }
+  document.addEventListener("click", async (ev) => {
+    const b = ev.target.closest && ev.target.closest("[data-reset]");
+    if (b) {
+      const nm = b.closest("[data-name]").dataset.name;
+      if (b.dataset.reset === "go") await act("resetPin", { name: nm }, "Password reset — they can choose a new one.", "Couldn't reset");
+      else await act("dismissReset", { name: nm }, "Dismissed.", "Couldn't dismiss");
+      loadResetRequests();
+    }
+    if (ev.target.id === "admErrReload") loadClientErrors();
+    const sb = ev.target.closest && ev.target.closest("[data-stuck]");
+    if (sb) {
+      const nm = sb.closest("[data-name]").dataset.name;
+      if (!confirm(`Reset the password for ${nm}? Only do this once you are sure it is them.`)) return;
+      await act("resetPin", { name: nm }, "Password reset — they can choose a new one.", "Couldn't reset");
+      loadStuck(); loadResetRequests();
+    }
+  });
+
+
+  // ── Round 8: shared accounts, login speed, automatic tidy-up ──
+  async function loadTimeStats() {
+    const d = await adminFetch("timeStats");
+    if (!d) return;
+    S.times = d.people || [];
+    S.timeMap = {};
+    S.times.forEach((t) => (t.norms || []).forEach((n) => { S.timeMap[n] = t; }));
+    renderPeople();
+    renderTimeToday();
+  }
+  function timeFor(p) {
+    if (!S.timeMap) return null;
+    let t = S.timeMap[normName(p.name)];
+    if (!t) (p.aliases || []).some((a) => (t = S.timeMap[normName(a)]));
+    return t || null;
+  }
+  function renderTimeToday() {
+    const host = $id("admTimeToday"); if (!host) return;
+    const list = S.times || [];
+    const sum = (k) => list.reduce((a, t) => a + (t[k] || 0), 0);
+    const top = list.filter((t) => t.tActive > 0).sort((a, b) => b.tActive - a.tActive).slice(0, 5);
+    host.innerHTML = `
+      <div class="adm-row"><span class="adm-row__title">Site open (everyone, today)</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tOpen")))}</b></span></div>
+      <div class="adm-row"><span class="adm-row__title">Actually active</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tActive")))}</b></span></div>
+      <div class="adm-row"><span class="adm-row__title">Reading PDFs</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tRead")))}</b></span></div>
+      ${top.length ? `<div class="adm-row__meta" style="margin-top:10px">Most active today</div>${top.map((t) => `<div class="adm-row"><span class="adm-row__title">${esc(t.name)}</span><span class="adm-row__meta">active ${esc(fmtDur(t.tActive))} &middot; reading ${esc(fmtDur(t.tRead))}</span></div>`).join("")}` : emptyMsg("Nobody has been active today yet.")}`;
+  }
+  function timeTable(o, a, r) {
+    return `<table class="adm-ttable"><thead><tr><th></th><th>Site open</th><th>Active</th><th>Reading</th></tr></thead><tbody>${[["Today", o.tOpen, o.tActive, o.tRead], ["Last 7 days", o.wOpen, o.wActive, o.wRead], ["All time", o.open, o.active, o.read]].map((x) => `<tr><th>${x[0]}</th><td>${esc(fmtDur(x[1]))}</td><td><b>${esc(fmtDur(x[2]))}</b></td><td>${esc(fmtDur(x[3]))}</td></tr>`).join("")}</tbody></table>`;
+  }
+  async function fillPersonTimes(name, person) {
+    const box = $id("admTimeBox"); if (!box) return;
+    const t = timeFor(person.name ? person : { name, aliases: [] }) || { open: 0, active: 0, read: 0, tOpen: 0, tActive: 0, tRead: 0, wOpen: 0, wActive: 0, wRead: 0, sessions: 0, logins: 0 };
+    const d = await adminFetch("personTimes", { name });
+    if (!$id("admTimeBox")) return;
+    if (!d) { box.innerHTML = emptyMsg("Couldn't load time details."); return; }
+    const tot = d.totals || {};
+    const avg = tot.sessions ? tot.active / tot.sessions : 0;
+    const maxH = Math.max(1, ...(d.hours || [0]));
+    const hours = (d.hours || []).map((v, i) => `<span class="adm-hour" title="${i}:00 \u2014 ${esc(fmtDur(v))} active" style="height:${Math.max(3, Math.round(v / maxH * 100))}%"></span>`).join("");
+    box.innerHTML = `${timeTable(t)}
+      <div class="adm-facts" style="margin-top:10px">
+        <div class="adm-fact"><div class="adm-fact__num">${t.logins || 0}</div><div class="adm-fact__label">logins</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${tot.sessions || 0}</div><div class="adm-fact__label">visits</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtDur(avg))}</div><div class="adm-fact__label">active per visit</div></div>
+      </div>
+      <p class="adm-h">When they study (hour of day)</p><div class="adm-hours">${hours}</div><div class="adm-hours__ax"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span></div>
+      <p class="adm-h">Day by day</p>${(d.days || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.day)}</span><span class="adm-row__meta">${x.visits} visit${x.visits === 1 ? "" : "s"} &middot; open ${esc(fmtDur(x.open))} &middot; active <b>${esc(fmtDur(x.active))}</b> &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("") || emptyMsg("No timed visits yet.")}
+      <p class="adm-h">Recent visits</p>${(d.recent || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${x.start ? esc(new Date(x.start).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })) : ""}</span><span class="adm-row__meta">open ${esc(fmtDur(x.open))} &middot; active ${esc(fmtDur(x.active))} &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("")}`;
+  }
+
+  async function loadDevtools() {
+    const host = $id("admDevtools"); if (!host) return;
+    const d = await adminFetch("devtoolsList");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.list || [];
+    host.innerHTML = l.length ? l.map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)} ${x.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : ""}</span><span class="adm-row__meta">${x.count}\u00D7 &middot; ${whenHtml(x.last)}</span></div>`).join("") : emptyMsg("Nobody has tried.");
+  }
+  async function loadSharedAccounts() {
+    const host = $id("admShared"); if (!host) return;
+    const d = await adminFetch("sharedAccounts");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.accounts || [];
+    host.innerHTML = l.length ? l.map((x) => `<div class="adm-req" data-name="${esc(x.name)}"><div class="adm-row__main"><div class="adm-row__title">${esc(x.name)}</div><div class="adm-row__meta"><span>${x.day} switch${x.day === 1 ? "" : "es"} today</span><span>${x.week} this week</span><span>${whenHtml(x.last)}</span></div></div><div class="adm-req__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-stuck="reset">Reset password</button></div></div>`).join("") : emptyMsg("No account is being switched between many devices.");
+  }
+  async function loadLoginSpeed() {
+    const host = $id("admLoginSpeed"); if (!host) return;
+    const d = await adminFetch("loginSpeed");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    if (!d.count && !d.failsToday) { host.innerHTML = emptyMsg("No timed logins yet. They appear after students sign in with the new site."); return; }
+    const sec = (ms) => (ms / 1000).toFixed(1) + " s";
+    const rows = (d.days || []).slice(-7).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.day)}</span><span class="adm-row__meta">${x.count} logins &middot; typical ${sec(x.median)}</span></div>`).join("");
+    const slow = (d.slowToday || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.name)}</span><span class="adm-row__meta">${sec(x.ms)} &middot; ${whenHtml(x.at)}</span></div>`).join("");
+    host.innerHTML = `<div class="adm-row"><span class="adm-row__title">Typical login</span><span class="adm-row__meta"><b>${sec(d.median)}</b></span></div><div class="adm-row"><span class="adm-row__title">Slowest 1 in 10</span><span class="adm-row__meta">${sec(d.p90)}</span></div><div class="adm-row"><span class="adm-row__title">Slowest ever (7 days)</span><span class="adm-row__meta">${sec(d.slowest)}</span></div><div class="adm-row"><span class="adm-row__title">Today</span><span class="adm-row__meta">${d.loginsToday || 0} logins &middot; <b>${d.failsToday || 0}</b> where the check didn't finish</span></div>${slow ? `<p class="adm-note" style="margin:10px 0 4px">Slowest logins today</p>${slow}` : ""}<p class="adm-note" style="margin:10px 0 4px">Last 7 days</p>${rows}`;
+  }
+  async function loadLabStats() {
+    const host = $id("admLabStats"); if (!host) return;
+    const d = await adminFetch("labStats");
+    if (!d) { host.innerHTML = emptyMsg("Couldn't load."); return; }
+    const l = d.labs || [];
+    if (!l.length) { host.innerHTML = emptyMsg("No lab has been opened yet."); return; }
+    const mins = (sec) => (sec >= 90 ? Math.round(sec / 60) + " min" : sec + " s");
+    host.innerHTML = l.map((x) => {
+      const smooth = x.measured ? `<span class="${x.laggyPct >= 30 ? "adm-tag adm-tag--bad" : x.laggyPct >= 10 ? "adm-tag adm-tag--brass" : "adm-tag adm-tag--good"}">${x.medianFps} fps &middot; ${x.laggyPct}% laggy</span>` : '<span class="adm-row__meta">speed: not measured yet</span>';
+      const short = x.opens ? Math.round(100 * x.shortStays / x.opens) : 0;
+      const slow = (x.slowDevices || []).map((v) => `${esc(v.dev)} (${v.fps} fps${v.n > 1 ? ", " + v.n + "\u00D7" : ""})`).join(", ");
+      const extra = [x.noWebgl ? `${x.noWebgl} couldn't start 3D` : "", x.software ? `${x.software} on software graphics (slow)` : ""].filter(Boolean).join(" \u00B7 ");
+      return `<div class="adm-row" style="flex-wrap:wrap"><span class="adm-row__title">${esc(x.lab)}</span><span class="adm-row__meta">${x.opens} ${x.opens === 1 ? "open" : "opens"} &middot; ${x.people} ${x.people === 1 ? "person" : "people"} &middot; stay ${x.avgSeconds ? esc(mins(x.avgSeconds)) : "\u2013"} &middot; ${short}% left within 20 s</span><span style="flex-basis:100%">${smooth}</span>${slow ? `<span class="adm-row__meta" style="flex-basis:100%">Struggling on: ${slow}</span>` : ""}${extra ? `<span class="adm-row__meta" style="flex-basis:100%">${esc(extra)}</span>` : ""}</div>`;
+    }).join("");
+  }
+  async function refreshTidyUI() {
+    const st = $id("admTidyState"); if (!st) return;
+    const r = await adminFetch("tidyStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    const last = r.last ? ` Last run: ${relTime(r.last.at)}, ${r.last.archived} old rows archived.` : "";
+    st.textContent = (r.on ? "ON — runs every Monday at 3 am." : "OFF.") + last + ` Activity rows now: ${Number(r.logRows).toLocaleString()}.`;
+    $id("admTidyToggle").textContent = r.on ? "Turn off" : "Turn on";
+    $id("admTidyToggle").dataset.on = r.on ? "1" : "0";
+  }
+  async function onTidyToggle() {
+    const turnOn = $id("admTidyToggle").dataset.on !== "1";
+    const res = await act("setAutoTidy", { on: turnOn ? "1" : "0" }, turnOn ? "Automatic tidy-up turned on." : "Automatic tidy-up turned off.", "Couldn't change the tidy-up");
+    if (res) refreshTidyUI();
+  }
+  async function refreshAuthUI() {
+    const st = $id("admAuthState"); if (!st) return;
+    const r = await adminFetch("authStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    if (!r.configured) { st.textContent = "NOT SET UP yet — fill in AUTH_WORKER_URL and AUTH_SYNC_SECRET at the top of the Apps Script."; return; }
+    st.textContent = r.last ? `ON — last sync ${relTime(r.last.at)}: ${r.last.count} passwords, ${r.last.accounts} special accounts.` : "Set up, but never synced — press the button.";
+  }
+  async function onAuthSync() {
+    const btn = $id("admAuthSync"); btn.disabled = true;
+    const res = await adminFetch("syncAuth");
+    btn.disabled = false;
+    if (res && res.ok) showToast(`Synced ${res.count} passwords and ${res.accounts} special accounts.`);
+    else showToast("Couldn't sync: " + ((res && res.error) || adminErrText()), true);
+    refreshAuthUI();
+  }
+  async function onTidyNow() {
+    const btn = $id("admTidyNow"); btn.disabled = true;
+    const res = await act("autoTidyNow", {}, "Tidy-up done.", "Couldn't run the tidy-up");
+    btn.disabled = false;
+    if (res) refreshTidyUI();
+  }
+
+  async function refreshAdmin() {
+    bannerState.error = ""; bannerState.partial = "";
+    const btn = $id("adminRefreshBtn");
+    if (btn) btn.disabled = true;
+    let data = await adminFetch("adminDashboard");
+    if (!data && /too long/.test(lastAdminError)) {
+      // The server is still working on it in the background. Give it a moment,
+      // then ask again — the finished copy is waiting for us by then.
+      bannerState.error = "The server is slow right now — still trying…";
+      renderBanners();
+      await new Promise((r) => setTimeout(r, 8000));
+      data = await adminFetch("adminDashboard", { stale: 1 });
+    }
+    if (btn) btn.disabled = false;
+    if (!data) {
+      bannerState.error = adminErrText();
+      renderBanners();
+      if (!S.loadedAt) clearAdminSkeletons();
+      if (S.keyMode === "secure" && /key was rejected/.test(bannerState.error)) showKeyDiagnosis();
+      // Don't hammer a server that just failed; try the approvals alone.
+      const q = await adminFetch("unauthorizedQueue");
+      if (q) { S.queue = q.queue || []; renderQueue(); updateBadges(); renderStats(); }
+      return;
+    }
+    const errs = data.errors || {};
+    const failed = Object.keys(errs);
+    const keep = (key, val, fallback) => { if (!errs[key]) return val; return fallback; };
+    S.people = keep("people", data.people || [], S.people);
+    S.queue = keep("queue", data.queue || [], S.queue);
+    S.rejected = keep("rejectedQueue", data.rejectedQueue || [], S.rejected);
+    S.flags = keep("flags", data.flags || {}, S.flags);
+    S.stats = keep("stats", data.stats || [], S.stats);
+    S.log = keep("auditLog", data.log || [], S.log);
+    S.online = keep("online", data.online || [], S.online);
+    S.devices = keep("devices", data.devices || [], S.devices);
+    S.feedback = keep("feedback", data.feedback || S.feedback, S.feedback);
+    S.overview = keep("overview", data.overview || S.overview, S.overview);
+    S.announcement = keep("announcement", data.announcement || null, S.announcement);
+    S.requests = keep("requests", data.requests || [], S.requests);
+    S.bandwidth = data.bandwidth || null;
+    S.keyMode = data.keyMode || S.keyMode;
+    S.loadedAt = Date.now();
+    bannerState.legacy = S.keyMode === "legacy";
+    if (failed.length) bannerState.partial = `Some parts couldn't load (${failed.map((k) => `${k}: ${errs[k]}`).join("; ")}). The rest is fine.`;
+    renderAll();
+    runSecondaryLoaders();
+  }
+
+  // The extra cards used to all ask the server at the same moment, which piled
+  // up heavy requests (and slowed students' logins). Now one after another.
+  let secondaryRun = 0;
+  async function runSecondaryLoaders() {
+    const my = ++secondaryRun;
+    const steps = [loadStuck, loadResetRequests, loadTimeStats, loadClassProgress, loadSharedAccounts, loadLoginSpeed, loadLabStats, refreshAuthUI, loadClientErrors, loadDevtools];
+    for (const fn of steps) {
+      if (my !== secondaryRun || !adminPresenceTimer) return; // a newer refresh started, or admin was closed
+      try { await fn(); } catch {}
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  function renderAll() {
+    renderBanners();
+    updateBadges();
+    updateUpdatedLabel();
+    renderStats();
+    renderAttention();
+    renderOnline();
+    renderChart();
+    renderRecent();
+    renderQueue();
+    renderRejected();
+    renderPeople();
+    renderFlags();
+    renderDevices();
+    renderLog();
+    renderHousekeeping();
+    renderContentStats();
+    renderFeedbackAdmin();
+    renderTopChapters();
+    renderAnnouncementAdmin();
+    renderRequestsAdmin();
+  }
+
+
+  // ── Loading placeholders (first load only) ──────────────
+  function showAdminSkeletons() {
+    const stats = $id("admStats");
+    if (stats) stats.innerHTML = [0, 1, 2, 3].map(() => '<div class="sk adm-skel"></div>').join("");
+    ["admAttention", "admOnline", "admTopChapters"].forEach((id) => {
+      const host = $id(id);
+      if (host) host.innerHTML = [0, 1, 2].map(() => '<div class="sk adm-skel adm-skel--row"></div>').join("");
+    });
+  }
+  function clearAdminSkeletons() {
+    renderStats(); renderAttention(); renderOnline(); renderTopChapters();
+  }
+
+  // ── Most read chapters (Overview) ───────────────────────
+  function renderTopChapters() {
+    const host = $id("admTopChapters");
+    if (!host) return;
+    const stats = S.stats || [];
+    if (!stats.length) { host.innerHTML = emptyMsg("No views logged yet."); return; }
+    const map = getFileSubjectMap();
+    const groups = new Map();
+    stats.forEach((st) => {
+      const info = map[st.file];
+      if (!info) return; // practicals / files that were removed
+      const meta = fileMeta({ name: st.file }, { name: info.folder });
+      const key = info.subject + "|" + (meta.chapter != null ? "ch" + meta.chapter : st.file);
+      let g = groups.get(key);
+      if (!g) { g = { subject: info.subject, chapter: meta.chapter, title: meta.title, views: 0, best: -1, byType: {} }; groups.set(key, g); }
+      g.views += st.views;
+      g.byType[meta.type] = (g.byType[meta.type] || 0) + st.views;
+      if (st.views > g.best) { g.best = st.views; g.title = meta.title; }
+    });
+    const top = Array.from(groups.values()).sort((a, b) => b.views - a.views).slice(0, 8);
+    if (!top.length) { host.innerHTML = emptyMsg("No chapter views yet."); return; }
+    const max = Math.max(1, top[0].views);
+    host.innerHTML = top.map((g) => {
+      const types = Object.keys(g.byType).sort((a, b) => g.byType[b] - g.byType[a]).map((t) => `${esc(t)} ${g.byType[t]}`).join(" · ");
+      return `
+      <div class="adm-row" style="display:block">
+        <div class="adm-bar-row__top"><span class="adm-row__title">${esc(g.subject)}${g.chapter != null ? ` · Ch ${g.chapter}` : ""} — ${esc(g.title)}</span><span class="adm-bar-row__val">${g.views} opened</span></div>
+        <div class="adm-bar-track"><div class="adm-bar-fill" style="width:${Math.max(3, Math.round(g.views / max * 100))}%;background:${subjectColor(g.subject)}"></div></div>
+        <div class="adm-row__meta"><span>${types}</span></div>
+      </div>`;
+    }).join("");
+  }
+
+  // ── Announcement banner (Content) ───────────────────────
+  function renderAnnouncementAdmin() {
+    const cur = $id("admAnnCurrent");
+    const clr = $id("admAnnClear");
+    if (!cur) return;
+    const a = S.announcement;
+    if (a && a.text) {
+      const until = a.expires ? ` · until ${esc(new Date(a.expires).toLocaleDateString(undefined, { day: "numeric", month: "short" }))}` : " · until you remove it";
+      cur.innerHTML = `<b>${a.expired ? "Expired" : "Showing now"}${a.expired ? "" : until}</b>${esc(a.text)}`;
+      if (clr) clr.disabled = false;
+    } else {
+      cur.innerHTML = "";
+      if (clr) clr.disabled = true;
+    }
+  }
+  async function onPublishAnnouncement() {
+    const ta = $id("admAnnText");
+    const text = ta.value.trim();
+    if (!text) { showToast("Write the message first.", true); return; }
+    const btn = $id("admAnnPublish");
+    btn.disabled = true;
+    const res = await act("setAnnouncement", { text, kind: $id("admAnnKind").value, days: $id("admAnnDays").value }, "Banner published — students will see it on their next visit.", "Couldn't publish the banner");
+    btn.disabled = false;
+    if (res) { S.announcement = res.announcement || null; ta.value = ""; renderAnnouncementAdmin(); }
+  }
+  async function onClearAnnouncement() {
+    const res = await act("clearAnnouncement", {}, "Banner removed.", "Couldn't remove the banner");
+    if (res) { S.announcement = null; renderAnnouncementAdmin(); }
+  }
+
+  // ── Weekly summary email (Content) ──────────────────────
+  async function refreshDigestUI() {
+    const st = $id("admDigestState");
+    if (!st) return;
+    const r = await adminFetch("digestStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    st.textContent = r.on ? "ON — arrives every Sunday evening." : "OFF.";
+    $id("admDigestToggle").textContent = r.on ? "Turn off" : "Turn on";
+    $id("admDigestToggle").dataset.on = r.on ? "1" : "0";
+  }
+  async function onDigestToggle() {
+    const turnOn = $id("admDigestToggle").dataset.on !== "1";
+    const res = await act("setWeeklyDigest", { on: turnOn ? "1" : "0" }, turnOn ? "Weekly email turned on." : "Weekly email turned off.", "Couldn't change the weekly email");
+    if (res) refreshDigestUI();
+  }
+  async function onDigestNow() {
+    const btn = $id("admDigestNow");
+    btn.disabled = true;
+    await act("sendWeeklyNow", {}, "Sent — check your inbox.", "Couldn't send the email");
+    btn.disabled = false;
+  }
+
+  // ── Weekly backup email (Content) ───────────────────────
+  async function refreshBackupUI() {
+    const st = $id("admBackupState");
+    if (!st) return;
+    const r = await adminFetch("backupStatus");
+    if (!r) { st.textContent = "Couldn't check."; return; }
+    st.textContent = r.on ? "ON — arrives every Monday early morning." : "OFF.";
+    $id("admBackupToggle").textContent = r.on ? "Turn off" : "Turn on";
+    $id("admBackupToggle").dataset.on = r.on ? "1" : "0";
+  }
+  async function onBackupToggle() {
+    const turnOn = $id("admBackupToggle").dataset.on !== "1";
+    const res = await act("setBackup", { on: turnOn ? "1" : "0" }, turnOn ? "Weekly backup turned on." : "Weekly backup turned off.", "Couldn't change the weekly backup");
+    if (res) refreshBackupUI();
+  }
+  async function onBackupNow() {
+    const btn = $id("admBackupNow");
+    btn.disabled = true;
+    await act("sendBackupNow", {}, "Backup sent — check your inbox.", "Couldn't send the backup");
+    btn.disabled = false;
+  }
+
+  // ── File requests (Content) ─────────────────────────────
+  function renderRequestsAdmin() {
+    const host = $id("admRequestList");
+    if (!host) return;
+    const list = S.requests || [];
+    const c = $id("admRequestCount");
+    if (c) c.textContent = list.length ? `· ${list.length} open` : "";
+    if (!list.length) { host.innerHTML = emptyMsg("No requests right now."); return; }
+    host.innerHTML = list.map((r) => `
+      <div class="adm-req" data-row="${Number(r.row)}">
+        <div class="adm-req__main">
+          <div class="adm-req__text">${esc(r.text)}</div>
+          <div class="adm-req__meta">${esc(r.name)} · ${whenHtml(r.timestamp)}</div>
+        </div>
+        <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-done>Done</button>
+      </div>`).join("");
+  }
+  async function onResolveRequest(row) {
+    const res = await act("resolveRequest", { row }, "Marked as done.", "Couldn't update the request");
+    if (res) {
+      S.requests = (S.requests || []).filter((r) => Number(r.row) !== Number(row));
+      renderRequestsAdmin();
+      updateBadges();
+    }
+  }
+
+  // ── Overview ────────────────────────────────────────────
+  function flagCount() {
+    const f = S.flags || {};
+    return (f.deviceCycling || []).length + (f.rapidRepeat || []).length + (f.bulkView || []).length;
+  }
+
+  function renderStats() {
+    const rows = (S.overview && S.overview.logRows) || 0;
+    const cards = [
+      { num: S.online.length, label: "Online now", live: true },
+      { num: S.queue.length, label: "Waiting for approval", cls: S.queue.length ? "adm-stat--alert" : "", goto: "approvals" },
+      { num: (S.overview && S.overview.filesToday) || 0, label: "Files opened today" },
+      { num: S.people.length, label: "People", goto: "people" },
+      { num: flagCount(), label: "Flagged", cls: flagCount() ? "adm-stat--warn" : "", goto: "security" }
+    ];
+    if (S.bandwidth && S.bandwidth.limitBytes) {
+      const used = (S.bandwidth.usedBytes / (1024 ** 3)).toFixed(2);
+      const limit = (S.bandwidth.limitBytes / (1024 ** 3)).toFixed(1);
+      const pct = Math.round((S.bandwidth.usedBytes / S.bandwidth.limitBytes) * 100);
+      cards.push({ num: `${used}`, label: "GB today", hint: `of ${limit} GB`, cls: pct >= 80 ? "adm-stat--warn" : "" });
+    }
+    cards.push({ num: rows.toLocaleString(), label: "Activity rows", hint: rows > 20000 ? "Large — consider archiving" : "", cls: rows > 20000 ? "adm-stat--alert" : "", goto: rows > 20000 ? "security" : "" });
+    $id("admStats").innerHTML = cards.map((c) => {
+      const tag = c.goto ? "button" : "div";
+      return `<${tag} ${c.goto ? `type="button" data-goto="${c.goto}"` : ""} class="adm-stat ${c.cls || ""} ${c.live ? "adm-stat--live" : ""}">
+        <span class="adm-stat__num">${esc(c.num)}</span>
+        <span class="adm-stat__label">${esc(c.label)}</span>
+        ${c.hint ? `<span class="adm-stat__hint">${esc(c.hint)}</span>` : ""}
+      </${tag}>`;
+    }).join("");
+  }
+
+  function renderAttention() {
+    const box = $id("admAttention");
+    const items = [];
+    S.queue.slice(0, 5).forEach((q) => {
+      items.push(`<div class="adm-row" data-name="${esc(q.name)}">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(q.name)}</div>
+          <div class="adm-row__meta"><span>Wants access</span><span>${whenHtml(q.lastAttempt)}</span></div>
+        </div>
+        <div class="adm-row__actions">
+          <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-act="approve">Approve</button>
+          <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-act="reject">Reject</button>
+        </div></div>`);
+    });
+    if (S.queue.length > 5) items.push(`<div class="adm-row"><button type="button" class="adm-link" data-goto="approvals">+ ${S.queue.length - 5} more waiting</button></div>`);
+    const fc = flagCount();
+    if (fc) items.push(`<div class="adm-row adm-row--click" data-goto="security"><div class="adm-row__main"><div class="adm-row__title">${fc} flagged ${fc === 1 ? "activity" : "activities"}</div><div class="adm-row__meta"><span>Tap to review</span></div></div><span class="adm-tag adm-tag--bad">Review</span></div>`);
+    box.innerHTML = items.length ? items.join("") : emptyMsg("All clear — nothing needs you right now.");
+  }
+
+  function renderOnline() {
+    const box = $id("admOnline");
+    if (!S.online.length) { box.innerHTML = emptyMsg("Nobody online right now."); renderStats(); return; }
+    box.innerHTML = S.online.map((p, i) => `
+      <div class="adm-row adm-row--click" data-open="${esc(p.name)}" data-i="${i}">
+        <span class="adm-dot"></span>
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(p.name)}</div>
+          <div class="adm-row__meta"><span>here for ${esc(fmtMins((Date.now() - new Date(p.sessionStart).getTime()) / 1000))}</span><span>${esc(p.currentPage || "home")}</span></div>
+        </div>
+        <div class="adm-row__actions">
+          <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-act="message">Message</button>
+          <button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-act="logout">Log out</button>
+        </div></div>`).join("");
+  }
+
+  function renderRecent() {
+    const box = $id("admRecent");
+    const items = (S.log || []).slice(0, 5);
+    box.innerHTML = items.length ? items.map(logRowHtml).join("") : emptyMsg("No admin actions yet.");
+  }
+
+  // 14-day chart: bars = files opened, line = different people.
+  function renderChart() {
+    const host = $id("admChart");
+    if (!host) return;
+    const data = (S.overview && S.overview.activity) || [];
+    if (!data.length || data.every((d) => !d.views && !d.people)) {
+      host.innerHTML = emptyMsg("No activity in the last 14 days yet.");
+      return;
+    }
+    const W = Math.max(280, host.clientWidth || 640), H = 210;
+    const padL = 30, padR = 30, padT = 12, padB = 34;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const maxV = Math.max(1, ...data.map((d) => d.views));
+    const maxP = Math.max(1, ...data.map((d) => d.people));
+    const step = iw / data.length, bw = Math.min(28, step * 0.58);
+    const every = W < 520 ? 2 : 1;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Files opened and people per day for the last 14 days">`;
+    [0, 0.5, 1].forEach((f) => {
+      const y = padT + ih - ih * f;
+      svg += `<line x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="rgba(244,241,232,0.08)"/>`;
+    });
+    svg += `<text x="${padL - 6}" y="${padT + 4}" text-anchor="end">${maxV}</text><text x="${padL - 6}" y="${padT + ih + 4}" text-anchor="end">0</text>`;
+    svg += `<text x="${W - padR + 6}" y="${padT + 4}" fill="var(--physics)" style="fill:var(--physics)">${maxP}</text>`;
+    const pts = [];
+    data.forEach((d, i) => {
+      const x = padL + step * i + step / 2;
+      const bh = ih * (d.views / maxV);
+      const dt = new Date(d.ts);
+      svg += `<rect x="${x - bw / 2}" y="${padT + ih - bh}" width="${bw}" height="${Math.max(bh, d.views ? 2 : 0)}" rx="4" fill="var(--brass)" opacity="0.85"><title>${esc(dt.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }))}: ${d.views} opened, ${d.people} people</title></rect>`;
+      const py = padT + ih - ih * (d.people / maxP);
+      pts.push([x, py]);
+      if (i % every === (data.length - 1) % every) {
+        svg += `<text x="${x}" y="${H - 16}" text-anchor="middle">${esc(dt.toLocaleDateString(undefined, { day: "numeric" }))}</text>`;
+        svg += `<text x="${x}" y="${H - 3}" text-anchor="middle" style="font-size:9px">${esc(dt.toLocaleDateString(undefined, { weekday: "narrow" }))}</text>`;
+      }
+    });
+    svg += `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="var(--physics)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach((p) => { svg += `<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="var(--ink-raised)" stroke="var(--physics)" stroke-width="2"/>`; });
+    svg += `</svg>`;
+    host.innerHTML = svg;
+  }
+
+  // ── Approvals ───────────────────────────────────────────
+  function setApprovalResult(text, isError) {
+    const box = $id("admApprovalResult");
+    box.textContent = text;
+    box.classList.remove("hidden");
+    box.classList.toggle("adm-result--error", !!isError);
+  }
+
+  function describeOutcome(name, data, approved) {
+    const em = ((data && data.result) || {}).email || {};
+    let msg = approved ? `Approved ${name}.` : `Rejected ${name}.`;
+    if (em.sent) msg += ` Email sent to ${em.to}.`;
+    else if (em.reason) msg += ` Email NOT sent: ${em.reason}.`;
+    return { text: msg, emailFailed: !em.sent && !!em.to };
+  }
+
+  function renderQueue() {
+    const list = $id("admApprovalList");
+    // Keep only selections that still exist in the queue.
+    const names = new Set(S.queue.map((q) => q.name));
+    Array.from(queueSel).forEach((n) => { if (!names.has(n)) queueSel.delete(n); });
+    if (!S.queue.length) {
+      list.innerHTML = emptyMsg("No pending requests — you're all caught up.");
+    } else {
+      list.innerHTML = S.queue.map((q) => {
+        const mail = isEmail(q.email)
+          ? `<a class="adm-mini" href="mailto:${esc(q.email)}?subject=${encodeURIComponent("Your Class 12 Portal access request")}">Email</a><button type="button" class="adm-mini" data-act="copyemail">Copy email</button>`
+          : "";
+        return `<div class="adm-req" data-name="${esc(q.name)}">
+          <label class="adm-check"><input type="checkbox" class="adm-row__check" data-act="select" ${queueSel.has(q.name) ? "checked" : ""} aria-label="Select ${esc(q.name)}"></label>
+          <div class="adm-row__main">
+            <div class="adm-row__title">${esc(q.name)}</div>
+            <div class="adm-row__meta">
+              <span class="adm-tag ${q.email ? "" : "adm-tag--bad"}">${q.email ? esc(q.email) : "No email given"}</span>
+              <span>${q.count} request${q.count === 1 ? "" : "s"}</span>
+              <span>${whenHtml(q.lastAttempt)}</span>
+            </div>
+            <div class="adm-req__tools"><button type="button" class="adm-mini" data-act="copyname">Copy name</button>${mail}</div>
+          </div>
+          <div class="adm-req__actions">
+            <button type="button" class="adm-btn adm-btn--good adm-btn--sm" data-act="approve">Approve</button>
+            <button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-act="reject">Reject</button>
+          </div></div>`;
+      }).join("");
+    }
+    updateQueueBulk();
+    renderAttention();
+    updateBadges();
+    renderStats();
+  }
+
+  function updateQueueBulk() {
+    const n = queueSel.size;
+    $id("adminApproveSelectedBtn").textContent = `Approve selected (${n})`;
+    $id("adminRejectSelectedBtn").textContent = `Reject selected (${n})`;
+    $id("adminApproveSelectedBtn").disabled = n === 0;
+    $id("adminRejectSelectedBtn").disabled = n === 0;
+    const all = $id("admQueueAll");
+    all.checked = S.queue.length > 0 && n === S.queue.length;
+    all.disabled = !S.queue.length;
+  }
+
+  async function decide(name, approved, rowEl) {
+    const btns = rowEl ? rowEl.querySelectorAll("button") : [];
+    btns.forEach((b) => { b.disabled = true; });
+    const res = await adminFetch(approved ? "approveName" : "rejectName", { name });
+    if (!res) {
+      btns.forEach((b) => { b.disabled = false; });
+      const msg = `Couldn't ${approved ? "approve" : "reject"} ${name}: ${adminErrText()}`;
+      showToast(msg, true); setApprovalResult(msg, true);
+      return false;
+    }
+    const o = describeOutcome(name, res, approved);
+    showToast(o.text, o.emailFailed); setApprovalResult(o.text, o.emailFailed);
+    S.queue = S.queue.filter((q) => q.name !== name);
+    queueSel.delete(name);
+    if (!approved) S.rejected = [{ name, rejectedAt: new Date().toISOString() }, ...S.rejected.filter((r) => r.name !== name)];
+    renderQueue(); renderRejected();
+    if (approved) refreshLive();
+    return true;
+  }
+
+  // One at a time so two approvals never collide in the sheet and each
+  // email result is reported.
+  async function bulkDecide(names, approved) {
+    let done = 0, failed = 0, emailed = 0, emailFailed = 0;
+    $id("adminApproveSelectedBtn").disabled = true;
+    $id("adminRejectSelectedBtn").disabled = true;
+    for (const name of names) {
+      const res = await adminFetch(approved ? "approveName" : "rejectName", { name });
+      if (!res) { failed++; continue; }
+      done++;
+      const em = (res.result && res.result.email) || {};
+      if (em.sent) emailed++; else if (em.to) emailFailed++;
+    }
+    let msg = `${approved ? "Approved" : "Rejected"} ${done} ${done === 1 ? "person" : "people"}.`;
+    if (emailed) msg += ` ${emailed} email${emailed === 1 ? "" : "s"} sent.`;
+    if (emailFailed) msg += ` ${emailFailed} email${emailFailed === 1 ? "" : "s"} failed.`;
+    if (failed) msg += ` ${failed} failed: ${adminErrText()}`;
+    showToast(msg, !!(failed || emailFailed)); setApprovalResult(msg, !!(failed || emailFailed));
+    queueSel.clear();
+    refreshAdmin();
+  }
+
+  function renderRejected() {
+    const list = $id("admRejectedList");
+    if (!S.rejected.length) { list.innerHTML = emptyMsg("Nothing rejected."); return; }
+    list.innerHTML = S.rejected.map((q) => `
+      <div class="adm-row" data-name="${esc(q.name)}">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(q.name)}</div>
+          <div class="adm-row__meta"><span>Rejected ${whenHtml(q.rejectedAt)}</span></div>
+        </div>
+        <div class="adm-row__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-act="restore">Restore</button></div>
+      </div>`).join("");
+  }
+
+  async function onTestEmail() {
+    const to = await showPrompt("Send the test email to which address? Leave empty to send it to your own admin inbox.", "");
+    if (to === null) return;
+    const btn = $id("adminTestEmailBtn");
+    btn.disabled = true;
+    const res = await adminFetch("testEmail", to.trim() ? { to: to.trim() } : {});
+    btn.disabled = false;
+    if (!res) {
+      const m = `Test email failed: ${adminErrText()}`;
+      showToast(m, true); setApprovalResult(m, true);
+      return;
+    }
+    const r = res.result || {};
+    const msg = r.ok ? `Test email sent to ${res.to}.` : `Test email NOT sent to ${res.to}. Reason: ${r.error || "unknown"}`;
+    showToast(msg, !r.ok); setApprovalResult(msg, !r.ok);
+  }
+
+  async function onAdminAddName() {
+    const input = $id("adminAddNameInput");
+    const name = input.value.trim();
+    if (!name) return;
+    const btn = $id("adminAddNameBtn");
+    btn.disabled = true;
+    const res = await adminFetch("approveName", { name });
+    btn.disabled = false;
+    if (!res) { showToast(`Couldn't add ${name}: ${adminErrText()}`, true); return; }
+    input.value = "";
+    const already = res.result && res.result.added === false;
+    const msg = already ? `${name} was already on the access list.` : `Added ${name} to the access list.`;
+    showToast(msg); setApprovalResult(msg);
+    refreshAdmin();
+  }
+
+  // ── People ──────────────────────────────────────────────
+  function filteredPeople() {
+    const q = $id("adminRosterSearch").value.trim().toLowerCase();
+    let list = S.people.filter((p) => {
+      if (q && ![p.name, ...(p.aliases || [])].join(" ").toLowerCase().includes(q)) return false;
+      switch (peopleUI.filter) {
+        case "active": return !p.suspended;
+        case "today": return p.lastSeen && sameDay(p.lastSeen, Date.now());
+        case "suspended": return !!p.suspended;
+        case "expiring": return !!p.expiresAt;
+        default: return true;
+      }
+    });
+    const sort = peopleUI.sort;
+    list = list.slice().sort((a, b) => {
+      if (sort === "name") return String(a.name).localeCompare(String(b.name));
+      if (sort === "active") { const ta = timeFor(a), tb = timeFor(b); return ((tb && tb.active) || 0) - ((ta && ta.active) || 0) || (b.totalSessionSeconds || 0) - (a.totalSessionSeconds || 0); }
+      if (sort === "time") return (b.totalSessionSeconds || 0) - (a.totalSessionSeconds || 0);
+      return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+    });
+    return list;
+  }
+
+  function renderPeople() {
+    const list = $id("admPeopleList");
+    const people = filteredPeople();
+    const known = new Set(S.people.map((p) => p.name));
+    Array.from(peopleUI.selected).forEach((n) => { if (!known.has(n)) peopleUI.selected.delete(n); });
+    $id("admPeopleCount").textContent = S.people.length ? `Showing ${people.length} of ${S.people.length}` : "";
+    if (!S.people.length) { list.innerHTML = emptyMsg("No activity logged yet."); updateBulk(); return; }
+    if (!people.length) { list.innerHTML = emptyMsg("No one matches that."); updateBulk(); return; }
+    const onlineNames = new Set(S.online.map((o) => normName(o.name)));
+    list.innerHTML = people.map((p) => {
+      const sel = peopleUI.selected.has(p.name);
+      const live = onlineNames.has(normName(p.name));
+      const aka = p.aliases && p.aliases.length ? `<div class="adm-person__aka">also: ${esc(p.aliases.join(", "))}</div>` : "";
+      return `<div class="adm-person ${sel ? "adm-person--sel" : ""} ${p.suspended ? "adm-person--off" : ""}" data-name="${esc(p.name)}" tabindex="0">
+        <div class="adm-avatar">${esc((p.name || "?").trim().charAt(0).toUpperCase() || "?")}</div>
+        <div class="adm-person__body">
+          <div class="adm-person__name">${esc(p.name)}
+            ${live ? '<span class="adm-tag adm-tag--good">online</span>' : ""}
+            ${p.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : ""}
+            ${p.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(p.expiresAt).toLocaleDateString())}</span>` : ""}
+          </div>
+          ${aka}
+          <div class="adm-person__stats"><span>${esc(fmtMins(p.totalSessionSeconds))} on site</span><span>${p.sessionCount || 0} visit${p.sessionCount === 1 ? "" : "s"}</span><span>${p.filesTouched || 0}/${p.totalKnownFiles || 0} files</span></div>
+          ${(() => { const t = timeFor(p); return t ? `<div class="adm-person__stats adm-person__times"><span>open ${esc(fmtDur(t.open))}</span><span>active <b>${esc(fmtDur(t.active))}</b></span><span>reading ${esc(fmtDur(t.read))}</span><span>${t.logins} login${t.logins === 1 ? "" : "s"}</span></div>` : ""; })()}
+          <div class="adm-person__seen">Last seen ${whenHtml(p.lastSeen)}</div>
+        </div>
+        <input type="checkbox" class="adm-row__check adm-person__check" data-act="select" ${sel ? "checked" : ""} aria-label="Select ${esc(p.name)}">
+      </div>`;
+    }).join("");
+    updateBulk();
+  }
+
+  function updateBulk() {
+    const n = peopleUI.selected.size;
+    $id("admBulkBar").classList.toggle("hidden", n === 0);
+    $id("admBulkCount").textContent = `${n} selected`;
+    $id("adminMergeBtn").disabled = n !== 2;
+  }
+
+  function onlineSessionsFor(names) {
+    const wanted = new Set();
+    names.forEach((n) => {
+      wanted.add(normName(n));
+      const p = S.people.find((x) => x.name === n);
+      if (p) (p.aliases || []).forEach((a) => wanted.add(normName(a)));
+    });
+    return S.online.filter((o) => wanted.has(normName(o.name)));
+  }
+
+  async function onMergeSelected() {
+    if (peopleUI.selected.size !== 2) return;
+    const [a, b] = Array.from(peopleUI.selected);
+    const primary = await showPrompt(`Merging "${a}" and "${b}" into one person. Which name should be shown? Type it exactly.`, a);
+    if (!primary || !primary.trim()) return;
+    const alias = primary.trim() === a ? b : a;
+    const res = await act("mergeIdentities", { primary: primary.trim(), alias }, `Merged ${alias} into ${primary.trim()}.`, "Couldn't merge");
+    if (!res) return;
+    peopleUI.selected.clear();
+    refreshAdmin();
+  }
+
+  async function bulkSuspend() {
+    const names = Array.from(peopleUI.selected);
+    if (!names.length) return;
+    if (!(await showConfirm(`Suspend ${names.length} ${names.length === 1 ? "person" : "people"}? This blocks every device and name each of them has used, and signs them out if they're online.`, { ok: "Suspend", danger: true }))) return;
+    let ok = 0, failed = [];
+    for (const name of names) {
+      const r = await adminFetch("suspendIdentity", { name });
+      if (r) ok++; else failed.push(name);
+    }
+    if (failed.length) showToast(`Suspended ${ok}. Couldn't suspend: ${failed.join(", ")} (${adminErrText()})`, true);
+    else showToast(`Suspended ${ok} ${ok === 1 ? "person" : "people"}.`);
+    peopleUI.selected.clear();
+    refreshAdmin();
+  }
+
+  async function bulkExpiry() {
+    const names = Array.from(peopleUI.selected);
+    if (!names.length) return;
+    const input = await showPrompt(`Access expiry date for ${names.length} ${names.length === 1 ? "person" : "people"}. Leave blank to remove their expiry.`, "", "date");
+    if (input === null) return;
+    let ok = 0, failed = [];
+    for (const name of names) {
+      const r = await adminFetch("setExpiry", { name, date: input.trim() });
+      if (r) ok++; else failed.push(name);
+    }
+    if (failed.length) showToast(`Updated ${ok}. Couldn't update: ${failed.join(", ")} (${adminErrText()})`, true);
+    else showToast(input.trim() ? `Expiry set for ${ok}.` : `Expiry removed for ${ok}.`);
+    peopleUI.selected.clear();
+    refreshAdmin();
+  }
+
+  async function bulkMessage() {
+    const names = Array.from(peopleUI.selected);
+    if (!names.length) return;
+    const live = await adminFetch("presenceLive");
+    if (!live) { showToast(`Couldn't check who is online: ${adminErrText()}`, true); return; }
+    S.online = live.online || [];
+    const targets = onlineSessionsFor(names);
+    if (!targets.length) { showToast("None of the selected people are online right now.", true); return; }
+    const message = await showPrompt(`Message for ${targets.length} online ${targets.length === 1 ? "person" : "people"} (pops up on their screen within about 2 minutes):`);
+    if (!message || !message.trim()) return;
+    let ok = 0;
+    for (const t of targets) {
+      const r = await adminFetch("sendMessage", { sessionId: t.sessionId, message: message.trim() });
+      if (r) ok++;
+    }
+    showToast(ok === targets.length ? `Sent to ${ok}.` : `Sent to ${ok} of ${targets.length}. ${adminErrText()}`, ok !== targets.length);
+  }
+
+  async function onToggleSuspend(name, currentlySuspended) {
+    const text = currentlySuspended
+      ? `Unsuspend "${name}"?`
+      : `Suspend "${name}"? This also blocks every device and name they have used, and signs them out if they're online.`;
+    if (!(await showConfirm(text, { ok: currentlySuspended ? "Unsuspend" : "Suspend", danger: !currentlySuspended }))) return false;
+    const res = await act(currentlySuspended ? "unsuspendIdentity" : "suspendIdentity", { name },
+      currentlySuspended ? `Unsuspended ${name}.` : `Suspended ${name}.`,
+      `Couldn't ${currentlySuspended ? "unsuspend" : "suspend"} ${name}`);
+    if (!res) return false;
+    refreshAdmin();
+    return true;
+  }
+
+  async function onSetExpiry(name, currentExpiresAt) {
+    const current = currentExpiresAt ? new Date(currentExpiresAt).toISOString().slice(0, 10) : "";
+    const input = await showPrompt(`Access expiry date for "${name}". Leave blank to remove the expiry.`, current, "date");
+    if (input === null) return false;
+    const res = await act("setExpiry", { name, date: input.trim() },
+      input.trim() ? `Expiry for ${name} set to ${input.trim()}.` : `Expiry removed for ${name}.`,
+      `Couldn't change expiry for ${name}`);
+    if (!res) return false;
+    refreshAdmin();
+    return true;
+  }
+
+  async function sendAdminMessage(sessionId, name) {
+    const message = await showPrompt(`Message to send ${name} (pops up on their screen within about 2 minutes):`);
+    if (!message || !message.trim()) return;
+    await act("sendMessage", { sessionId, message: message.trim() }, `Message sent to ${name}.`, `Couldn't message ${name}`);
+  }
+
+  async function forceLogoutUser(sessionId, name) {
+    if (!(await showConfirm(`Sign ${name} out now? They'll see a notice and be returned to the login screen.`, { ok: "Sign out", danger: true }))) return;
+    const res = await act("forceLogout", { sessionId }, `${name} will be signed out within about 2 minutes.`, `Couldn't sign ${name} out`);
+    if (res) refreshLive();
+  }
+
+  async function onBroadcastMessage() {
+    const message = await showPrompt("Message to send to everyone online right now:");
+    if (!message || !message.trim()) return;
+    const data = await adminFetch("presenceLive");
+    if (!data) { showToast(`Couldn't check who is online: ${adminErrText()}`, true); return; }
+    const online = data.online || [];
+    if (!online.length) { showToast("Nobody is online right now.", true); return; }
+    let ok = 0;
+    for (const p of online) {
+      const r = await adminFetch("sendMessage", { sessionId: p.sessionId, message: message.trim() });
+      if (r) ok++;
+    }
+    showToast(ok === online.length ? `Sent to ${ok} online session${ok === 1 ? "" : "s"}.` : `Sent to ${ok} of ${online.length}. ${adminErrText()}`, ok !== online.length);
+  }
+
+  function onExportCsv() {
+    if (!S.people.length) { showToast("Nothing to export yet.", true); return; }
+    const headers = ["Name", "Aliases", "Suspended", "ExpiresAt", "LastSeen", "SessionCount", "TotalSessionMinutes", "TotalViewMinutes", "LoginCount", "UnauthorizedCount"];
+    const rows = S.people.map((p) => [
+      p.name, (p.aliases || []).join("; "), p.suspended ? "yes" : "no",
+      p.expiresAt ? new Date(p.expiresAt).toISOString().slice(0, 10) : "",
+      p.lastSeen ? new Date(p.lastSeen).toISOString() : "",
+      p.sessionCount, Math.round((p.totalSessionSeconds || 0) / 60), Math.round((p.totalViewSeconds || 0) / 60),
+      p.loginCount, p.unauthorizedCount
+    ]);
+    // A leading = + - @ in a cell can run as a formula when opened in Excel.
+    const safe = (c) => { const s = String(c == null ? "" : c); return /^[=+\-@]/.test(s) ? "'" + s : s; };
+    const csv = [headers, ...rows].map((r) => r.map((c) => `"${safe(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = `roster-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Person detail drawer ────────────────────────────────
+  async function openAdminDetail(name) {
+    const detail = $id("adminDetail");
+    detail.classList.remove("hidden");
+    $id("adminDetailName").textContent = name;
+    const body = $id("adminDetailBody");
+    body.innerHTML = `<p class="adm-empty">Loading…</p>`;
+    const data = await adminFetch("personDetail", { name });
+    if (!data) { body.innerHTML = emptyMsg(adminErrText()); return; }
+    renderAdminDetail(name, data.events || [], data.totals || {});
+  }
+
+  function closeAdminDetail() { $id("adminDetail").classList.add("hidden"); }
+
+  const EVENT_LABELS = { view: "Opened", view_end: "Closed", download: "Downloaded", login: "Login", session_end: "Left the site", logout: "Logged out", client_error: "Browser error", device_kick: "Other device signed out", security: "Developer tools opened" };
+
+  function renderAdminDetail(name, events, totals) {
+    const subjectMap = getFileSubjectMap();
+    const subjectSeconds = {}, fileSeconds = {};
+    events.forEach((ev) => {
+      if (ev.type === "view_end" && ev.duration) {
+        fileSeconds[ev.detail] = (fileSeconds[ev.detail] || 0) + ev.duration;
+        const subj = subjectOfFile(ev.detail, subjectMap);
+        subjectSeconds[subj] = (subjectSeconds[subj] || 0) + ev.duration;
+      }
+    });
+    const bars = (obj, colorFn) => {
+      const keys = Object.keys(obj).sort((a, b) => obj[b] - obj[a]).slice(0, 8);
+      if (!keys.length) return emptyMsg("No PDF time recorded yet.");
+      const max = obj[keys[0]] || 1;
+      return `<div class="adm-bars">${keys.map((k) => `
+        <div><div class="adm-bar-row__top"><span class="adm-bar-row__label">${esc(k)}</span><span class="adm-bar-row__val">${esc(fmtMins(obj[k]))}</span></div>
+        <div class="adm-bar-track"><div class="adm-bar-fill" style="width:${Math.max(4, Math.round(obj[k] / max * 100))}%;background:${colorFn(k)}"></div></div></div>`).join("")}</div>`;
+    };
+
+    const person = S.people.find((p) => p.name === name) || {};
+    const live = onlineSessionsFor([name])[0];
+    const tags = [
+      live ? '<span class="adm-tag adm-tag--good">online now</span>' : "",
+      person.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : "",
+      person.hasPin ? '<span class="adm-tag">password set</span>' : '<span class="adm-tag">no password yet</span>',
+      person.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(person.expiresAt).toLocaleDateString())}</span>` : "",
+      ...(person.aliases || []).map((a) => `<span class="adm-tag">also ${esc(a)}</span>`)
+    ].join(" ");
+
+    let timeline = "", lastDay = "";
+    events.slice(0, 60).forEach((ev) => {
+      const d = ev.timestamp ? new Date(ev.timestamp) : null;
+      const dayLabel = d ? (sameDay(d, Date.now()) ? "Today" : d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })) : "";
+      if (dayLabel !== lastDay) { timeline += `<div class="adm-day">${esc(dayLabel)}</div>`; lastDay = dayLabel; }
+      const extra = ev.duration ? ` <span class="adm-muted">(${esc(fmtMins(ev.duration))})</span>` : "";
+      timeline += `<div class="adm-tl"><span class="adm-tl__time" title="${esc(d ? d.toLocaleString() : "")}">${esc(d ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "")}</span>
+        <span class="adm-tl__what"><b>${esc(EVENT_LABELS[ev.type] || ev.type)}</b> ${esc(ev.detail || "")}${extra}</span></div>`;
+    });
+
+    $id("adminDetailBody").innerHTML = `
+      <div>${tags}</div>
+      <div class="adm-bar" style="margin-top:14px">
+        <button type="button" class="adm-btn adm-btn--sm ${person.suspended ? "adm-btn--good" : "adm-btn--danger-ghost"}" data-dact="suspend">${person.suspended ? "Unsuspend" : "Suspend"}</button>
+        <button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="expiry">${person.expiresAt ? "Change expiry" : "Set expiry"}</button>
+        ${person.hasPin ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="resetpin">Reset password</button>` : ""}
+        ${live ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="message">Message</button><button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-dact="logout">Log out</button>` : ""}
+      </div>
+      <div class="adm-facts">
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalSessionSeconds))}</div><div class="adm-fact__label">on the site</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalViewSeconds))}</div><div class="adm-fact__label">inside PDFs</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${totals.sessionCount || 0}</div><div class="adm-fact__label">visits</div></div>
+      </div>
+      <p class="adm-h">Time (exact to the second)</p><div id="admTimeBox"><span class="adm-muted">Loading\u2026</span></div>
+      <p class="adm-h">Password</p><div id="admPwBox" class="adm-pw"><span class="adm-muted">Loading…</span></div>
+      <p class="adm-h">Time by subject</p>${bars(subjectSeconds, subjectColor)}
+      <p class="adm-h">Most-read files</p>${bars(fileSeconds, (k) => subjectColor(subjectOfFile(k, subjectMap)))}
+      <p class="adm-h">Recent activity</p>${timeline || emptyMsg("No activity yet.")}`;
+
+    loadPasswordBox(name, person);
+    fillPersonTimes(name, person);
+
+    $id("adminDetailBody").onclick = async (e) => {
+      const b = e.target.closest("[data-dact]");
+      if (!b) return;
+      const k = b.dataset.dact;
+      if (k === "suspend") { if (await onToggleSuspend(name, !!person.suspended)) closeAdminDetail(); }
+      else if (k === "expiry") { if (await onSetExpiry(name, person.expiresAt)) closeAdminDetail(); }
+      else if (k === "resetpin") {
+        if (await showConfirm(`Remove ${name}'s password? They can create a new one next time they sign in.`, { ok: "Reset password", danger: true })) {
+          const r = await act("resetPin", { name }, `Password removed for ${name}.`, `Couldn't reset password for ${name}`);
+          if (r) { person.hasPin = false; refreshAdmin(); closeAdminDetail(); }
+        }
+      }
+      else if (k === "message" && live) sendAdminMessage(live.sessionId, name);
+      else if (k === "logout" && live) forceLogoutUser(live.sessionId, name);
+    };
+  }
+
+  // ── Student password (admin can see and change it) ──────
+  async function loadPasswordBox(name, person) {
+    const box = $id("admPwBox");
+    if (!box) return;
+    const r = await adminFetch("getPassword", { name });
+    if (!$id("admPwBox")) return;
+    if (!r) { box.innerHTML = `<span class="adm-muted">Couldn't load: ${esc(adminErrText())}</span>`; return; }
+    let shown = false;
+    const draw = () => {
+      const text = !r.hasPassword ? "No password set yet" : (r.known ? (shown ? r.password : "•".repeat(Math.max(4, r.password.length))) : "Set before this update — not stored. Set a new one below.");
+      box.innerHTML = `<div class="adm-pw__row"><code class="adm-pw__val">${esc(text)}</code>
+        ${r.known ? `<button type="button" class="adm-mini" data-pw="show">${shown ? "Hide" : "Show"}</button><button type="button" class="adm-mini" data-pw="copy">Copy</button>` : ""}
+        <button type="button" class="adm-mini" data-pw="edit">${r.hasPassword ? "Change" : "Set one"}</button></div>${r.locked ? '<div class="adm-muted">Currently locked after wrong tries — setting a new password unlocks it.</div>' : ""}`;
+    };
+    draw();
+    box.onclick = async (e) => {
+      const b = e.target.closest("[data-pw]");
+      if (!b) return;
+      if (b.dataset.pw === "show") { shown = !shown; draw(); }
+      else if (b.dataset.pw === "copy") { try { await navigator.clipboard.writeText(r.password); showToast("Password copied."); } catch { showToast("Couldn't copy.", true); } }
+      else if (b.dataset.pw === "edit") {
+        const v = await showPrompt(`New password for "${name}" (4–32 characters):`, r.known ? r.password : "");
+        if (v === null) return;
+        if (v.length < 4 || v.length > 32) { showToast("Password must be 4 to 32 characters.", true); return; }
+        const res = await act("setPassword", { name, password: v }, `Password updated for ${name}.`, `Couldn't update the password for ${name}`);
+        if (res) { r.hasPassword = true; r.known = true; r.password = v; r.locked = false; shown = true; draw(); if (person) person.hasPin = true; }
+      }
+    };
+  }
+
+  // ── Security ────────────────────────────────────────────
+  function renderFlags() {
+    const box = $id("admFlagsList");
+    const { deviceCycling = [], rapidRepeat = [], bulkView = [] } = S.flags || {};
+    const kind = $id("admFlagFilter").value;
+    let items = [
+      ...deviceCycling.map((f) => ({ kind: "device", label: `One device used ${f.names.length} different names: ${f.names.join(", ")}`, when: f.when, names: f.names })),
+      ...rapidRepeat.map((f) => ({ kind: "login", label: `"${f.name}" tried to log in ${f.count} times within a minute`, when: f.when, names: [f.name] })),
+      ...bulkView.map((f) => ({ kind: "bulk", label: `${f.name} opened or downloaded ${f.count} files within 5 minutes`, when: f.when, names: [f.name] }))
+    ].sort((a, b) => new Date(b.when) - new Date(a.when));
+    if (kind !== "all") items = items.filter((i) => i.kind === kind);
+    if (!items.length) { box.innerHTML = emptyMsg("Nothing flagged."); return; }
+    box.innerHTML = items.map((f) => `
+      <div class="adm-row">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(f.label)}</div>
+          <div class="adm-row__meta"><span>${whenHtml(f.when)}</span></div>
+        </div>
+        <div class="adm-row__actions">${f.names.map((n) => `<button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-suspend="${esc(n)}">Suspend${f.names.length > 1 ? ` ${esc(n)}` : ""}</button>`).join("")}</div>
+      </div>`).join("");
+  }
+
+  function renderDevices() {
+    const box = $id("admDevicesList");
+    if (!S.devices.length) { box.innerHTML = emptyMsg("Nothing blocked."); return; }
+    box.innerHTML = S.devices.map((d) => `
+      <div class="adm-row">
+        <div class="adm-row__main">
+          <div class="adm-row__title">${esc(d.label || "Unknown device")}</div>
+          <div class="adm-row__meta"><span>${esc(String(d.deviceId || "").slice(0, 12))}…</span><span>blocked ${whenHtml(d.firstBlockedAt)}</span></div>
+        </div>
+        <div class="adm-row__actions"><button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-unblock="${esc(d.deviceId)}">Unblock</button></div>
+      </div>`).join("");
+  }
+
+  function logRowHtml(entry) {
+    return `<div class="adm-row">
+      <div class="adm-row__main">
+        <div class="adm-row__title">${esc(actionLabel(entry.action))}</div>
+        ${entry.detail ? `<div class="adm-row__meta"><span>${esc(entry.detail)}</span></div>` : ""}
+      </div>
+      <span class="adm-muted" style="margin:0;white-space:nowrap">${whenHtml(entry.timestamp)}</span>
+    </div>`;
+  }
+
+  function renderLog() {
+    const sel = $id("admLogFilter");
+    const prev = sel.value || "all";
+    const actions = Array.from(new Set((S.log || []).map((l) => l.action)));
+    sel.innerHTML = `<option value="all">All actions</option>` + actions.map((a) => `<option value="${esc(a)}">${esc(actionLabel(a))}</option>`).join("");
+    sel.value = actions.includes(prev) ? prev : "all";
+    const q = $id("admLogSearch").value.trim().toLowerCase();
+    const items = (S.log || []).filter((l) =>
+      (sel.value === "all" || l.action === sel.value) &&
+      (!q || `${actionLabel(l.action)} ${l.detail}`.toLowerCase().includes(q)));
+    $id("admLogList").innerHTML = items.length ? items.slice(0, 100).map(logRowHtml).join("") : emptyMsg("No matching actions.");
+  }
+
+  function renderHousekeeping() {
+    const rows = (S.overview && S.overview.logRows) || 0;
+    $id("admLogSize").textContent = rows
+      ? `The activity log currently has ${rows.toLocaleString()} rows.${rows > 20000 ? " That is large — archiving will make this page load faster." : ""}`
+      : "";
+  }
+
+  async function onArchiveOldLogs() {
+    const daysStr = await showPrompt("Archive activity older than how many days? (It is moved to a separate tab in your sheet. Nothing is deleted.)", "90");
+    if (daysStr === null) return;
+    const days = Number(daysStr);
+    if (!days || days < 1) { showToast("Enter a number of days.", true); return; }
+    const pv = await adminFetch("archivePreview", { days });
+    if (!pv) { showToast(`Couldn't check what would be archived: ${adminErrText()}`, true); return; }
+    const p = pv.preview || {};
+    if (!p.wouldArchive) { showToast(`Nothing is older than ${days} days — nothing to archive.`); return; }
+    if (!(await showConfirm(`This will move ${p.wouldArchive.toLocaleString()} of ${p.total.toLocaleString()} activity rows (older than ${days} days) into a LogArchive tab, and keep ${p.wouldKeep.toLocaleString()}. People's time totals will drop by whatever was in the old rows. Nothing is deleted. Continue?`, { ok: "Archive" }))) return;
+    const res = await act("archiveOldLogs", { days }, null, "Couldn't archive");
+    if (!res) return;
+    showToast(`Archived ${res.result.archived.toLocaleString()} rows, ${res.result.kept.toLocaleString()} left in the live sheet.`);
+    refreshAdmin();
+  }
+
+  async function onTidySheet() {
+    if (!(await showConfirm("This tidies your Google Sheet: it removes unimportant log rows (moved to LogArchive, with a backup copy of the Log), tidies and colours every tab, adds a Summary and Guide tab, and hides the behind-the-scenes tabs. Nothing is deleted. Continue?", { ok: "Tidy the sheet" }))) return;
+    const btn = $id("adminTidyBtn");
+    btn.disabled = true;
+    btn.textContent = "Tidying\u2026";
+    const res = await adminFetch("tidySheet");
+    btn.disabled = false;
+    btn.textContent = "Tidy up the Google Sheet";
+    if (!res) { showToast(`Couldn't tidy the sheet: ${adminErrText()}`, true); return; }
+    showToast((res.report && res.report[0]) || "Sheet tidied.");
+    refreshAdmin();
+  }
+
+  // ── Content ─────────────────────────────────────────────
+  function renderContentStats() {
+    const box = $id("admStatsList");
+    const q = $id("admStatsSearch").value.trim().toLowerCase();
+    const stats = (S.stats || []).filter((s) => !q || String(s.file).toLowerCase().includes(q)).slice(0, 25);
+    if (!stats.length) { box.innerHTML = emptyMsg(S.stats.length ? "No files match." : "No views logged yet."); return; }
+    const map = getFileSubjectMap();
+    const max = Math.max(1, ...stats.map((s) => s.views));
+    box.innerHTML = stats.map((s) => `
+      <div class="adm-row" style="display:block">
+        <div class="adm-bar-row__top"><span class="adm-row__title">${esc(s.file)}</span><span class="adm-bar-row__val">${s.views} opened</span></div>
+        <div class="adm-bar-track"><div class="adm-bar-fill" style="width:${Math.max(3, Math.round(s.views / max * 100))}%;background:${subjectColor(subjectOfFile(s.file, map))}"></div></div>
+        <div class="adm-row__meta"><span>${s.distinctViewers} ${s.distinctViewers === 1 ? "person" : "people"}</span><span>${s.downloads} download${s.downloads === 1 ? "" : "s"}</span><span>${esc(fmtMins(s.seconds))} total</span></div>
+      </div>`).join("");
+  }
+
+  function renderFeedbackAdmin() {
+    const box = $id("admFeedbackList");
+    const fb = S.feedback || {};
+    $id("admFeedbackAvg").textContent = fb.averageRating ? `${fb.averageRating} / 5 average · ${fb.count} response${fb.count === 1 ? "" : "s"}` : "No ratings yet";
+    const f = $id("admFeedbackFilter").value;
+    const q = $id("admFeedbackSearch").value.trim().toLowerCase();
+    const items = (fb.entries || []).filter((e) => {
+      if (f === "low" && !(e.rating && e.rating <= 2)) return false;
+      if (["3", "4", "5"].includes(f) && e.rating !== Number(f)) return false;
+      if (q && ![e.name, e.email, e.improvements, e.suggestion].join(" ").toLowerCase().includes(q)) return false;
+      return true;
+    }).slice(0, 50);
+    if (!items.length) { box.innerHTML = emptyMsg((fb.entries || []).length ? "No feedback matches." : "No feedback yet."); return; }
+    box.innerHTML = items.map((e) => {
+      const stars = e.rating ? "★".repeat(e.rating) + "☆".repeat(5 - e.rating) : "";
+      return `<div class="adm-row"><div class="adm-row__main">
+        <div class="adm-row__title">${esc(e.name || "Anonymous")}<span class="adm-stars">${stars}</span></div>
+        <div class="adm-row__meta">${e.email ? `<span>${esc(e.email)}</span>` : ""}${e.improvements ? `<span>${esc(e.improvements)}</span>` : ""}<span>${whenHtml(e.timestamp)}</span></div>
+        ${e.suggestion ? `<p class="adm-row__note">${esc(e.suggestion)}</p>` : ""}
+      </div></div>`;
+    }).join("");
+  }
+
+  // ── Scan Backblaze for new files ("scan and confirm") ───
+  // Nothing is added to the live site until you review it here and
+  // confirm. A wrong guess at a file's subject would show it to
+  // students immediately, which is why nothing here is automatic.
+  let scanTimerInterval = null;
+
+  function scanBusy(label, busy) {
+    const prog = $id("adminScanProgress");
+    $id("adminScanBtn").disabled = busy;
+    $id("adminSyncBtn").disabled = busy;
+    if (scanTimerInterval) { clearInterval(scanTimerInterval); scanTimerInterval = null; }
+    if (!busy) { prog.classList.add("hidden"); return; }
+    prog.classList.remove("hidden");
+    const startedAt = Date.now();
+    const timer = $id("adminScanTimer");
+    timer.textContent = `${label} 0.0s`;
+    scanTimerInterval = setInterval(() => { timer.textContent = `${label} ${((Date.now() - startedAt) / 1000).toFixed(1)}s`; }, 100);
+  }
+
+  async function onSyncBackblaze() {
+    if (!(await showConfirm("This refreshes the whole catalog so it matches your Backblaze bucket exactly (removes duplicates, adds new files, cleans everything). Continue?", { ok: "Sync everything" }))) return;
+    const out = $id("adminScanResults");
+    out.innerHTML = "";
+    scanBusy("Syncing with Backblaze…", true);
+    const data = await adminFetch("syncCatalog");
+    scanBusy("", false);
+    if (!data) {
+      out.innerHTML = emptyMsg(`Sync failed: ${adminErrText()}`);
+      showToast(`Sync failed: ${adminErrText()}`, true);
+      return;
+    }
+    if (data.error) {
+      out.innerHTML = emptyMsg(`Sync failed: ${data.error}`);
+      showToast("Sync failed: " + data.error, true);
+      return;
+    }
+    showToast(`Synced ${data.synced || 0} files from Backblaze.`);
+    out.innerHTML = `<div class="adm-result">✓ Catalog synced. ${esc(data.synced || 0)} files are now live and duplicate-free.</div>`;
+    fetchAndApplyCatalog().then(() => render());
+  }
+
+  async function onScanBackblaze() {
+    const out = $id("adminScanResults");
+    out.innerHTML = "";
+    scanBusy("Scanning…", true);
+    const data = await adminFetch("scanBackblaze");
+    scanBusy("", false);
+    if (!data) { out.innerHTML = emptyMsg(adminErrText()); showToast(`Scan failed: ${adminErrText()}`, true); return; }
+    if (data.error) { out.innerHTML = emptyMsg(`Scan failed: ${data.error}`); return; }
+    renderScanResults(data);
+  }
+
+  function renderScanResults(data) {
+    const out = $id("adminScanResults");
+    const newFiles = data.newFiles || [];
+    const unrecognized = data.unrecognized || [];
+    out.innerHTML = "";
+    out.appendChild(el("p", "adm-muted", `Scanned ${data.totalInBucket || 0} file${data.totalInBucket === 1 ? "" : "s"} in the bucket — ${newFiles.length} new.`));
+    if (!newFiles.length && !unrecognized.length) {
+      out.appendChild(el("p", "adm-empty", "Nothing new — the catalog is already up to date."));
+      return;
+    }
+    if (newFiles.length) {
+      const list = el("div", "adm-list");
+      const subjectOptions = SITE_CONFIG.subjects.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+      newFiles.forEach((item, idx) => {
+        const row = el("div", "adm-scan");
+        row.dataset.idx = String(idx);
+        row.innerHTML = `
+          <input type="checkbox" class="adm-row__check" data-scan-check checked aria-label="Include ${esc(item.displayName)}">
+          <div class="adm-scan__fields">
+            <select class="adm-select" data-field="subjectId">${subjectOptions}</select>
+            <input type="text" class="adm-input" data-field="folderName" value="${esc(item.folderName)}" placeholder="Folder / chapter name">
+            <input type="text" class="adm-input" data-field="displayName" value="${esc(item.displayName)}" placeholder="Display name">
+          </div>
+          <span class="adm-scan__path">${esc(item.filePath)}</span>`;
+        row.querySelector('[data-field="subjectId"]').value = item.subjectId;
+        list.appendChild(row);
+      });
+      out.appendChild(list);
+      const btn = el("button", "adm-btn adm-btn--sm", "Add selected files to the site");
+      btn.type = "button";
+      btn.style.marginTop = "12px";
+      btn.addEventListener("click", () => onConfirmScanResults(list, newFiles, btn));
+      out.appendChild(btn);
+    }
+    if (unrecognized.length) {
+      out.appendChild(el("p", "adm-h", "Couldn't tell where these belong — fix the path in Backblaze and scan again"));
+      unrecognized.forEach((u) => out.appendChild(el("p", "adm-scan__path", u.path)));
+    }
+  }
+
+  async function onConfirmScanResults(list, newFiles, btn) {
+    const items = [];
+    list.querySelectorAll(".adm-scan").forEach((row) => {
+      if (!row.querySelector("[data-scan-check]").checked) return;
+      const original = newFiles[Number(row.dataset.idx)];
+      items.push({
+        subjectId: row.querySelector('[data-field="subjectId"]').value,
+        folderName: row.querySelector('[data-field="folderName"]').value.trim(),
+        fileName: original.fileName,
+        filePath: original.filePath,
+        displayName: row.querySelector('[data-field="displayName"]').value.trim() || original.displayName
+      });
+    });
+    if (!items.length) { showToast("Tick at least one file first.", true); return; }
+    btn.disabled = true;
+    const res = await adminFetch("confirmCatalogAdditions", { items });
+    btn.disabled = false;
+    if (!res) { showToast(`Couldn't add the files: ${adminErrText()}`, true); return; }
+    showToast(`Added ${res.added != null ? res.added : items.length} file${items.length === 1 ? "" : "s"} to the site.`);
+    fetchAndApplyCatalog().then(() => render());
+    onScanBackblaze();
+  }
+
+  // ── Wiring: one set of listeners for the whole admin page ─
+  function initAdminUI() {
+    adminBackBtn.addEventListener("click", exitAdmin);
+    adminRefreshBtn.addEventListener("click", refreshAdmin);
+    adminTabs.addEventListener("click", (e) => {
+      const btn = e.target.closest(".adm-tab");
+      if (btn) switchAdminTab(btn.dataset.tab);
+    });
+    adminApp.addEventListener("click", (e) => {
+      const g = e.target.closest("[data-goto]");
+      if (g && g.dataset.goto) switchAdminTab(g.dataset.goto);
+    });
+    $id("admBanner").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-banner]");
+      if (!b) return;
+      if (b.dataset.banner === "retry") refreshAdmin();
+      if (b.dataset.banner === "copykey" && adminApiKey) copyText(adminApiKey);
+    });
+
+    // Overview: quick approve/reject, online actions
+    $id("admAttention").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      const row = e.target.closest("[data-name]");
+      if (!b || !row) return;
+      decide(row.dataset.name, b.dataset.act === "approve", row);
+    });
+    $id("admOnline").addEventListener("click", (e) => {
+      const row = e.target.closest("[data-open]");
+      if (!row) return;
+      const person = S.online[Number(row.dataset.i)];
+      const b = e.target.closest("[data-act]");
+      if (b && person) {
+        if (b.dataset.act === "message") sendAdminMessage(person.sessionId, person.name);
+        else forceLogoutUser(person.sessionId, person.name);
+        return;
+      }
+      openAdminDetail(row.dataset.open);
+    });
+    $id("adminBroadcastBtn").addEventListener("click", onBroadcastMessage);
+    window.addEventListener("resize", () => { if (!adminApp.classList.contains("hidden")) renderChart(); });
+
+    // Approvals
+    $id("adminAddNameBtn").addEventListener("click", onAdminAddName);
+    $id("adminAddNameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") onAdminAddName(); });
+    $id("adminTestEmailBtn").addEventListener("click", onTestEmail);
+    $id("admQueueAll").addEventListener("change", (e) => {
+      queueSel.clear();
+      if (e.target.checked) S.queue.forEach((q) => queueSel.add(q.name));
+      renderQueue();
+    });
+    $id("admApprovalList").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      const row = e.target.closest("[data-name]");
+      if (!b || !row) return;
+      const name = row.dataset.name;
+      const q = S.queue.find((x) => x.name === name) || {};
+      switch (b.dataset.act) {
+        case "approve": decide(name, true, row); break;
+        case "reject": decide(name, false, row); break;
+        case "copyname": copyText(name); break;
+        case "copyemail": copyText(q.email || ""); break;
+        case "select":
+          if (b.checked) queueSel.add(name); else queueSel.delete(name);
+          updateQueueBulk();
+          break;
+        default: break;
+      }
+    });
+    $id("adminApproveSelectedBtn").addEventListener("click", () => { const n = Array.from(queueSel); if (n.length) bulkDecide(n, true); });
+    $id("adminRejectSelectedBtn").addEventListener("click", async () => {
+      const n = Array.from(queueSel);
+      if (!n.length) return;
+      if (!(await showConfirm(`Reject ${n.length} pending name${n.length === 1 ? "" : "s"}? They'll leave this queue. This doesn't block their device or name.`, { ok: "Reject", danger: true }))) return;
+      bulkDecide(n, false);
+    });
+    $id("admRejectedList").addEventListener("click", async (e) => {
+      const b = e.target.closest('[data-act="restore"]');
+      const row = e.target.closest("[data-name]");
+      if (!b || !row) return;
+      b.disabled = true;
+      const res = await act("unrejectName", { name: row.dataset.name }, `Restored ${row.dataset.name}.`, `Couldn't restore ${row.dataset.name}`);
+      if (res) refreshAdmin(); else b.disabled = false;
+    });
+
+    // People
+    $id("adminRosterSearch").addEventListener("input", renderPeople);
+    $id("admPeopleSort").addEventListener("change", (e) => { peopleUI.sort = e.target.value; renderPeople(); });
+    $id("admPeopleFilters").addEventListener("click", (e) => {
+      const c = e.target.closest("[data-filter]");
+      if (!c) return;
+      peopleUI.filter = c.dataset.filter;
+      $$("#admPeopleFilters .adm-chip").forEach((x) => x.classList.toggle("adm-chip--on", x === c));
+      renderPeople();
+    });
+    $id("admPeopleList").addEventListener("click", (e) => {
+      const card = e.target.closest("[data-name]");
+      if (!card) return;
+      const name = card.dataset.name;
+      if (e.target.closest('[data-act="select"]')) {
+        if (e.target.checked) peopleUI.selected.add(name); else peopleUI.selected.delete(name);
+        card.classList.toggle("adm-person--sel", e.target.checked);
+        updateBulk();
+        return;
+      }
+      openAdminDetail(name);
+    });
+    $id("admPeopleList").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const card = e.target.closest("[data-name]");
+      if (card && e.target === card) openAdminDetail(card.dataset.name);
+    });
+    $id("admBulkSuspend").addEventListener("click", bulkSuspend);
+    $id("admBulkExpiry").addEventListener("click", bulkExpiry);
+    $id("admBulkMessage").addEventListener("click", bulkMessage);
+    $id("adminMergeBtn").addEventListener("click", onMergeSelected);
+    $id("admBulkClear").addEventListener("click", () => { peopleUI.selected.clear(); renderPeople(); });
+    $id("adminExportBtn").addEventListener("click", onExportCsv);
+
+    // Security
+    $id("admFlagFilter").addEventListener("change", renderFlags);
+    $id("admFlagsList").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-suspend]");
+      if (!b) return;
+      const name = b.dataset.suspend;
+      if (!(await showConfirm(`Suspend "${name}"? This blocks every device and name they've used, and signs them out if they're online.`, { ok: "Suspend", danger: true }))) return;
+      b.disabled = true;
+      const res = await act("suspendIdentity", { name }, `Suspended "${name}".`, `Couldn't suspend ${name}`);
+      if (res) refreshAdmin(); else b.disabled = false;
+    });
+    $id("admDevicesList").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-unblock]");
+      if (!b) return;
+      if (!(await showConfirm("Unblock this device? Anyone using it can log in again (under any name that isn't suspended).", { ok: "Unblock" }))) return;
+      b.disabled = true;
+      const res = await act("unblockDevice", { deviceId: b.dataset.unblock }, "Device unblocked.", "Couldn't unblock the device");
+      if (res) refreshAdmin(); else b.disabled = false;
+    });
+    $id("admLogSearch").addEventListener("input", renderLog);
+    $id("admLogFilter").addEventListener("change", renderLog);
+    $id("adminArchiveBtn").addEventListener("click", onArchiveOldLogs);
+    $id("adminTidyBtn").addEventListener("click", onTidySheet);
+
+    // Content
+    $id("adminSyncBtn").addEventListener("click", onSyncBackblaze);
+    $id("adminScanBtn").addEventListener("click", onScanBackblaze);
+    $id("admStatsSearch").addEventListener("input", renderContentStats);
+    $id("admAnnPublish").addEventListener("click", onPublishAnnouncement);
+    $id("admDigestToggle").addEventListener("click", onDigestToggle);
+    $id("admDigestNow").addEventListener("click", onDigestNow);
+    $id("admBackupToggle").addEventListener("click", onBackupToggle);
+    $id("admBackupNow").addEventListener("click", onBackupNow);
+    $id("admTidyToggle").addEventListener("click", onTidyToggle);
+    $id("admTidyNow").addEventListener("click", onTidyNow);
+    $id("admAuthSync").addEventListener("click", onAuthSync);
+    $id("admAnnClear").addEventListener("click", onClearAnnouncement);
+    $id("admRequestList").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-done]");
+      const row = e.target.closest("[data-row]");
+      if (b && row) onResolveRequest(Number(row.dataset.row));
+    });
+    $id("admFeedbackSearch").addEventListener("input", renderFeedbackAdmin);
+    $id("admFeedbackFilter").addEventListener("change", renderFeedbackAdmin);
+
+    // Drawer
+    $id("adminDetailClose").addEventListener("click", closeAdminDetail);
+    $id("adminDetailOverlay").addEventListener("click", closeAdminDetail);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$id("adminDetail").classList.contains("hidden") && confirmOverlay.classList.contains("hidden")) closeAdminDetail(); });
+    // Pause nothing, but catch up as soon as the tab is visible again.
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshLive(); });
+  }
+
+  // ── Utility ────────────────────────────────────────────
+  function escapeHtml(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  }
+
+  // ── Go ─────────────────────────────────────────────────
+  init();
+})();

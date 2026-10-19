@@ -1,0 +1,45 @@
+# The gate page itself, plus /physics/, /chemistry/, /maths/ (real,
+# public overview pages listing what's covered) are all fine to index.
+# Everything past login on the main page is loaded dynamically and
+# was never a separate crawlable URL — actual PDFs stay exactly as
+# gated as always; nothing here changes that.
+
+# Regular search engines — fine to index the landing page.
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: *
+Allow: /
+
+# AI training / scraping crawlers — kept out. Indexing (above) just
+# means the gate page can show up in search results; these are
+# separate bots that scrape page content to train AI models, which is
+# a different thing and off by default here.
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+Sitemap: https://ad5253.github.io/isc/sitemap.xml

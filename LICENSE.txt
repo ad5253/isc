@@ -1,0 +1,19 @@
+Copyright (c) 2026 Adnan Merchant. All rights reserved.
+
+ISC Class 12 Study Portal and its virtual labs (the "Work").
+
+The Work is provided only for the personal, non-commercial study of the
+students it is shown to. No licence is granted to copy, download, save,
+scrape, mirror, modify, translate, re-host, re-publish, sell, or reuse any
+part of the Work (including the 3D lab pages, their code, text, diagrams
+and designs) on any other website, app or medium, or to use it to train or
+build another product, without the written permission of the owner.
+
+Access to the labs is personal to the signed-in student and is logged.
+Any copy of a lab can be traced to the account it was served to.
+Unauthorised copying is an infringement of copyright and will be reported
+to the hosting provider (takedown notice) and pursued under applicable law,
+including the Copyright Act, 1957 (India) and the Information Technology
+Act, 2000.
+
+Contact: merchantadnan052@gmail.com
