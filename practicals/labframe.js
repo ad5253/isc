@@ -2,6 +2,29 @@
    gets a short-lived pass, downloads the private lab from the lab server and shows it in this page
    (so 3D, tracking and the "← Labs" button behave exactly like a normal page). */
 (function () {
+  // Same protection as the rest of the site: no right-click menu, no developer-tools shortcuts,
+  // and the lab is not even downloaded while developer tools are open.
+  function exempt() { try { return localStorage.getItem("c12_admin_ok") === "1" || !!window.__c12Admin; } catch (e) { return false; } }
+  function lock() {
+    document.addEventListener("contextmenu", function (e) {
+      var t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      if (!exempt()) e.preventDefault();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (exempt()) return;
+      var k = (e.key || "").toLowerCase(), m = e.ctrlKey || e.metaKey;
+      if (e.key === "F12" || (m && e.shiftKey && (k === "i" || k === "j" || k === "c")) || (m && e.altKey && (k === "i" || k === "j" || k === "u")) || (m && k === "u")) e.preventDefault();
+    }, true);
+  }
+  // A "debugger" statement is skipped normally, but pauses the page while developer tools are open.
+  function toolsOpen() {
+    if (exempt() || document.hidden) return false;
+    var t0 = performance.now();
+    try { (new Function("debugger;"))(); } catch (e) {}
+    return performance.now() - t0 > 150;
+  }
+  lock();
   var me = document.currentScript;
   var base = me && me.src ? me.src : location.href;
   var ROOT = new URL("../", base);
@@ -34,6 +57,7 @@
 
   function norm(s) { return String(s || "").trim().replace(/\s+/g, " ").toLowerCase(); }
   function go() {
+    if (toolsOpen()) { fail("Close the browser's developer tools, then try again.", true); return; }
     var kind = /\/chemistry\//.test(location.pathname) ? "chemistry" : "physics";
     var slug = location.pathname.replace(/\/index\.html$/, "").replace(/\/+$/, "").split("/").pop();
     var cfgo = (typeof SITE_CONFIG !== "undefined" && SITE_CONFIG) || {};
@@ -65,10 +89,11 @@
       });
     }).then(function (html) {
       if (html == null) return;
+      if (toolsOpen()) { fail("Close the browser's developer tools, then try again.", true); return; }
       var track = '<script src="' + new URL("track.js", base).href + '"><\/script>';
       var i = html.lastIndexOf("</body>");
       html = i >= 0 ? html.slice(0, i) + track + html.slice(i) : html + track;
-      document.open(); document.write(html); document.close();
+      document.open(); document.write(html); document.close(); lock();
     }).catch(function (e) {
       var m = String(e && e.message || "");
       fail(m && m !== "token" && m.length < 160 && !/^(Failed|Load failed|NetworkError|The user aborted|signal)/i.test(m) ? m : "Could not open the lab. Check your internet and try again.", true);
