@@ -92,20 +92,29 @@
     try { (new Function("debugger;"))(); } catch (e) {}
     if (performance.now() - t0 > 150) trip();
   }
-  setInterval(check, 1200);
+  setInterval(check, 800);
   setTimeout(check, 400);
 
   // Right-click menu and the usual shortcuts do nothing on the site's pages.
-  document.addEventListener("contextmenu", function (e) {
+  // Listening on the window, in the capture phase, means nothing on the page (a lab, a viewer)
+  // can get in first and switch this off.
+  function blockMenu(e) {
     var t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-    if (!exempt()) e.preventDefault();
-  });
-  document.addEventListener("keydown", function (e) {
+    if (!exempt()) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }
+  function blockKeys(e) {
     if (exempt()) return;
-    var k = (e.key || "").toLowerCase();
-    if (e.key === "F12" || ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === "i" || k === "j" || k === "c")) || ((e.ctrlKey || e.metaKey) && e.altKey && (k === "i" || k === "j" || k === "u")) || ((e.ctrlKey || e.metaKey) && k === "u")) {
-      e.preventDefault();
+    var k = (e.key || "").toLowerCase(), m = e.ctrlKey || e.metaKey;
+    if (e.key === "F12" || e.keyCode === 123 ||
+        (m && e.shiftKey && (k === "i" || k === "j" || k === "c" || k === "k")) ||
+        (m && e.altKey && (k === "i" || k === "j" || k === "u" || k === "c")) ||
+        (m && (k === "u" || k === "s"))) {
+      e.preventDefault(); e.stopImmediatePropagation();
     }
-  }, true);
+  }
+  window.addEventListener("contextmenu", blockMenu, true);
+  document.addEventListener("contextmenu", blockMenu, true);
+  window.addEventListener("keydown", blockKeys, true);
+  document.addEventListener("keydown", blockKeys, true);
 })();

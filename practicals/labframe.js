@@ -6,15 +6,15 @@
   // and the lab is not even downloaded while developer tools are open.
   function exempt() { try { return localStorage.getItem("c12_admin_ok") === "1" || !!window.__c12Admin; } catch (e) { return false; } }
   function lock() {
-    document.addEventListener("contextmenu", function (e) {
+    window.addEventListener("contextmenu", function (e) {
       var t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-      if (!exempt()) e.preventDefault();
-    });
-    document.addEventListener("keydown", function (e) {
+      if (!exempt()) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+    window.addEventListener("keydown", function (e) {
       if (exempt()) return;
       var k = (e.key || "").toLowerCase(), m = e.ctrlKey || e.metaKey;
-      if (e.key === "F12" || (m && e.shiftKey && (k === "i" || k === "j" || k === "c")) || (m && e.altKey && (k === "i" || k === "j" || k === "u")) || (m && k === "u")) e.preventDefault();
+      if (e.key === "F12" || (m && e.shiftKey && (k === "i" || k === "j" || k === "c")) || (m && e.altKey && (k === "i" || k === "j" || k === "u")) || (m && k === "u") || (m && k === "s")) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
   }
   // A "debugger" statement is skipped normally, but pauses the page while developer tools are open.

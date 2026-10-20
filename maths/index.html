@@ -76,6 +76,7 @@
     <a href="mailto:merchantadnan052@gmail.com">Email</a>
   </footer>
 </div>
+<script src="../config.js"></script>
 <script>
   // Keeps the file count above honest without ever needing this page
   // edited by hand again. Same public, no-key "catalog" endpoint the
@@ -87,9 +88,11 @@
   (function () {
     var el = document.getElementById("materialsCount");
     if (!el) return;
+    var endpoint = (typeof SITE_CONFIG !== "undefined" && SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint);
+    if (!endpoint) return;
     var controller = new AbortController();
     var timeout = setTimeout(function () { controller.abort(); }, 6000);
-    fetch("https://script.google.com/macros/s/AKfycbyDtxYLc_dwqKdermC8caK79OG9K4lkIsHA7_XNoFVQDxLX7dmKDp-tCJxOcLOwTJ_7/exec?action=catalog", { signal: controller.signal })
+    fetch(endpoint + "?action=catalog", { signal: controller.signal })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         clearTimeout(timeout);
@@ -105,5 +108,6 @@
       .catch(function () { /* static baseline stands as-is */ });
   })();
 </script>
+<script src="../guard.js"></script>
 </body>
 </html>
