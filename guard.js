@@ -35,8 +35,10 @@
   }
 
   function send(name, sid, strike, done) {
+    var proof = "";
+    try { proof = localStorage.getItem("c12_dt_" + String(name || "").trim().replace(/\s+/g, " ").toLowerCase()) || ""; } catch (e) {}
     var payload = JSON.stringify({
-      type: "security", name: name || "", detail: "devtools", time: new Date().toISOString(),
+      type: "security", name: name || "", detail: "devtools", dt: proof, time: new Date().toISOString(),
       page: location.href + " || strike:" + strike, sessionId: sid || "", viewId: "", duration: ""
     });
     function go(ep) {

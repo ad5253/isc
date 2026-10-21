@@ -645,7 +645,7 @@
     const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
     const url = `${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`;
     const fast = await authFast({ op: "cred", username, credHash });
-    if (fast && fast.valid) return "valid";
+    if (fast && fast.valid && fast.dt) { setDt(username, fast.dt); return "valid"; }   // (an older fast-login worker sends no proof: ask Apps Script below, which does)
 
     // Asked up to three times in parallel (now, after 1.5 s, after 3.5 s) — a
     // slow or sleeping server answers whichever request it reaches first.
@@ -660,7 +660,7 @@
         const timeout = setTimeout(() => controller.abort(), ms);
         fetch(url, { signal: controller.signal })
           .then((res) => res.json())
-          .then((data) => { if (data && data.ok) done(data.valid ? "valid" : "invalid"); })
+          .then((data) => { if (data && data.ok) { if (data.valid && data.dt) setDt(username, data.dt); done(data.valid ? "valid" : "invalid"); } })
           .catch(() => {})
           .finally(() => {
             clearTimeout(timeout); running--;
@@ -751,6 +751,14 @@
   // then paste the printed value into config.js's admin.secretHash.
   async function hashAdminSecret(secret) {
     const salt = (SITE_CONFIG.admin && SITE_CONFIG.admin.salt) || "";
+    const iter = Number(SITE_CONFIG.admin && SITE_CONFIG.admin.iter) || 0;
+    if (iter > 0 && window.crypto && window.crypto.subtle) {
+      // Stretched: every guess costs hundreds of thousands of hashing rounds, so the public value in
+      // config.js cannot be cracked by brute force even if it is read by someone else.
+      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret.trim()), "PBKDF2", false, ["deriveBits"]);
+      const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: iter }, base, 256);
+      return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
     return sha256Hex(salt + secret.trim());
   }
 
@@ -2174,6 +2182,7 @@
       url.searchParams.set("action", "claimSession");
       url.searchParams.set("name", name);
       url.searchParams.set("sessionId", sessionId);
+      url.searchParams.set("pt", getDt(name));
       fetch(url.toString()).catch(() => {});
     } catch {
       // Never let this block login.
@@ -2318,6 +2327,7 @@
       time: new Date().toISOString(),
       page: pageOverride || location.href,
       sessionId: sessionId || "",
+      dt: (type === "heartbeat" || type === "session_end") ? getDt(name || "") : undefined,
       viewId: (extra && extra.viewId) || "",
       duration: (extra && extra.duration !== undefined && extra.duration !== null) ? extra.duration : ""
     }));
