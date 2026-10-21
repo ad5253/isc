@@ -80,8 +80,9 @@ const SITE_CONFIG = {
   //  there, not a separate short key).
   admin: {
     enabled: true,
-    salt: "c12-admin-r4k9",
-    secretHash: "66575fc2e3bd47844b7bb501539c9aa1293b85640c9cf094c2c70840b9c21630",
+    salt: "c12-adm-pub-c80120ea355dae2c2ec2",
+    iter: 600000,
+    secretHash: "6eae3367872377d37fc31f2e3f455b590215abcee921f74cefde74e545462725",
   },
 
   // ── Protected Accounts (name + password) ─────────────────────
