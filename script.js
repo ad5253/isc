@@ -1998,9 +1998,11 @@
     } catch {
       // network hiccup — config.js's existing hardcoded list stands in as-is, site still works
     }
+    sortSubjectsNaturally();
   }
 
   async function showApp(name) {
+    sortSubjectsNaturally();
     try { sessionStorage.setItem("c12_authok", String(Date.now())); } catch (e) {}
     currentName = name;
     sessionId = readSessionId() || makeId(); // reuses the one saved at login — a plain reload must NOT look like a different device logging in, or claimActiveSession below would kick out its own just-abandoned previous instance every single time
@@ -3113,9 +3115,21 @@
     for (const [re, label] of TYPE_RULES) if (re.test(folderName || "")) return label;
     return "PDF";
   }
+  // Natural order: 1, 2, 10, 11 (not 1, 10, 11, 2)
+  const NAT = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { numeric: true, sensitivity: "base" });
+  function sortSubjectsNaturally() {
+    try {
+      SITE_CONFIG.subjects.forEach((s) => {
+        if (!s.subfolders) return;
+        s.subfolders.sort((a, b) => NAT(a.name, b.name));
+        s.subfolders.forEach((f) => { if (f.files) f.files.sort((a, b) => NAT(a.name, b.name)); });
+      });
+    } catch (e) {}
+  }
+
   function fileMeta(file, folder) {
     const name = file.name || "";
-    const m = name.match(/^\s*(?:ch(?:apter)?\.?\s*)?0*(\d{1,2})\s*[.\-—–:)]\s*/i);
+    const m = name.match(/^\s*(?:ch(?:apter)?\.?\s*)0*(\d{1,2})(?:\s*[.\-—–:)_]\s*|\s+|$|(?=[a-z]))/i) || name.match(/^\s*0*(\d{1,2})\s*[.\-—–:)_]\s*/);
     const type = detectType(name, folder && folder.name);
     let title = m ? name.slice(m[0].length) : name;
     if (type === "Notes" || type === "Formulas") title = title.replace(/\s+(Notes?|Formulas?)$/i, "");
@@ -3535,6 +3549,7 @@
       g.items.push(item);
     }));
     const chapters = Array.from(groups.values()).sort((a, b) => a.chapter - b.chapter);
+    others.sort((a, b) => NAT(a.file.name, b.file.name));
     chapters.forEach((g) => {
       g.items.sort((a, b) => TYPE_ORDER.indexOf(a.meta.type) - TYPE_ORDER.indexOf(b.meta.type));
       const primary = g.items.find((i) => i.meta.type === "Notes") || g.items[0];
