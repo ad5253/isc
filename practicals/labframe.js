@@ -4,7 +4,8 @@
 (function () {
   // Same protection as the rest of the site: no right-click menu, no developer-tools shortcuts,
   // and the lab is not even downloaded while developer tools are open.
-  function exempt() { try { return localStorage.getItem("c12_admin_ok") === "1" || !!window.__c12Admin; } catch (e) { return false; } }
+  // No exemption any more: a browser flag like "I am the admin" can be faked by anyone with a bookmark.
+  function exempt() { return false; }
   function lock() {
     window.addEventListener("contextmenu", function (e) {
       var t = e.target;
@@ -24,6 +25,12 @@
     try { (new Function("debugger;"))(); } catch (e) {}
     return performance.now() - t0 > 400;   // fix #13: longer pause needed, so a slow phone is not mistaken
   }
+  // The browser's Print > "Save as PDF" would copy the page, so printing gives a blank page.
+  function noPrint() {
+    if (exempt()) return;
+    try { var st = document.createElement("style"); st.textContent = "@media print{html,body{display:none!important}}"; (document.head || document.documentElement).appendChild(st); } catch (e) {}
+  }
+  noPrint();
   lock();
   var me = document.currentScript;
   var base = me && me.src ? me.src : location.href;
@@ -78,17 +85,45 @@
       return once(endpoint, 10000, o()).catch(function () { return once(endpoint, 14000, o()); }).then(function (r) { return r.json(); });
     }
     getToken().then(function (d) {
+      if (d && d.error === "paused") { throw new Error("Too many files were opened too quickly. Please wait 5 minutes and try again."); }
       if (!d || !d.ok || !d.token) {
         if (d && (d.error === "suspended" || d.error === "unauthorized" || d.error === "pin_required")) { location.replace(ROOT.href); return null; }
         throw new Error("token");
       }
-      var lu = gate + "/lab/" + kind + "/" + encodeURIComponent(slug);
+      var tail = "/" + kind + "/" + encodeURIComponent(slug);
+      var lu = gate + "/lab" + tail, cu = gate + "/code" + tail;
       var lo = function () { return { credentials: "omit", cache: "no-store", headers: { "X-Pass": d.token } }; };   // fix #21: pass in a header
-      return once(lu, 40000, lo()).catch(function () { return once(lu, 40000, lo()); }).then(function (r) {
+      function hex(u8) { var s = ""; for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? "0" : "") + u8[i].toString(16); return s; }
+      // 1) the page (3D engine + screens)   2) the lab code, locked for this login   3) the key, only for a live login
+      var pPage = once(lu, 40000, lo()).catch(function () { return once(lu, 40000, lo()); }).then(function (r) {
         return r.text().then(function (txt) {
           if (!r.ok || txt.indexOf("<") !== 0 && txt.indexOf("<!") !== 0) throw new Error(txt.slice(0, 160) || ("HTTP " + r.status));
           return txt;
         });
+      });
+      var pCode = once(cu, 40000, lo()).catch(function () { return once(cu, 40000, lo()); }).then(function (r) {
+        if (r.status === 404) return null;                    // lab not split yet: its page carries the code itself
+        if (!r.ok) return r.text().then(function (x) { throw new Error(x.slice(0, 160) || ("HTTP " + r.status)); });
+        return r.arrayBuffer();
+      }).then(function (buf) {
+        if (!buf) return null;
+        var u = new Uint8Array(buf), nonce = u.slice(0, 16), iv = u.slice(16, 28), ct = u.slice(28);
+        return once(gate + "/key" + tail + "?n=" + hex(nonce), 20000, lo()).then(function (r) {
+          if (!r.ok) throw new Error("Please sign in again.");
+          return r.arrayBuffer();
+        }).then(function (kb) {
+          return crypto.subtle.importKey("raw", kb, "AES-GCM", false, ["decrypt"]);
+        }).then(function (key) {
+          return crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, ct);
+        }).then(function (plain) { return new TextDecoder().decode(plain); });
+      });
+      return Promise.all([pPage, pCode]).then(function (parts) {
+        var page = parts[0], code = parts[1];
+        if (code == null) return page;
+        var tag = 'id="lab-app">', at = page.indexOf(tag);
+        if (at < 0) throw new Error("Lab page is incomplete.");
+        at += tag.length;
+        return page.slice(0, at) + code + page.slice(at);
       });
     }).then(function (html) {
       if (html == null) return;
@@ -96,7 +131,7 @@
       var track = '<script src="' + new URL("track.js", base).href + '"><\/script>';
       var i = html.lastIndexOf("</body>");
       html = i >= 0 ? html.slice(0, i) + track + html.slice(i) : html + track;
-      document.open(); document.write(html); document.close(); lock();
+      document.open(); document.write(html); document.close(); lock(); noPrint();
     }).catch(function (e) {
       var m = String(e && e.message || "");
       fail(m && m !== "token" && m.length < 160 && !/^(Failed|Load failed|NetworkError|The user aborted|signal)/i.test(m) ? m : "Could not open the lab. Check your internet and try again.", true);
