@@ -127,17 +127,31 @@
     var resumedAt = document.hidden ? null : Date.now();
     var ended = false;
 
+    var proof = ""; try { proof = localStorage.getItem("c12_dt_" + String(who.name).trim().replace(/\s+/g, " ").toLowerCase()) || ""; } catch (e) {}
     function payload(type, extra) {
       return JSON.stringify({
         type: type, name: who.name, detail: detail, time: new Date().toISOString(),
         page: (extra && extra.page) || location.href, sessionId: who.sid || "", viewId: viewId,
-        duration: extra && extra.duration !== undefined ? extra.duration : ""
+        duration: extra && extra.duration !== undefined ? extra.duration : "",
+        eventId: Date.now().toString(36) + Math.random().toString(36).slice(2, 10),   // fix #25: a repeat is ignored by the server
+        dt: proof || undefined
       });
     }
-    function send(body) {
-      try { if (navigator.sendBeacon && navigator.sendBeacon(endpoint, body)) return; } catch (e) {}
-      fetch(endpoint, { method: "POST", mode: "no-cors", keepalive: true,
-        headers: { "Content-Type": "text/plain;charset=utf-8" }, body: body }).catch(function () {});
+    // Fix #25: confirmed delivery for the lab "opened" row; the "closed" row (sent while the page is
+    // going away) is sent with sendBeacon and a copy is kept to re-send next time (the server ignores repeats).
+    function keep(k, body) { try { var a = JSON.parse(localStorage.getItem(k) || "[]"); if (!Array.isArray(a)) a = []; a.push({ p: body, at: Date.now() }); localStorage.setItem(k, JSON.stringify(a.slice(-150))); } catch (e) {} }
+    function send(body, closing) {
+      if (closing) {
+        keep("c12_logu", body);
+        try { if (navigator.sendBeacon && navigator.sendBeacon(endpoint, body)) return; } catch (e) {}
+        fetch(endpoint, { method: "POST", mode: "no-cors", keepalive: true,
+          headers: { "Content-Type": "text/plain;charset=utf-8" }, body: body }).catch(function () {});
+        return;
+      }
+      fetch(endpoint, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: body })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { if (!d || !d.ok) keep("c12_logq", body); })
+        .catch(function () { keep("c12_logq", body); });
     }
 
     send(payload("view"));
@@ -188,8 +202,8 @@
       if (resumedAt !== null) { activeMs += Date.now() - resumedAt; resumedAt = null; }
       var seconds = Math.round(activeMs / 1000);
       if (seconds >= 3) {
-        ended = true; send(payload("view_end", { duration: seconds }));
-        var pp = perfPayload(); if (pp) send(pp);
+        ended = true; send(payload("view_end", { duration: seconds }), true);
+        var pp = perfPayload(); if (pp) send(pp, true);
       }
     }
     document.addEventListener("visibilitychange", function () {

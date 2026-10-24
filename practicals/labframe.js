@@ -22,7 +22,7 @@
     if (exempt() || document.hidden) return false;
     var t0 = performance.now();
     try { (new Function("debugger;"))(); } catch (e) {}
-    return performance.now() - t0 > 150;
+    return performance.now() - t0 > 400;   // fix #13: longer pause needed, so a slow phone is not mistaken
   }
   lock();
   var me = document.currentScript;
@@ -66,22 +66,25 @@
     var who = null; try { who = JSON.parse(sessionStorage.getItem("c12_name") || "null"); } catch (e) {}
     if (!endpoint || !who) { fail("Please sign in again.", false); return; }
     var dt = ""; try { dt = localStorage.getItem("c12_dt_" + norm(who.name)) || ""; } catch (e) {}
-    var u = endpoint + "?action=getPdfToken&name=" + encodeURIComponent(who.name) + "&sessionId=" + encodeURIComponent(who.sid || "") + "&pt=" + encodeURIComponent(dt);
+    // Fix #21: name, session and proof travel inside the request, not in the web address.
+    var passBody = JSON.stringify({ type: "pass", name: who.name, sessionId: who.sid || "", pt: dt, time: new Date().toISOString() });
     function once(url, ms, opt) {
       var c = new AbortController(), tm = setTimeout(function () { c.abort(); }, ms);
       opt = opt || {}; opt.signal = c.signal;
       return fetch(url, opt).finally(function () { clearTimeout(tm); });
     }
     function getToken() {
-      return once(u, 10000).catch(function () { return once(u, 14000); }).then(function (r) { return r.json(); });
+      var o = function () { return { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: passBody }; };
+      return once(endpoint, 10000, o()).catch(function () { return once(endpoint, 14000, o()); }).then(function (r) { return r.json(); });
     }
     getToken().then(function (d) {
       if (!d || !d.ok || !d.token) {
         if (d && (d.error === "suspended" || d.error === "unauthorized" || d.error === "pin_required")) { location.replace(ROOT.href); return null; }
         throw new Error("token");
       }
-      var lu = gate + "/lab/" + kind + "/" + encodeURIComponent(slug) + "?t=" + encodeURIComponent(d.token);
-      return once(lu, 40000, { credentials: "omit", cache: "no-store" }).catch(function () { return once(lu, 40000, { credentials: "omit", cache: "no-store" }); }).then(function (r) {
+      var lu = gate + "/lab/" + kind + "/" + encodeURIComponent(slug);
+      var lo = function () { return { credentials: "omit", cache: "no-store", headers: { "X-Pass": d.token } }; };   // fix #21: pass in a header
+      return once(lu, 40000, lo()).catch(function () { return once(lu, 40000, lo()); }).then(function (r) {
         return r.text().then(function (txt) {
           if (!r.ok || txt.indexOf("<") !== 0 && txt.indexOf("<!") !== 0) throw new Error(txt.slice(0, 160) || ("HTTP " + r.status));
           return txt;

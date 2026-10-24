@@ -9,6 +9,8 @@
     <script>try{if(localStorage.getItem("c12_theme")==="light"){document.documentElement.setAttribute("data-theme","light");}}catch(e){}</script>
     <script>try{if(sessionStorage.getItem("c12_name")||localStorage.getItem("c12_keep")){document.documentElement.classList.add("resuming");}}catch(e){}</script>
     <meta name="author" content="Adnan Merchant">
+    <!-- Fix #20: the browser may only run code from this site and the PDF viewer library, and may only talk to this site's own servers. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; worker-src blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https://api.qrserver.com; font-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://class12-api-cache.merchantadnan052.workers.dev https://class12-pdf-gate.merchantadnan052.workers.dev https://class12-lab-gate.merchantadnan052.workers.dev https://api.ipify.org https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 
     <!-- Canonical + social preview. -->
     <link rel="canonical" href="https://ad5253.github.io/isc/">
@@ -727,11 +729,11 @@
     </div>
 
 
-    <script defer src="config.js?v=6"></script>
+    <script defer src="config.js?v=7"></script>
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
-    <script defer src="guard.js?v=2"></script>
-    <script defer src="script.js?v=57"></script>
+    <script defer src="guard.js?v=3"></script>
+    <script defer src="script.js?v=58"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

@@ -6,14 +6,7 @@
 (function () {
   "use strict";
 
-  // The owner's account: every spelling of the name is a protected (name + password) account.
-  try {
-    var _pa = (typeof SITE_CONFIG !== "undefined" && SITE_CONFIG.protectedAccounts) || null;
-    if (_pa) {
-      _pa.usernames = _pa.usernames || [];
-      ["adnan", "adnan merchant", "adnan abbas merchant"].forEach(function (n) { if (_pa.usernames.indexOf(n) === -1) _pa.usernames.push(n); });
-    }
-  } catch (e) {}
+  // (Fix #1: the old special 'protected account' login was removed; every account signs in the normal way.)
 
   // ── PDF.js setup ───────────────────────────────────────
   // The PDF library (~350 KB) is no longer downloaded on the login
@@ -138,7 +131,7 @@
 
     const fullAttempt = Promise.all([ensurePdfToken(), ensurePdfLib()]).then(([token, libOk]) => {
       if (!libOk) throw new Error("network");
-      realTask = pdfjsLib.getDocument({ url: pdfWorkerUrl(path, token), disableRange: true });
+      realTask = pdfjsLib.getDocument({ url: pdfWorkerUrl(path, token), disableRange: true, isEvalSupported: false });   // fix #19
       realTask.onProgress = (p) => { if (!fellBack && task.onProgress) task.onProgress(p); };
       return realTask.promise;
     });
@@ -218,7 +211,7 @@
 
     const realLoadPromise = Promise.all([ensurePdfToken(), ensurePdfLib()]).then(([token, libOk]) => {
       if (!libOk) throw new Error("network");
-      realTask = pdfjsLib.getDocument(pdfWorkerUrl(path, token));
+      realTask = pdfjsLib.getDocument({ url: pdfWorkerUrl(path, token), isEvalSupported: false });   // fix #19
       realTask.onProgress = (p) => { if (task.onProgress) task.onProgress(p); };
       return realTask.promise;
     });
@@ -488,12 +481,13 @@
     let data;
     try {
       // Bounded wait + one automatic retry (second try usually hits a warm backend).
-      const url = `${endpoint}?action=getPdfToken&name=${encodeURIComponent(currentName)}&sessionId=${encodeURIComponent(sessionId)}&pt=${encodeURIComponent(getDt(currentName))}`;
+      // Fix #21: name/session/proof travel inside the request body, not in the web address.
+      const body = JSON.stringify({ type: "pass", name: currentName, sessionId, pt: getDt(currentName), time: new Date().toISOString() });
       const tryOnce = async (ms) => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), ms);
         try {
-          const res = await fetch(url, { signal: controller.signal });
+          const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body, signal: controller.signal });
           return await res.json();
         } finally { clearTimeout(timer); }
       };
@@ -637,54 +631,15 @@
     } catch { return null; } finally { clearTimeout(timer); }
   }
 
-  async function checkCredentialsRemote(username, password) {
-    const cred = SITE_CONFIG.protectedAccounts;
-    if (!cred) return "error";
-    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
-    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return "error";
-    const credHash = await sha256Hex(cred.salt + normalizeName(username) + "|" + password);
-    const url = `${endpoint}?action=checkCredentials&username=${encodeURIComponent(username)}&credHash=${encodeURIComponent(credHash)}`;
-    const fast = await authFast({ op: "cred", username, credHash });
-    if (fast && fast.valid && fast.dt) { setDt(username, fast.dt); return "valid"; }   // (an older fast-login worker sends no proof: ask Apps Script below, which does)
-
-    // Asked up to three times in parallel (now, after 1.5 s, after 3.5 s) — a
-    // slow or sleeping server answers whichever request it reaches first.
-    // Reading the answer twice is harmless, so this is safe.
-    return new Promise((resolve) => {
-      let finished = false, running = 0, launched = 0;
-      const done = (v) => { if (!finished) { finished = true; resolve(v); } };
-      const fire = (ms) => {
-        if (finished) return;
-        launched++; running++;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), ms);
-        fetch(url, { signal: controller.signal })
-          .then((res) => res.json())
-          .then((data) => { if (data && data.ok) { if (data.valid && data.dt) setDt(username, data.dt); done(data.valid ? "valid" : "invalid"); } })
-          .catch(() => {})
-          .finally(() => {
-            clearTimeout(timeout); running--;
-            if (!finished && running === 0 && launched >= 3) done("error");
-          });
-      };
-      fire(14000);
-      setTimeout(() => fire(11000), 1500);
-      setTimeout(() => fire(8000), 3500);
-      setTimeout(() => done("error"), 15000);
-    });
-  }
+  // (Fix #1: checkCredentialsRemote — the separate special-account password check — was removed.)
 
   async function isAuthorized(name) {
     const list = SITE_CONFIG.accessList;
-    if (!list || !list.enabled) return true;
-    if (!window.crypto || !window.crypto.subtle) return true; // insecure context (e.g. plain http) — fail open rather than lock everyone out
-    const hash = await hashName(name);
-    if (list.hashes.includes(hash)) return true;
-    // Live-approved names — added from the admin dashboard's approval
-    // queue or "Add name" box, no redeploy needed. Checked in addition
-    // to the static list above, never instead of it.
+    if (list && list.enabled === false) return true;
+    // Fix #6: the browser no longer holds the class list. The server answers only about this one name.
     const remote = await fetchLoginCheck(name);
-    return remote.accessHashes.includes(hash);
+    if (remote.answered) return remote.allowed;
+    return false;   // if the server can't be reached, the password step and PDF/lab gate still protect everything
   }
 
   // ── Consolidated remote login check ──────────────────────────────
@@ -698,75 +653,55 @@
   // fetched together. Fails open (empty/false) on any network error,
   // same philosophy as everything else here: a hiccup reaching the
   // sheet should never lock out someone who's actually fine.
+  // Fix #6: one quick question about the ONE name typed (and this device). No class list is ever
+  // sent to the browser. Remembered for 40 s per name so the password preview doesn't re-ask.
   let cachedLoginCheck = null;
+  let cachedLoginCheckName = "";
   let cachedLoginCheckAt = 0;
   let loginCheckInFlight = null;
+  let loginCheckInFlightName = "";
   function fetchLoginCheck(name) {
-    // Kept for 40 s only, so a person who was just approved isn't told "not yet" from an old copy.
-    if (cachedLoginCheck && Date.now() - cachedLoginCheckAt > 40000) cachedLoginCheck = null;
+    const norm = normalizeName(name || "");
+    if (cachedLoginCheck && (cachedLoginCheckName !== norm || Date.now() - cachedLoginCheckAt > 40000)) cachedLoginCheck = null;
     if (cachedLoginCheck) return Promise.resolve(cachedLoginCheck);
-    if (!loginCheckInFlight) loginCheckInFlight = fetchLoginCheckNow(name).finally(() => { loginCheckInFlight = null; });
+    if (!loginCheckInFlight || loginCheckInFlightName !== norm) {
+      loginCheckInFlightName = norm;
+      loginCheckInFlight = fetchLoginCheckNow(name).finally(() => { loginCheckInFlight = null; });
+    }
     return loginCheckInFlight;
   }
   async function fetchLoginCheckNow(name) {
-    if (cachedLoginCheck) return cachedLoginCheck;
-    const fallback = { blockedDeviceIds: [], accessHashes: [], suspendedHashes: [], active: false };
+    const norm = normalizeName(name || "");
+    const unanswered = { answered: false, allowed: false, suspended: false, deviceBlocked: false, hasPassword: false, needSurname: false };
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
-    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return fallback;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return unanswered;
+    if (!norm) return unanswered;
     try {
-      const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}`, cacheBase() ? 3500 : 2000).catch(() => null);
+      let device = "";
+      try { device = await getDeviceId(); } catch (e) {}
+      const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}&device=${encodeURIComponent(device)}`, cacheBase() ? 4000 : 3000).catch(() => null);
       if (data && data.ok) {
         cachedLoginCheck = {
-          blockedDeviceIds: data.blockedDeviceIds || [],
-          accessHashes: data.accessHashes || [],
-          suspendedHashes: data.suspendedHashes || [],
-          pinPrefixes: Array.isArray(data.pinPrefixes) ? data.pinPrefixes : null,
-          active: !!data.active
+          answered: true,
+          allowed: !!data.allowed,
+          suspended: !!data.suspended,
+          deviceBlocked: !!data.deviceBlocked,
+          hasPassword: !!data.hasPassword,
+          needSurname: !!data.needSurname
         };
+        cachedLoginCheckName = norm;
         cachedLoginCheckAt = Date.now();
-      } else {
-        return fallback; // not cached — the next attempt asks again
+        return cachedLoginCheck;
       }
+      return unanswered;
     } catch {
-      return fallback;
+      return unanswered;
     }
-    return cachedLoginCheck;
   }
 
-  // Console helper for adding a new student later without re-editing
-  // through an AI assistant: open dev tools on the live site and run
-  //   await __hashName("Their Name")
-  // then paste the printed hash into config.js's accessList.hashes.
-  window.__hashName = async (name) => {
-    const hash = await hashName(name);
-    console.log(hash);
-    return hash;
-  };
+  // (Fix #6/#27: the old console helper for adding students to config.js was removed — add students from the admin page.)
 
-  // Admin secret hashing — same salted-hash model as hashName above,
-  // but NOT lowercased/space-collapsed, so case and spacing in your
-  // chosen phrase count toward its strength instead of being thrown
-  // away. Console helper: open dev tools on the live site and run
-  //   await __hashAdminSecret("your chosen phrase")
-  // then paste the printed value into config.js's admin.secretHash.
-  async function hashAdminSecret(secret) {
-    const salt = (SITE_CONFIG.admin && SITE_CONFIG.admin.salt) || "";
-    const iter = Number(SITE_CONFIG.admin && SITE_CONFIG.admin.iter) || 0;
-    if (iter > 0 && window.crypto && window.crypto.subtle) {
-      // Stretched: every guess costs hundreds of thousands of hashing rounds, so the public value in
-      // config.js cannot be cracked by brute force even if it is read by someone else.
-      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret.trim()), "PBKDF2", false, ["deriveBits"]);
-      const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: iter }, base, 256);
-      return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    }
-    return sha256Hex(salt + secret.trim());
-  }
-
-  window.__hashAdminSecret = async (secret) => {
-    const hash = await hashAdminSecret(secret);
-    console.log(hash);
-    return hash;
-  };
+  // (Fixes #14/#17: the admin phrase is checked on the server; the old public-hash helper was removed.)
 
   // ── Device fingerprint ──────────────────────────────────
   // A hash of stable browser/hardware signals — NOT tied to any name
@@ -907,16 +842,10 @@
 
     if (Array.isArray(s.deviceIds) && s.deviceIds.includes(deviceId)) return true;
 
+    // Fix #6: the server says whether THIS name is suspended and whether THIS device is blocked.
     const remote = await fetchLoginCheck(name);
-    if (remote.blockedDeviceIds.includes(deviceId)) return true;
-
-    // Live-suspended names — added from the admin dashboard's Suspend
-    // button, which also cascades to every linked alias and device.
-    // Checked in addition to the static config.js list above.
-    if (name) {
-      const hash = await hashName(name);
-      if (remote.suspendedHashes.includes(hash)) return true;
-    }
+    if (remote.deviceBlocked) return true;
+    if (name && remote.suspended) return true;
 
     if (Array.isArray(s.ips) && s.ips.length) {
       const ip = await getClientIp();
@@ -1106,8 +1035,8 @@
         localStorage.removeItem("c12_guard_msg");
         if (Date.now() - gm.t < 15 * 60 * 1000 && !gate.classList.contains("hidden")) {
           showGateError(gm.strike >= 2
-            ? "Developer tools were detected again. Your ID has been recorded and your account may now be suspended."
-            : "Developer tools were detected, so you have been signed out. Your ID has been recorded. If you try this again, your account will be suspended.");
+            ? "Developer tools were detected again today. This has been recorded and reported to the site owner, who may suspend the account."
+            : "Developer tools were detected, so you have been signed out. This has been recorded and reported to the site owner. If you were not doing this, just sign in again.");
         }
       }
     } catch (e) {}
@@ -1541,9 +1470,8 @@
       // Fast path: the list of password-holders already arrived with the login
       // check, so the password box can appear at once — no waiting on the server.
       const lc = cachedLoginCheck;
-      if (lc && lc.pinPrefixes) {
-        const h = await hashName(name);
-        if (lc.pinPrefixes.indexOf(h.slice(0, 12)) !== -1) {
+      if (lc && lc.answered) {
+        if (lc.hasPassword) {
           pinStateP = null;
           showPinUI("enter", name);
           return "wait";
@@ -1576,6 +1504,7 @@
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
       if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
       if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
+      if (r.error === "ask_admin") { resetPinUI(); showGateError("This account's password is set by the site owner. Please contact him."); return "wait"; }   // fix #1
       showGateError("Couldn't save your password — please try again."); return "wait";
     }
 
@@ -1586,7 +1515,7 @@
     let r = null;
     const fast = await authFast({ op: "check", name, pin });
     if (fast && fast.valid && fast.dt) r = fast;
-    else if (fast && fast.locked) r = { ok: true, valid: false, locked: fast.locked };
+    else if (fast && fast.valid === false && (fast.locked || typeof fast.left === "number")) r = fast;   // fix #3: "4 tries left" ... then locked
     else r = await pinApi({ op: "check", name, pin });
     if (!r || !r.ok) { noteLoginFail(name, "check_failed"); showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
     if (r.valid && !r.dt) {
@@ -1599,7 +1528,7 @@
     gatePinInput.value = "";
     gatePinInput.focus();
     if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot password.`);
-    else showGateError(`Wrong password.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);
+    else showGateError(`Wrong password.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);   // fix #3
     return "wait";
   }
 
@@ -1609,27 +1538,18 @@
   // arrives with the login check. The browser's password manager sees one
   // normal username + password form, so it can fill and offer to save.
   let previewName = "", previewTimer = null;
-  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 220); }
+  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 450); }
   async function previewPasswordBox() {
     const raw = nameInput.value.trim();
     const norm = normalizeName(raw);
     if (norm.length < 2) { if (pinMode) resetPinUI(); previewName = ""; if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden"); return; }
-    const protectedList = (SITE_CONFIG.protectedAccounts && SITE_CONFIG.protectedAccounts.usernames) || [];
-    if (protectedList.includes(norm)) {
-      if (pinMode) resetPinUI();
-      previewName = norm;
-      gatePasswordField.classList.remove("hidden");
-      return;
-    }
-    if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden");
-    const lc = cachedLoginCheck;
-    if (!lc || !lc.pinPrefixes) return;               // not loaded yet: the Continue button still handles it
-    const h = await hashName(raw);
+    // Fix #1: the special accounts no longer have their own password box; they use the normal one.
+    gatePasswordField.classList.add("hidden");
+    const lc = await fetchLoginCheck(raw);           // fix #6: asks the server about this one name
     if (normalizeName(nameInput.value) !== norm) return; // they kept typing
-    const list = SITE_CONFIG.accessList;
-    const allowed = !list || !list.enabled || (list.hashes || []).includes(h) || (lc.accessHashes || []).includes(h);
-    if (!allowed) { if (pinMode) resetPinUI(); previewName = ""; return; }
-    const mode = lc.pinPrefixes.indexOf(h.slice(0, 12)) !== -1 ? "enter" : "create";
+    if (!lc || !lc.answered) return;                  // no answer yet: the Continue button still handles it
+    if (!lc.allowed || lc.suspended || lc.needSurname) { if (pinMode) resetPinUI(); previewName = ""; return; }
+    const mode = lc.hasPassword ? "enter" : "create";
     if (mode === "create") { if (pinMode && previewName) resetPinUI(); previewName = ""; return; }   // the server decides on Continue
     if (pinMode === mode && previewName === norm) return;
     previewName = norm;
@@ -1677,17 +1597,28 @@
       // your own student-facing data. Compared as a salted hash, same
       // model as the access list, so the real phrase never sits in
       // config.js as plain text.
-      if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled && SITE_CONFIG.admin.secretHash) {
-        const candidateHash = await hashAdminSecret(name);
-        if (candidateHash === SITE_CONFIG.admin.secretHash) {
-          // The admin API key is derived from the passphrase but is NOT
-          // the public hash. The legacy key only works until the Apps
-          // Script has ADMIN_API_KEY filled in.
-          adminPhrase = name.trim(); // kept in memory only; sent with each admin request so the server can check it
-          nameInput.value = "";
-          hideGateError();
-          enterAdmin();
-          return;
+      // Fixes #14 / #17: the phrase is no longer compared with a public hash in this browser (that hash
+      // could be cracked offline). Text that is NOT an approved student name and is 8+ characters long is
+      // checked by the Cloudflare Worker, which locks only the connection that guesses wrong. A correct
+      // phrase gives a 3-hour admin pass. Nothing about it is remembered in the browser.
+      if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled && name.length >= 8) {
+        const lc0 = await fetchLoginCheck(name);
+        if (lc0.answered && !lc0.allowed) {
+          let entered = false;
+          const ar = await authFast({ op: "admin", phrase: name });
+          if (ar && ar.valid && ar.proof) { adminProof = ar.proof; adminPhrase = null; entered = true; }
+          else if (ar === null) {
+            // Cloudflare did not answer (or is not set up yet): let the Apps Script check the phrase itself.
+            adminPhrase = name; adminProof = null;
+            if (await adminFetch("authStatus")) entered = true; else adminPhrase = null;
+          }
+          if (entered) {
+            nameInput.value = "";
+            try { localStorage.removeItem("c12_lastname"); } catch (e) {}   // the phrase must not be remembered as a "last name"
+            hideGateError();
+            enterAdmin();
+            return;
+          }
         }
       }
 
@@ -1699,43 +1630,11 @@
       // NOT for the suspended check — even a password holder can
       // still be suspended if something goes wrong.
       const normalizedEntry = normalizeName(name);
-      const protectedList = (SITE_CONFIG.protectedAccounts && SITE_CONFIG.protectedAccounts.usernames) || [];
+      // Fix #1: the 5 special accounts now sign in like every student (name, then the normal password
+      // step below, checked by the fast-login Worker). The old separate password box is gone.
       let credentialsVerified = false;
-      if (protectedList.includes(normalizedEntry)) {
-        const password = gatePasswordInput.value;
-        if (!password) {
-          gatePasswordField.classList.remove("hidden");
-          gatePasswordInput.focus();
-          setGateBusy(false);
-          return;
-        }
-        const result = await checkCredentialsRemote(name, password);
-        if (result === "invalid") {
-          showGateError("Incorrect password.");
-          gatePasswordInput.value = "";
-          gatePasswordInput.focus();
-          return;
-        }
-        if (result === "error") {
-          // The check itself couldn't complete (even after the
-          // built-in retry) — genuinely different from a wrong
-          // password, so it gets an honest message instead, and the
-          // password is deliberately NOT cleared: whatever they typed
-          // was never actually verified either way, so there's no
-          // reason to make them retype it.
-          noteLoginFail(name, "check_failed");
-          showGateError("The server didn't answer in time. Nothing was lost — just press Continue again.");
-          return;
-        }
-        credentialsVerified = true;
-        lastLoginPw = password;
-      } else if (!gatePasswordField.classList.contains("hidden")) {
-        // They'd triggered the password field for an earlier name,
-        // then changed the name field to something that isn't
-        // protected — clear it out so it doesn't linger irrelevantly.
-        gatePasswordField.classList.add("hidden");
-        gatePasswordInput.value = "";
-      }
+      gatePasswordField.classList.add("hidden");
+      gatePasswordInput.value = "";
 
       // Tagged distinctly as "suspended" (not folded into "unauthorized")
       // so the Apps Script backend can tell this specific case apart and
@@ -1751,7 +1650,7 @@
       // isSuspended()/isAuthorized()/isNameActive() below just read
       // the already-resolved, cached result instead of each firing
       // their own request.
-      if (pinMode === null && !credentialsVerified && !(cachedLoginCheck && cachedLoginCheck.pinPrefixes)) pinStateP = pinApi({ op: "state", name });
+      if (pinMode === null && !credentialsVerified && !(cachedLoginCheck && cachedLoginCheck.answered)) pinStateP = pinApi({ op: "state", name });
       const [deviceId, ip] = await Promise.all([
         getDeviceId(),
         getClientIp(),
@@ -1787,7 +1686,9 @@
       }
 
       if (!credentialsVerified && !(await isAuthorized(name))) {
-        logEvent("login", name, "unauthorized", trace);
+        // Fix #17: real names are letters only. Text with digits or symbols is far more likely a mistyped
+        // admin phrase, so it is not written to the Log or emailed.
+        if (!/[^A-Za-z\s.'’-]/.test(name)) logEvent("login", name, "unauthorized", trace);
         // Framed as "not yet approved" rather than a flat rejection —
         // this used to read like a locked door ("you're not
         // authorized"), which doesn't fit a free, word-of-mouth
@@ -2105,6 +2006,7 @@
       ? `viewing: ${currentViewName}`
       : (curFolder ? curFolder.name : curSubject ? curSubject.name : "home");
     hbBusy = true;
+    flushLogQueue();   // fix #25: resend anything that did not get through earlier
     let data = null;
     try {
       const controller = new AbortController();
@@ -2180,12 +2082,9 @@
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0 || !sessionId) return;
     try {
-      const url = new URL(endpoint);
-      url.searchParams.set("action", "claimSession");
-      url.searchParams.set("name", name);
-      url.searchParams.set("sessionId", sessionId);
-      url.searchParams.set("pt", getDt(name));
-      fetch(url.toString()).catch(() => {});
+      // Fix #21: the proof travels inside the request, not in the web address.
+      fetch(endpoint, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ type: "claim", name, sessionId, pt: getDt(name) }) }).catch(() => {});
     } catch {
       // Never let this block login.
     }
@@ -2329,7 +2228,8 @@
       time: new Date().toISOString(),
       page: pageOverride || location.href,
       sessionId: sessionId || "",
-      dt: (type === "heartbeat" || type === "session_end") ? getDt(name || "") : undefined,
+      eventId: makeId(),   // fix #25: lets the server ignore an event that is sent twice
+      dt: getDt(name || "") || undefined,   // proof the person typed their password: marks the log row "Verified"
       viewId: (extra && extra.viewId) || "",
       duration: (extra && extra.duration !== undefined && extra.duration !== null) ? extra.duration : ""
     }));
@@ -2352,15 +2252,67 @@
   window.addEventListener("error", (e) => recordClientError(e.message, (e.filename || "").split("/").pop() + ":" + (e.lineno || 0)));
   window.addEventListener("unhandledrejection", (e) => recordClientError(e.reason && (e.reason.message || e.reason), "promise"));
 
+  // ── Fix #25: reliable activity log ─────────────────────────────────
+  // Every event now (1) asks the server whether it was really saved, (2) is kept on this phone and
+  // sent again later if it wasn't (bad network, busy server), and (3) carries its own id so the
+  // server never writes the same event twice. Events sent while the tab is closing (sendBeacon)
+  // cannot be confirmed, so a copy is kept and re-sent next time; the server drops it if it
+  // already arrived.
+  const LOGQ_KEY = "c12_logq", LOGU_KEY = "c12_logu";
+  function qLoad(k) { try { const a = JSON.parse(localStorage.getItem(k) || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } }
+  function qSave(k, a) { try { localStorage.setItem(k, JSON.stringify(a.slice(-150))); } catch {} }
+  let logFlushing = false;
+  async function postLog(payload) {
+    const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+    if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload, signal: controller.signal });
+      const d = await res.json();
+      return !!(d && d.ok);
+    } catch { return false; } finally { clearTimeout(timer); }
+  }
+  async function flushLogQueue() {
+    if (logFlushing) return;
+    logFlushing = true;
+    try {
+      const q = qLoad(LOGQ_KEY);
+      if (!q.length) return;
+      const keep = [];
+      for (let i = 0; i < q.length; i++) {
+        const it = q[i];
+        if (!it || !it.p || Date.now() - it.at > 47 * 3600 * 1000) continue;
+        if (await postLog(it.p)) continue;
+        it.n = (it.n || 0) + 1;
+        if (it.n < 8) keep.push(it);
+        if (it.n < 8) { keep.push(...q.slice(i + 1)); break; }   // server unreachable: stop and try again later
+      }
+      qSave(LOGQ_KEY, keep);
+    } finally { logFlushing = false; }
+  }
+  async function flushUnsure() {
+    const u = qLoad(LOGU_KEY);
+    if (!u.length) return;
+    qSave(LOGU_KEY, []);
+    for (const it of u) {
+      // Only recent ones: the server remembers event ids for 6 hours, so an older copy could be written twice.
+      if (!it || !it.p || Date.now() - it.at > 5 * 3600 * 1000) continue;
+      if (!(await postLog(it.p))) { const q = qLoad(LOGQ_KEY); q.push({ p: it.p, at: it.at, n: 1 }); qSave(LOGQ_KEY, q); }
+    }
+  }
+  window.addEventListener("online", () => { flushLogQueue(); });
+  setTimeout(() => { flushUnsure().then(flushLogQueue); }, 4000);
+
   function logEvent(type, name, detail, pageOverride, extra) {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
-    fetch(endpoint, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: buildLogPayload(type, name, detail, pageOverride, extra)
-    }).catch(() => {});
+    const payload = buildLogPayload(type, name, detail, pageOverride, extra);
+    postLog(payload).then((ok) => {
+      if (ok) { if (qLoad(LOGQ_KEY).length) flushLogQueue(); return; }
+      if (type === "heartbeat") return;
+      const q = qLoad(LOGQ_KEY); q.push({ p: payload, at: Date.now(), n: 1 }); qSave(LOGQ_KEY, q);
+    });
   }
 
   // Same as logEvent, but for events that need to survive the tab
@@ -2372,6 +2324,7 @@
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return;
     const payload = buildLogPayload(type, name, detail, pageOverride, extra);
+    if (type !== "heartbeat") { const u = qLoad(LOGU_KEY); u.push({ p: payload, at: Date.now() }); qSave(LOGU_KEY, u); }
     if (navigator.sendBeacon) {
       try {
         if (navigator.sendBeacon(endpoint, payload)) return;
@@ -5044,6 +4997,7 @@
   //    name like <b>x</b> can never run as code.
 
   let adminPhrase = null;
+  let adminProof = null;   // 3-hour admin pass from Cloudflare (fix #14)
   let adminApiKey = null; // no longer used
   let adminPresenceTimer = null;
   let adminClockTimer = null;
@@ -5077,7 +5031,7 @@
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ type: "admin", action, phrase: adminPhrase, params: params || {} }),
+        body: JSON.stringify({ type: "admin", action, phrase: adminProof ? undefined : adminPhrase, proof: adminProof || undefined, params: params || {} }),
         signal: controller.signal
       });
       let data = null;
@@ -5094,7 +5048,8 @@
       if (data && data.ok) return data;
       const err = data && data.error;
       if (err === "unauthorized") {
-        lastAdminError = "The server rejected the admin passphrase. In the Apps Script, ADMIN_KEY must equal admin.secretHash and ADMIN_SALT must equal admin.salt from config.js.";
+        adminProof = null;
+        lastAdminError = "The admin pass was not accepted (it lasts 3 hours). Reload the page and type your admin phrase again. If it keeps failing, check that ADMIN_PROOF_SECRET is the same in the Apps Script and in the class12-api-cache Worker.";   // fix #27
       } else if (err) lastAdminError = "Server said: " + err;
       else lastAdminError = "The server refused the request.";
       return null;

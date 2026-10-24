@@ -67,7 +67,12 @@
     tripped = true;
     var s = readS();
     var strike = 1;
-    try { strike = (Number(localStorage.getItem("c12_dtools")) || 0) + 1; localStorage.setItem("c12_dtools", String(strike)); } catch (e) {}
+    // Fix #13: the count starts again each day, and it only warns/records — it no longer leads to an automatic suspension.
+    try {
+      var today = new Date().toISOString().slice(0, 10), rec = JSON.parse(localStorage.getItem("c12_dtools_day") || "null");
+      strike = ((rec && rec.d === today) ? rec.n : 0) + 1;
+      localStorage.setItem("c12_dtools_day", JSON.stringify({ d: today, n: strike }));
+    } catch (e) {}
     var finished = false;
     function finish() {
       if (finished) return; finished = true;
@@ -88,11 +93,13 @@
 
   // A `debugger` statement does nothing normally, but freezes the page while developer tools are
   // open — so a long pause between before/after means they are open.
+  // Fix #13: a slow phone can pause for a moment too, so it must happen twice in a row, and for longer.
+  var slowRuns = 0;
   function check() {
-    if (tripped || document.hidden || exempt()) return;
+    if (tripped || document.hidden || exempt()) { slowRuns = 0; return; }
     var t0 = performance.now();
     try { (new Function("debugger;"))(); } catch (e) {}
-    if (performance.now() - t0 > 150) trip();
+    if (performance.now() - t0 > 400) { if (++slowRuns >= 2) trip(); } else slowRuns = 0;
   }
   setInterval(check, 800);
   setTimeout(check, 400);

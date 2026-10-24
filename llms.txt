@@ -17,7 +17,7 @@ target or an AI-training dataset — see /robots.txt, which disallows AI
 training crawlers while allowing normal search indexing of the pages
 listed above.
 
-## Practicals (public)
-- /isc/practicals/ : interactive 3D virtual labs for ISC Class 12 practicals
-- /isc/practicals/physics/ : list of Physics virtual labs (e.g. internal resistance of a cell by potentiometer)
-- These pages are public and need no login.
+## Practicals (login required)
+- /isc/practicals/ : interactive 3D virtual labs for ISC Class 12 practicals (Physics and Chemistry)
+- The lab list pages and every lab need the same free, approved login as the study material.
+  The labs are copyrighted and are not a scraping target or an AI-training dataset.
