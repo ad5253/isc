@@ -1034,9 +1034,7 @@
       if (gm) {
         localStorage.removeItem("c12_guard_msg");
         if (Date.now() - gm.t < 15 * 60 * 1000 && !gate.classList.contains("hidden")) {
-          showGateError(gm.strike >= 2
-            ? "Developer tools were detected again today. This has been recorded and reported to the site owner, who may suspend the account."
-            : "Developer tools were detected, so you have been signed out. This has been recorded and reported to the site owner. If you were not doing this, just sign in again.");
+          showGateError("Developer tools were detected, so this account has been suspended and the site owner has been told. If this was a mistake, message him on WhatsApp.");
         }
       }
     } catch (e) {}

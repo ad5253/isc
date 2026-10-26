@@ -30,7 +30,6 @@
   // The browser's Print > "Save as PDF" would copy what is on the screen, so printing gives a blank page.
   (function noPrint() {
     try {
-      if (localStorage.getItem("c12_admin_ok") === "1" || window.__c12Admin) return;
       var st = document.createElement("style"); st.textContent = "@media print{html,body{display:none!important}}";
       (document.head || document.documentElement).appendChild(st);
     } catch (e) {}
@@ -38,10 +37,8 @@
 
   // ── 2) developer-tools guard ───────────────────────────────
   var tripped = false;
-  function exempt() {
-    try { if (localStorage.getItem("c12_admin_ok") === "1") return true; } catch (e) {}
-    return !!window.__c12Admin;
-  }
+  // No exemption: a browser flag like "I am the admin" can be faked by anyone with a bookmark.
+  function exempt() { return false; }
 
   function send(name, sid, strike, done) {
     var proof = "";
