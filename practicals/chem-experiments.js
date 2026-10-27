@@ -162,5 +162,12 @@ window.CHEMISTRY_EXPERIMENTS = [
     title: "Salt Analysis Exam \u2013 Identify the Unknown Salt",
     blurb: "Exam mode: a random salt is given. Find its anion, cation and the salt on your own.",
     tag: "Exam mode"
+  },
+  {
+    slug: "exam-identify-unknown",
+    num: 24,
+    title: "Characteristic Tests Exam \u2013 Identify the Unknown",
+    blurb: "Exam mode: do the characteristic tests on an unknown sample and identify it on your own.",
+    tag: "Exam mode"
   }
 ];
