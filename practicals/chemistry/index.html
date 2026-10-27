@@ -15,7 +15,7 @@
     <meta property="og:image" content="https://ad5253.github.io/isc/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="../../style.css?v=51">
-    <link rel="stylesheet" href="../../practicals/practicals.css?v=4">
+    <link rel="stylesheet" href="../../practicals/practicals.css?v=5">
     <link rel="icon" type="image/svg+xml" href="../../favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="../../favicon-32.png">
     <link rel="apple-touch-icon" href="../../apple-touch-icon.png">
@@ -154,7 +154,7 @@
   var CHEV = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
   exps.forEach(function (e) {
     var a = document.createElement("a");
-    a.className = "subfolder fade-up"; a.href = e.slug + "/";
+    a.className = "subfolder fade-up" + (e.tag === "Exam mode" ? " subfolder--exam" : ""); a.href = e.slug + "/";
     var ic = document.createElement("div"); ic.className = "subfolder__icon exp-num"; ic.textContent = e.num;
     var info = document.createElement("div"); info.className = "subfolder__info";
     var nm = document.createElement("div"); nm.className = "subfolder__name"; nm.textContent = e.title;
