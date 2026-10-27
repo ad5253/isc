@@ -155,5 +155,12 @@ window.CHEMISTRY_EXPERIMENTS = [
     title: "Salt Analysis VIII \u2013 Ammonium Oxalate ((NH\u2084)\u2082C\u2082O\u2084)",
     blurb: "Identify the cation and anion in an unknown salt using dry and wet tests.",
     tag: "Salt analysis"
+  },
+  {
+    slug: "salt-analysis-exam",
+    num: 23,
+    title: "Salt Analysis Exam \u2013 Identify the Unknown Salt",
+    blurb: "Exam mode: a random salt is given. Find its anion, cation and the salt on your own.",
+    tag: "Exam mode"
   }
 ];
