@@ -133,3 +133,51 @@
   window.addEventListener("keydown", blockKeys, true);
   document.addEventListener("keydown", blockKeys, true);
 })();
+
+/* Screenshot deterrent: the page is covered the moment the window loses focus, the Windows/Cmd key is held
+   (screenshot tools start with it), PrintScreen is pressed, or the tab goes to the background. */
+(function () {
+  if (window.__c12Shot) return; window.__c12Shot = 1;
+  var cover = null, held = false, until = 0, tm = 0, blurred = false;
+  function make() {
+    var d = document.createElement("div");
+    d.id = "c12-shot-cover";
+    d.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483647;background:#0b0b0e;color:#d9c48a;display:flex;align-items:center;justify-content:center;text-align:center;font:600 16px system-ui,sans-serif;padding:24px;";
+    d.textContent = "Content hidden. Screenshots and screen capture are not allowed on this site.";
+    return d;
+  }
+  function show() {
+    if (!cover) cover = make();
+    if (!cover.parentNode) (document.body || document.documentElement).appendChild(cover);
+  }
+  function hide() { if (cover && cover.parentNode) cover.parentNode.removeChild(cover); }
+  function update() {
+    if (held || blurred || document.hidden || Date.now() < until) show(); else hide();
+  }
+  function hold(ms) { until = Date.now() + ms; show(); clearTimeout(tm); tm = setTimeout(update, ms + 30); }
+  function scrub() {
+    try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText("Screenshots are not allowed on this site."); } catch (e) {}
+  }
+  window.addEventListener("blur", function () { blurred = true; update(); }, true);
+  window.addEventListener("focus", function () { blurred = false; held = false; update(); }, true);
+  document.addEventListener("visibilitychange", update, true);
+  window.addEventListener("pagehide", show, true);
+  window.addEventListener("keydown", function (e) {
+    var k = e.key;
+    if (k === "Meta" || k === "OS" || k === "Super" || e.metaKey) { held = true; show(); }
+    if (k === "PrintScreen" || k === "Snapshot" || e.keyCode === 44) { scrub(); hold(2500); }
+  }, true);
+  window.addEventListener("keyup", function (e) {
+    var k = e.key;
+    if (k === "PrintScreen" || k === "Snapshot" || e.keyCode === 44) { scrub(); hold(2500); }
+    if (k === "Meta" || k === "OS" || k === "Super" || !e.metaKey) { if (k === "Meta" || k === "OS" || k === "Super") held = false; }
+    update();
+  }, true);
+  // long-press "save image" and dragging pictures out of the page
+  try {
+    var st = document.createElement("style");
+    st.textContent = "img,canvas,video{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none}";
+    (document.head || document.documentElement).appendChild(st);
+  } catch (e) {}
+  window.addEventListener("dragstart", function (e) { e.preventDefault(); }, true);
+})();

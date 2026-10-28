@@ -1411,6 +1411,44 @@
     });
   }
 
+  // ── Easy-password lock ─────────────────────────────────
+  const WEAK_PW_MSG = "That password is too easy to guess (like 1234, abcd or password). Please choose a harder one — mix letters and numbers.";
+  // Easy-to-guess password check. Same text is used on the website and in the Apps Script.
+  var C12_COMMON = ["password","passw0rd","pass","passcode","admin","administrator","welcome","letmein","iloveyou","monkey","dragon","master","login","abc","abcd","abcde","abcdef","abcdefg","abcdefgh","qwerty","qwertyuiop","qwert","asdf","asdfg","asdfgh","asdfghjkl","zxcv","zxcvb","zxcvbn","football","cricket","baseball","sunshine","princess","shadow","superman","batman","hello","test","testing","user","guest","india","indian","vapi","school","student","study","studying","class","class12","isc","isc12","isc2026","isc2027","chemistry","physics","maths","math","love","lovely","secret","whatever","trustno1","google","flower","freedom","starwars","computer","internet","naruto","pokemon","samsung","iphone","android","qazwsx","iloveyou","mypassword","changeme","default","temp","temporary","number","numbers","ramram","jaishreeram","krishna","ganesh","sairam","shiva","radhe","pyaar","bhagwan","mumbai","gujarat","ilovemaths","hunter","killer","soccer","harley","ranger","michael","jordan","ashley","jessica","charlie","donald","bailey","summer","winter","august","october"];
+  var C12_NUMS = ["000000","00000000","0123456789","0987654321","1234567890","987654321","147258369","159753","123321","654321","112233","121212","123123","696969","102030","1357911","13579","24680","2468","1q2w3e","1q2w3e4r","1qaz2wsx","q1w2e3r4","a1b2c3","a1b2c3d4","abc123","abc1234","abcd1234","aaa111","aaaaaa","qwe123","qwerty123","asd123","zxc123"];
+  function c12WeakPassword(pw, name) {
+    var p = String(pw || ""), l = p.toLowerCase(), n, i;
+    if (!l) return "";
+    if (/^(.)\1*$/.test(l)) return "same";                                              // 1111, aaaa
+    for (n = 1; n <= Math.floor(l.length / 2); n++) {                                    // 121212, abcabc
+      if (l.length % n === 0 && new Array(l.length / n + 1).join(l.slice(0, n)) === l) return "repeat";
+    }
+    if (C12_NUMS.indexOf(l) !== -1) return "common";
+    var rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm", "1234567890", "qazwsxedc", "poiuytrewq", "lkjhgfdsa", "mnbvcxz"];
+    for (i = 0; i < rows.length; i++) { if (l.length >= 4 && rows[i].indexOf(l) !== -1) return "keyboard"; }
+    var best = 1, run = 1, dir = 0;                                                      // 1234567878, abcdefg, 9876
+    for (i = 1; i < l.length; i++) {
+      var d = l.charCodeAt(i) - l.charCodeAt(i - 1);
+      if ((d === 1 || d === -1) && (dir === 0 || d === dir)) { run++; dir = d; } else { run = (d === 1 || d === -1) ? 2 : 1; dir = (d === 1 || d === -1) ? d : 0; }
+      if (run > best) best = run;
+    }
+    if (best >= 4 && best >= l.length * 0.6) return "sequence";
+    if (/^[0-9]+$/.test(l)) {
+      var seen = {}, k = 0; for (i = 0; i < l.length; i++) { if (!seen[l.charAt(i)]) { seen[l.charAt(i)] = 1; k++; } }
+      if (k <= 3) return "numbers";                                                      // 1122, 1212, 1000
+      if (l.length < 6) return "short-numbers";                                          // 4-5 digit PINs are guessed in seconds
+    }
+    var base = l.replace(/[^a-z]+$/, ""), lead = l.replace(/^[^a-z]+/, "");
+    if (base.length >= 3 && C12_COMMON.indexOf(base) !== -1 && /^[^a-z]*$/.test(l.slice(base.length))) return "common";   // password123, qwerty@1
+    if (lead.length >= 3 && C12_COMMON.indexOf(lead) !== -1 && /^[^a-z]*$/.test(l.slice(0, l.length - lead.length))) return "common";
+    if (C12_COMMON.indexOf(l) !== -1) return "common";
+    var parts = String(name || "").toLowerCase().split(/[^a-z]+/).filter(function (w) { return w.length >= 3; });
+    var whole = parts.join("");
+    if (whole && (base === whole || lead === whole)) return "name";
+    for (i = 0; i < parts.length; i++) { if (parts[i].length >= 4 && (base === parts[i] || lead === parts[i])) return "name"; }
+    return "";
+  }
+
   function resetPinUI() {
     pinMode = null;
     gatePinBox.classList.add("hidden");
@@ -1495,6 +1533,7 @@
     if (pinMode === "create") {
       const pin = gatePinInput.value;
       if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
+      if (c12WeakPassword(pin, name)) { showGateError(WEAK_PW_MSG); gatePinInput.focus(); return "wait"; }
       if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
       lastLoginPw = pin;
       const r = await pinApi({ op: "set", name, pin });
@@ -1502,6 +1541,7 @@
       if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
       if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
       if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
+      if (r.error === "weak_pin") { showGateError(WEAK_PW_MSG); return "wait"; }
       if (r.error === "ask_admin") { resetPinUI(); showGateError("This account's password is set by the site owner. Please contact him."); return "wait"; }   // fix #1
       showGateError("Couldn't save your password — please try again."); return "wait";
     }
@@ -4136,20 +4176,25 @@
   }
 
   function drawWatermark(ctx, canvas) {
+    // Name + date/time repeated all over every page (tight grid, so a cropped screenshot still carries it).
+    // A leaked screenshot therefore shows exactly who took it and when.
     const label = SITE_CONFIG.siteUrl || "unknown";
+    const who = (currentName || "").trim().slice(0, 30);
+    const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
+    const stamp = `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
     ctx.save();
-    ctx.globalAlpha = 0.09;
+    ctx.globalAlpha = 0.13;
     ctx.fillStyle = "#000";
-    ctx.font = `${Math.round(canvas.width / 22)}px Archivo, sans-serif`;
+    ctx.font = `${Math.round(canvas.width / 30)}px Archivo, sans-serif`;
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate(-Math.PI / 6);
-    const stepX = canvas.width * 0.6;
-    const stepY = canvas.height * 0.22;
-    const who = (currentName || "").trim().slice(0, 30);
+    const stepX = canvas.width * 0.46;
+    const stepY = canvas.height * 0.12;
     let row = 0;
     for (let y = -canvas.height; y < canvas.height; y += stepY, row++) {
+      const off = (row % 2) * stepX * 0.5;
       for (let x = -canvas.width; x < canvas.width; x += stepX) {
-        ctx.fillText(who && row % 2 ? who : label, x, y);
+        ctx.fillText(who ? (row % 3 === 0 ? `${who} · ${stamp}` : who) : label, x + off, y);
       }
     }
     ctx.restore();
@@ -6314,6 +6359,7 @@
         const v = await showPrompt(`New password for "${name}" (4–32 characters):`, r.known ? r.password : "");
         if (v === null) return;
         if (v.length < 4 || v.length > 32) { showToast("Password must be 4 to 32 characters.", true); return; }
+        if (c12WeakPassword(v, name)) { showToast(WEAK_PW_MSG, true); return; }
         const res = await act("setPassword", { name, password: v }, `Password updated for ${name}.`, `Couldn't update the password for ${name}`);
         if (res) { r.hasPassword = true; r.known = true; r.password = v; r.locked = false; shown = true; draw(); if (person) person.hasPin = true; }
       }
