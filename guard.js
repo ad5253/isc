@@ -134,11 +134,14 @@
   document.addEventListener("keydown", blockKeys, true);
 })();
 
-/* Screenshot deterrent: the page is covered the moment the window loses focus, the Windows/Cmd key is held
-   (screenshot tools start with it), PrintScreen is pressed, or the tab goes to the background. */
+/* Screenshot deterrent (desktop only). The page is covered while the window is not the active one, while the
+   Windows/Cmd key is held (screenshot tools start with it) and briefly after PrintScreen.
+   Phones/tablets: screenshots can't be detected there, so nothing is covered except while the page is in the background. */
 (function () {
   if (window.__c12Shot) return; window.__c12Shot = 1;
-  var cover = null, held = false, until = 0, tm = 0, blurred = false;
+  var touch = false;
+  try { touch = (window.matchMedia && matchMedia("(pointer:coarse)").matches) || (("ontouchstart" in window) && navigator.maxTouchPoints > 0); } catch (e) {}
+  var cover = null, held = 0, until = 0, away = false;
   function make() {
     var d = document.createElement("div");
     d.id = "c12-shot-cover";
@@ -146,34 +149,41 @@
     d.textContent = "Content hidden. Screenshots and screen capture are not allowed on this site.";
     return d;
   }
-  function show() {
-    if (!cover) cover = make();
-    if (!cover.parentNode) (document.body || document.documentElement).appendChild(cover);
-  }
+  function show() { if (!cover) cover = make(); if (!cover.parentNode) (document.body || document.documentElement).appendChild(cover); }
   function hide() { if (cover && cover.parentNode) cover.parentNode.removeChild(cover); }
   function update() {
-    if (held || blurred || document.hidden || Date.now() < until) show(); else hide();
+    var now = Date.now();
+    if (held && now - held > 2500) held = 0;                      // a key-up that never arrived must not leave the page covered
+    var on = document.hidden || now < until || (!touch && (held || away));
+    if (on) show(); else hide();
   }
-  function hold(ms) { until = Date.now() + ms; show(); clearTimeout(tm); tm = setTimeout(update, ms + 30); }
-  function scrub() {
-    try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText("Screenshots are not allowed on this site."); } catch (e) {}
+  // Only the WINDOW losing focus counts, not a text box inside the page (capture phase would also see those).
+  window.addEventListener("blur", function (e) { if (e.target !== window) return; away = true; update(); }, true);
+  window.addEventListener("focus", function (e) { if (e.target !== window) return; away = false; held = 0; update(); }, true);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { away = false; held = 0; } update(); }, true);
+  window.addEventListener("pageshow", function () { away = false; held = 0; until = 0; update(); }, true);
+  // Safety net: any real use of the page proves it has focus, so a stuck cover is always released.
+  ["pointerdown", "pointermove", "touchstart", "click", "input", "wheel"].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      if (away && document.hasFocus()) away = false;
+      if (held && e && e.metaKey === false) held = 0;
+      if (Date.now() >= until) update();
+    }, { capture: true, passive: true });
+  });
+  setInterval(function () { if (away && document.hasFocus()) away = false; update(); }, 1200);
+  if (!touch) {
+    var scrub = function () { try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText("Screenshots are not allowed on this site."); } catch (e) {} };
+    var snap = function (e) { return e.key === "PrintScreen" || e.key === "Snapshot" || e.keyCode === 44; };
+    window.addEventListener("keydown", function (e) {
+      if (e.key === "Meta" || e.key === "OS" || e.key === "Super") { held = Date.now(); show(); }
+      if (snap(e)) { scrub(); until = Date.now() + 2500; show(); setTimeout(update, 2600); }
+    }, true);
+    window.addEventListener("keyup", function (e) {
+      if (e.key === "Meta" || e.key === "OS" || e.key === "Super") held = 0;
+      if (snap(e)) { scrub(); until = Date.now() + 2500; show(); setTimeout(update, 2600); }
+      update();
+    }, true);
   }
-  window.addEventListener("blur", function () { blurred = true; update(); }, true);
-  window.addEventListener("focus", function () { blurred = false; held = false; update(); }, true);
-  document.addEventListener("visibilitychange", update, true);
-  window.addEventListener("pagehide", show, true);
-  window.addEventListener("keydown", function (e) {
-    var k = e.key;
-    if (k === "Meta" || k === "OS" || k === "Super" || e.metaKey) { held = true; show(); }
-    if (k === "PrintScreen" || k === "Snapshot" || e.keyCode === 44) { scrub(); hold(2500); }
-  }, true);
-  window.addEventListener("keyup", function (e) {
-    var k = e.key;
-    if (k === "PrintScreen" || k === "Snapshot" || e.keyCode === 44) { scrub(); hold(2500); }
-    if (k === "Meta" || k === "OS" || k === "Super" || !e.metaKey) { if (k === "Meta" || k === "OS" || k === "Super") held = false; }
-    update();
-  }, true);
-  // long-press "save image" and dragging pictures out of the page
   try {
     var st = document.createElement("style");
     st.textContent = "img,canvas,video{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none}";

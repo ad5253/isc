@@ -637,9 +637,16 @@
     const list = SITE_CONFIG.accessList;
     if (list && list.enabled === false) return true;
     // Fix #6: the browser no longer holds the class list. The server answers only about this one name.
-    const remote = await fetchLoginCheck(name);
-    if (remote.answered) return remote.allowed;
-    return false;   // if the server can't be reached, the password step and PDF/lab gate still protect everything
+    // A slow or busy server is NOT the same as "this name is not approved". Ask again a few times; if the
+    // server still has not answered, return null ("don't know") so nobody is wrongly told they are not
+    // authorized (and no false "unauthorized" report / email is created). The password step and the PDF/lab
+    // gate on the server still protect everything.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const remote = await fetchLoginCheck(name);
+      if (remote.answered) return remote.allowed;
+      await new Promise((r) => setTimeout(r, 600 + attempt * 700));
+    }
+    return null;
   }
 
   // ── Consolidated remote login check ──────────────────────────────
@@ -1006,7 +1013,7 @@
       showApp(saved);
       endResume();
       Promise.all([isSuspended(saved), isAuthorized(saved)]).then(([sus, ok]) => {
-        if (sus || !ok) {
+        if (sus || ok === false) {
           try { localStorage.removeItem("c12_keep"); sessionStorage.removeItem("c12_authok"); } catch (e) {}
           clearSession();
           location.reload();
@@ -1018,7 +1025,7 @@
       gate.classList.remove("hidden");
       app.classList.add("hidden");
       showGateError((SITE_CONFIG.suspended && SITE_CONFIG.suspended.message) || "You are not able to access this page.");
-    } else if (saved && (await isAuthorized(saved))) {
+    } else if (saved && (await isAuthorized(saved)) !== false) {   // null = server did not answer: keep them signed in
       gate.classList.add("hidden");
       showApp(saved);
     } else {
@@ -1723,7 +1730,14 @@
         return;
       }
 
-      if (!credentialsVerified && !(await isAuthorized(name))) {
+      const authState = credentialsVerified ? true : await isAuthorized(name);
+      if (authState === null) {
+        // The server did not answer in time (many students signing in at once). This says NOTHING about the
+        // name, so it is never reported as "unauthorized".
+        showGateError("The server is busy right now because many students are signing in. Your name is fine, please press Continue again in a few seconds.");
+        return;
+      }
+      if (!credentialsVerified && authState === false) {
         // Fix #17: real names are letters only. Text with digits or symbols is far more likely a mistyped
         // admin phrase, so it is not written to the Log or emailed.
         if (!/[^A-Za-z\s.'’-]/.test(name)) logEvent("login", name, "unauthorized", trace);
