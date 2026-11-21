@@ -94,10 +94,6 @@
                     <input type="text" id="nameInput" name="username" class="gate__input" placeholder="Your name" aria-label="Your name" required autocomplete="username" autocapitalize="words" autocorrect="off" spellcheck="false" minlength="2" enterkeyhint="go">
                     <span class="gate__field-line"></span>
                 </div>
-                <div class="gate__field gate__field--password hidden" id="gatePasswordField">
-                    <input type="password" id="gatePasswordInput" name="password" class="gate__input" placeholder="Password" aria-label="Password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
-                    <span class="gate__field-line"></span>
-                </div>
                 <div class="gate__pin hidden" id="gatePinBox">
                     <p class="gate__pin-hint" id="gatePinHint" role="status" aria-live="polite"></p>
                     <div class="gate__field">
@@ -105,7 +101,7 @@
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__field hidden" id="gatePinConfirmField">
-                        <input type="password" id="gatePinConfirm" name="confirm-password" class="gate__input" placeholder="Repeat password" maxlength="32" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Repeat password">
+                        <input type="password" id="gatePinConfirm" name="confirm-password" disabled class="gate__input" placeholder="Repeat password" maxlength="32" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Repeat password">
                         <span class="gate__field-line"></span>
                     </div>
                     <div class="gate__pin-links">
@@ -732,7 +728,7 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=7"></script>
-    <script defer src="script.js?v=63"></script>
+    <script defer src="script.js?v=64"></script>
     <script>
         // Online only: remove any offline copy a browser may have saved earlier.
         if ("serviceWorker" in navigator) {

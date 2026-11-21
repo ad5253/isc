@@ -391,8 +391,8 @@
   const viewerPageTotal   = $("#viewerPageTotal");
   const viewerFitWidth    = $("#viewerFitWidth");
   const viewerFitPage     = $("#viewerFitPage");
-  const gatePasswordField = $("#gatePasswordField");
-  const gatePasswordInput = $("#gatePasswordInput");
+  const gatePasswordField = $("#gatePasswordField") || document.createElement("div");   // removed from the page on purpose (one password box only)
+  const gatePasswordInput = $("#gatePasswordInput") || document.createElement("input");
   const gateBtn     = $(".gate__btn");
   const gatePinBox = $("#gatePinBox");
   const gatePinHint = $("#gatePinHint");
@@ -667,8 +667,12 @@
   let cachedLoginCheckAt = 0;
   let loginCheckInFlight = null;
   let loginCheckInFlightName = "";
-  function fetchLoginCheck(name) {
+  function fetchLoginCheck(name, opts) {
     const norm = normalizeName(name || "");
+    if (opts && opts.fast) {   // admin-phrase check: only the instant answer, never wait for Apps Script
+      if (cachedLoginCheck && cachedLoginCheckName === norm && Date.now() - cachedLoginCheckAt <= 40000) return Promise.resolve(cachedLoginCheck);
+      return fetchLoginCheckNow(name, opts);
+    }
     if (cachedLoginCheck && (cachedLoginCheckName !== norm || Date.now() - cachedLoginCheckAt > 40000)) cachedLoginCheck = null;
     if (cachedLoginCheck) return Promise.resolve(cachedLoginCheck);
     if (!loginCheckInFlight || loginCheckInFlightName !== norm) {
@@ -677,7 +681,7 @@
     }
     return loginCheckInFlight;
   }
-  async function fetchLoginCheckNow(name) {
+  async function fetchLoginCheckNow(name, opts) {
     const norm = normalizeName(name || "");
     const unanswered = { answered: false, allowed: false, suspended: false, deviceBlocked: false, hasPassword: false, needSurname: false };
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
@@ -686,7 +690,9 @@
     try {
       let device = "";
       try { device = await getDeviceId(); } catch (e) {}
-      const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}&device=${encodeURIComponent(device)}`, cacheBase() ? 4000 : 3000).catch(() => null);
+      const fastOnly = !!(opts && opts.fast && cacheBase());
+      const data = await fetchPublic("loginCheck", `&name=${encodeURIComponent(name || "")}&device=${encodeURIComponent(device)}${fastOnly ? "&fast=1" : ""}`, 5000, cacheBase() ? (fastOnly ? 2500 : 25000) : 0).catch(() => null);
+      if (data && data.unknown) return Object.assign({}, unanswered, { unknownFast: true });
       if (data && data.ok) {
         cachedLoginCheck = {
           answered: true,
@@ -1063,7 +1069,17 @@
       if (ln && !nameInput.value) nameInput.value = ln;
       if (gateKeep && localStorage.getItem("c12_keep") !== null) gateKeep.checked = true;
     } catch (e) {}
-    [gatePasswordInput, gatePinInput, gatePinConfirm].forEach(addEyeButton);
+    try { gatePasswordField.remove(); } catch (e) {}   // the old separate password box (unused since fix #1) confused the browser's password manager
+    [gatePinInput, gatePinConfirm].forEach(addEyeButton);
+    // Name remembered + password known on this device -> show both boxes at once (no waiting at all).
+    try {
+      const ln0 = nameInput.value.trim();
+      if (ln0 && normalizeName(ln0).length >= 2 && knowsHasPassword(ln0) && !SURNAME_REQUIRED.includes(normalizeName(ln0))) {
+        previewName = normalizeName(ln0);
+        showPinUI("enter", ln0, { noFocus: true });
+        setTimeout(() => { try { gatePinInput.focus(); } catch {} }, 60);
+      }
+    } catch (e) {}
     fetchLoginCheck("").then(schedulePreview).catch(() => {});
     schedulePreview();
     // Mandatory so an approval can actually be followed up on — the
@@ -1367,6 +1383,10 @@
   let pinMode = null;
   let pinStateP = null; // started in parallel with the other login checks
   const dtKey = (name) => "c12_dt_" + normalizeName(name);
+  // "This name has a password" is remembered on this device after a successful sign-in, so next time the
+  // username + password boxes are on screen immediately, before any server answer.
+  function rememberHasPassword(name) { try { localStorage.setItem("c12_haspw_" + normalizeName(name), "1"); } catch {} }
+  function knowsHasPassword(name) { try { return localStorage.getItem("c12_haspw_" + normalizeName(name)) === "1"; } catch { return false; } }
   function getDt(name) { try { return localStorage.getItem(dtKey(name)) || ""; } catch { return ""; } }
   function setDt(name, v) { try { if (v) localStorage.setItem(dtKey(name), v); else localStorage.removeItem(dtKey(name)); } catch {} }
 
@@ -1456,11 +1476,15 @@
     return "";
   }
 
-  function resetPinUI() {
+  function resetPinUI(keepTyped) {
     pinMode = null;
     gatePinBox.classList.add("hidden");
-    gatePinInput.value = "";
+    // After a correct password the typed text is left in the box for a moment: the browser's
+    // "Save password?" prompt reads it as the gate closes (clearing it first made Chrome skip the offer).
+    if (!keepTyped) gatePinInput.value = "";
+    else setTimeout(() => { gatePinInput.value = ""; }, 2500);
     gatePinConfirm.value = "";
+    gatePinConfirm.disabled = true;
     gatePinConfirmField.classList.add("hidden");
     gatePinForgot.classList.add("hidden");
     if (gatePinAsk) { gatePinAsk.classList.add("hidden"); gatePinAsk.disabled = false; gatePinAsk.textContent = "Ask admin to reset it"; }
@@ -1473,6 +1497,7 @@
     gatePinConfirm.value = "";
     const create = mode === "create";
     gatePinConfirmField.classList.toggle("hidden", !create);
+    gatePinConfirm.disabled = !create;   // a hidden 2nd password box made Chrome think this was a "change password" form
     gatePinInput.autocomplete = create ? "new-password" : "current-password";
     gatePinInput.placeholder = "Password";
     gatePinForgot.classList.toggle("hidden", create);
@@ -1545,7 +1570,7 @@
       lastLoginPw = pin;
       const r = await pinApi({ op: "set", name, pin });
       if (!r) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
-      if (r.ok) { setDt(name, r.dt); resetPinUI(); return "ok"; }
+      if (r.ok) { setDt(name, r.dt); rememberHasPassword(name); resetPinUI(true); return "ok"; }
       if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
       if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
       if (r.error === "weak_pin") { showGateError(WEAK_PW_MSG); return "wait"; }
@@ -1569,7 +1594,7 @@
       showGateError("Please choose a new password to continue.");
       return "wait";
     }
-    if (r.valid) { setDt(name, r.dt); resetPinUI(); return "ok"; }
+    if (r.valid) { setDt(name, r.dt); rememberHasPassword(name); resetPinUI(true); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
     if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot password.`);
@@ -1583,7 +1608,7 @@
   // arrives with the login check. The browser's password manager sees one
   // normal username + password form, so it can fill and offer to save.
   let previewName = "", previewTimer = null;
-  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 450); }
+  function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 120); }
   async function previewPasswordBox() {
     const raw = nameInput.value.trim();
     const norm = normalizeName(raw);
@@ -1647,8 +1672,8 @@
       // checked by the Cloudflare Worker, which locks only the connection that guesses wrong. A correct
       // phrase gives a 3-hour admin pass. Nothing about it is remembered in the browser.
       if (SITE_CONFIG.admin && SITE_CONFIG.admin.enabled && name.length >= 8) {
-        const lc0 = await fetchLoginCheck(name);
-        if (lc0.answered && !lc0.allowed) {
+        const lc0 = await fetchLoginCheck(name, { fast: true });
+        if ((lc0.answered && !lc0.allowed) || lc0.unknownFast) {
           let entered = false;
           const ar = await authFast({ op: "admin", phrase: name });
           if (ar && ar.valid && ar.proof) { adminProof = ar.proof; adminPhrase = null; entered = true; }
@@ -1893,12 +1918,12 @@
     const u = SITE_CONFIG.apiCache && SITE_CONFIG.apiCache.url;
     return (u && /^https:\/\//.test(u)) ? u.replace(/\/+$/, "") : "";
   }
-  async function fetchPublic(action, extraQuery, timeoutMs) {
+  async function fetchPublic(action, extraQuery, timeoutMs, workerTimeoutMs) {
     const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
     if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) throw new Error("not_configured");
-    const once = async (base, q) => {
+    const once = async (base, q, tmo) => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const timer = setTimeout(() => controller.abort(), tmo || timeoutMs);
       try {
         const res = await fetch(`${base}?action=${action}${q || ""}`, { signal: controller.signal });
         const data = await res.json();
@@ -1907,7 +1932,9 @@
       } finally { clearTimeout(timer); }
     };
     const cb = cacheBase();
-    if (cb) { try { return await once(cb, ""); } catch {} }
+    // loginCheck (workerTimeoutMs given): the Worker answers in ~50 ms from its own copy and only asks
+    // Apps Script for names it does not know, so it gets the question AND a longer time to answer.
+    if (cb) { try { return await once(cb, workerTimeoutMs ? extraQuery : "", workerTimeoutMs); } catch {} }
     return once(endpoint, extraQuery);
   }
 
@@ -5553,11 +5580,11 @@
     if (res) refreshTidyUI();
   }
 
-  async function refreshAdmin() {
+  async function refreshAdmin(fresh) {
     bannerState.error = ""; bannerState.partial = "";
     const btn = $id("adminRefreshBtn");
     if (btn) btn.disabled = true;
-    let data = await adminFetch("adminDashboard");
+    let data = await adminFetch("adminDashboard", fresh ? { fresh: 1 } : undefined);
     if (!data && /too long/.test(lastAdminError)) {
       // The server is still working on it in the background. Give it a moment,
       // then ask again — the finished copy is waiting for us by then.
