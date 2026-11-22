@@ -45,7 +45,7 @@
     try { proof = localStorage.getItem("c12_dt_" + String(name || "").trim().replace(/\s+/g, " ").toLowerCase()) || ""; } catch (e) {}
     var payload = JSON.stringify({
       type: "security", name: name || "", detail: "devtools", dt: proof, time: new Date().toISOString(),
-      page: location.href + " || strike:" + strike, sessionId: sid || "", viewId: "", duration: ""
+      page: location.href + " || strike:" + strike + " || v:2", sessionId: sid || "", viewId: "", duration: ""
     });
     function go(ep) {
       try { if (navigator.sendBeacon && navigator.sendBeacon(ep, payload)) return done(); } catch (e) {}
@@ -100,15 +100,24 @@
   // A `debugger` statement does nothing normally, but freezes the page while developer tools are
   // open — so a long pause between before/after means they are open.
   // Fix #13: a slow phone can pause for a moment too, so it must happen twice in a row, and for longer.
-  var slowRuns = 0;
+  // 22 Nov fix: a phone was suspended by mistake (a busy phone also pauses for a moment). Now:
+  //  - phones and tablets are never checked at all (you cannot open developer tools on them like on a laptop),
+  //  - the pause must be over 1 second and happen 3 times in a row,
+  //  - any sign that the whole page was slowed down (late timer, tab just came back) cancels the count.
+  var isTouch = false;
+  try { isTouch = (window.matchMedia && matchMedia("(pointer:coarse)").matches) || (("ontouchstart" in window) && navigator.maxTouchPoints > 0) || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || ""); } catch (e) {}
+  var slowRuns = 0, lastTick = Date.now(), calmUntil = Date.now() + 5000;
+  document.addEventListener("visibilitychange", function () { slowRuns = 0; calmUntil = Date.now() + 5000; });
+  window.addEventListener("focus", function () { slowRuns = 0; calmUntil = Date.now() + 3000; });
   function check() {
-    if (tripped || document.hidden || exempt()) { slowRuns = 0; return; }
+    var now = Date.now(), late = now - lastTick > 2500; lastTick = now;
+    if (late) { slowRuns = 0; calmUntil = now + 5000; return; }
+    if (isTouch || tripped || document.hidden || exempt() || now < calmUntil) { slowRuns = 0; return; }
     var t0 = performance.now();
     try { (new Function("debugger;"))(); } catch (e) {}
-    if (performance.now() - t0 > 400) { if (++slowRuns >= 2) trip(); } else slowRuns = 0;
+    if (performance.now() - t0 > 1000) { if (++slowRuns >= 3) trip(); } else slowRuns = 0;
   }
   setInterval(check, 800);
-  setTimeout(check, 400);
 
   // Right-click menu and the usual shortcuts do nothing on the site's pages.
   // Listening on the window, in the capture phase, means nothing on the page (a lab, a viewer)
