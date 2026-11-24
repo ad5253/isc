@@ -1502,18 +1502,76 @@
     try { logEvent("login", name, what, `${location.href} || loginMs:${Math.round(performance.now() - (gateLoginT0 || performance.now()))}`); } catch (e) {}
   }
 
-  const NO_PW_MSG = "Your password has not been set yet. Please WhatsApp 7405806352 and we'll set it for you.";
+  const NO_PW_MSG = "You have not created a password yet. Choose one below and type it again to confirm.";
+  const pwConfirmWrap = document.getElementById("gatePinConfirmWrap");
+  const pwConfirm = document.getElementById("gatePinConfirm");
+  const pwCreateNote = document.getElementById("gateCreateNote");
+  const pwCreateName = document.getElementById("gateCreateName");
+  function enterCreateMode(name) {
+    pinMode = "create";
+    if (pwConfirmWrap) pwConfirmWrap.classList.remove("hidden");
+    if (pwCreateNote) pwCreateNote.classList.remove("hidden");
+    if (pwCreateName) pwCreateName.textContent = name.trim();
+    gatePinInput.placeholder = "Create a password";
+    gatePinInput.setAttribute("autocomplete", "new-password");
+    if (gateBtnLabel) gateBtnLabel.textContent = "Create password & sign in";
+    addEyeButton(pwConfirm);
+    (gatePinInput.value ? pwConfirm : gatePinInput).focus();
+  }
+  function leaveCreateMode() {
+    if (pinMode !== "create") return;
+    pinMode = "enter";
+    if (pwConfirmWrap) pwConfirmWrap.classList.add("hidden");
+    if (pwCreateNote) pwCreateNote.classList.add("hidden");
+    if (pwConfirm) pwConfirm.value = "";
+    gatePinInput.placeholder = "Password";
+    gatePinInput.setAttribute("autocomplete", "current-password");
+    if (gateBtnLabel) gateBtnLabel.textContent = gateBtnLabelText;
+  }
+  nameInput.addEventListener("input", leaveCreateMode);
+  const CREATE_ERR = {
+    weak_pin: WEAK_PW_MSG,
+    bad_pin: "Please use a password of 4 to 32 characters.",
+    ask_admin: "Please WhatsApp 7405806352 and we'll set your password for you.",
+    busy: "The server is busy for a moment. Please press the button again.",
+    suspended: "You are not able to access this page.",
+    unauthorized: "Please sign up to view this page."
+  };
+  async function createPasswordStep(name) {
+    const pin = gatePinInput.value, again = pwConfirm ? pwConfirm.value : "";
+    if (!pin) { showGateError("Please choose a password."); gatePinInput.focus(); return "wait"; }
+    if (pin.length < 4) { showGateError(CREATE_ERR.bad_pin); gatePinInput.focus(); return "wait"; }
+    const weak = c12WeakPassword(pin, name);
+    if (weak) { showGateError(WEAK_PW_MSG); gatePinInput.focus(); return "wait"; }
+    if (pin !== again) { showGateError("The two passwords do not match. Please type the same password in both boxes."); pwConfirm.value = ""; pwConfirm.focus(); return "wait"; }
+    const r = await pinApi({ op: "set", name, pin });
+    if (!r) { showGateError("The server didn't answer in time. Nothing was lost, just press the button again."); return "wait"; }
+    if (r.ok && r.dt) {
+      lastLoginPw = pin; setDt(name, r.dt); rememberHasPassword(name);
+      cachedLoginCheck = null;
+      leaveCreateMode(); resetPinUI(true);
+      return "ok";
+    }
+    if (r.error === "exists") {   // someone (maybe this student on another device) already made one
+      leaveCreateMode(); gatePinInput.value = ""; gatePinInput.focus();
+      showGateError("A password already exists for this name. Enter it above, or tap Forgot password.");
+      return "wait";
+    }
+    showGateError(CREATE_ERR[r.error] || "Couldn't save your password. Please try again.");
+    return "wait";
+  }
   async function runPinStep(name) {
-    const pin = gatePinInput.value;
-    if (!pin) { showGateError("Please enter your password."); gatePinInput.focus(); return "wait"; }
+    if (pinMode === "create") return createPasswordStep(name);
     // The quick list already says whether this name has a password; only ask the server when it is unsure.
     const lc = cachedLoginCheck;
     if (!(lc && lc.answered && lc.hasPassword)) {
       const st = await pinApi({ op: "state", name });
       if (!st) { showGateError("The server didn't answer in time. Just press Sign in again."); return "wait"; }
-      if (st.ok && st.state === "none") { showGateError(NO_PW_MSG); return "wait"; }
+      if (st.ok && st.state === "none") { enterCreateMode(name); showGateError(NO_PW_MSG); return "wait"; }
       if (st.ok && st.state === "trusted") return "ok";
     }
+    const pin = gatePinInput.value;
+    if (!pin) { showGateError("Please enter your password."); gatePinInput.focus(); return "wait"; }
     lastLoginPw = pin;
     let r = null;
     const fast = await authFast({ op: "check", name, pin });
@@ -1521,7 +1579,7 @@
     else if (fast && fast.valid === false && (fast.locked || typeof fast.left === "number")) r = fast;
     else r = await pinApi({ op: "check", name, pin });
     if (!r || !r.ok) { noteLoginFail(name, "check_failed"); showGateError("The server didn't answer in time. Nothing was lost — just press Sign in again."); return "wait"; }
-    if (r.valid && !r.dt) { showGateError(NO_PW_MSG); return "wait"; }   // no password stored for this name (e.g. just reset)
+    if (r.valid && !r.dt) { enterCreateMode(name); showGateError(NO_PW_MSG); return "wait"; }   // no password stored for this name (e.g. just reset)
     if (r.valid) { setDt(name, r.dt); rememberHasPassword(name); resetPinUI(true); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
@@ -1766,7 +1824,7 @@
     }
     gateBtn.disabled = isBusy;
     gateBtn.classList.toggle("is-busy", isBusy);
-    if (gateBtnLabel) gateBtnLabel.textContent = isBusy ? "Signing in…" : gateBtnLabelText;
+    if (gateBtnLabel) gateBtnLabel.textContent = isBusy ? (pinMode === "create" ? "Saving…" : "Signing in…") : (pinMode === "create" ? "Create password & sign in" : gateBtnLabelText);
     clearTimeout(gateBusyTimer);
     // If the server is slow, say so instead of looking frozen.
     if (isBusy && gateBtnLabel) gateBusyTimer = setTimeout(() => { if (gateBtn.disabled) gateBtnLabel.textContent = "Still working — hang on…"; }, 3500);
@@ -5295,7 +5353,7 @@
 
   const ACTION_LABELS = {
     approveName: "Approved", rejectName: "Rejected", unrejectName: "Restored", suspendIdentity: "Suspended",
-    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setPassword: "Password changed", setBackup: "Weekly backup changed", sendBackupNow: "Backup emailed", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
+    unsuspendIdentity: "Unsuspended", resetPin: "Password reset", setPassword: "Password changed", passwordCreated: "Created own password", setBackup: "Weekly backup changed", sendBackupNow: "Backup emailed", setWeeklyDigest: "Weekly email changed", setExpiry: "Expiry changed", mergeIdentities: "Merged people",
     sendMessage: "Message sent", forceLogout: "Signed out", unblockDevice: "Unblocked device",
     archiveOldLogs: "Archived activity", syncCatalog: "Synced catalog", confirmCatalogAdditions: "Added files",
     testEmail: "Test email", emailFailed: "Email failed"

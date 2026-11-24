@@ -3708,3 +3708,7 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 .gate__signup-btn:hover { background:rgba(201,161,90,.2); } .gate__signup-btn:active { transform:scale(.97); }
 .gate__signup.is-hint .gate__signup-btn { background:var(--brass); color:var(--ink); animation:signupNudge 1.4s ease-in-out 2; }
 @keyframes signupNudge { 50% { transform:scale(1.05); } }
+
+/* create-password step on the login screen */
+.gate__create{margin:10px 2px 2px;font-size:.82rem;line-height:1.45;color:var(--gate-muted,#9aa3b2);text-align:left}
+.gate__create b{color:inherit;font-weight:600}

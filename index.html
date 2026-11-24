@@ -99,6 +99,11 @@
                         <input type="password" id="gatePinInput" name="password" class="gate__input" placeholder="Password" maxlength="32" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Password">
                         <span class="gate__field-line"></span>
                     </div>
+                    <div class="gate__field hidden" id="gatePinConfirmWrap">
+                        <input type="password" id="gatePinConfirm" name="new-password" class="gate__input" placeholder="Type the same password again" maxlength="32" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Confirm password">
+                        <span class="gate__field-line"></span>
+                    </div>
+                    <p class="gate__create hidden" id="gateCreateNote">First time here? Choose a password for <b id="gateCreateName"></b>. You will use it every time you sign in.</p>
                     <div class="gate__pin-links">
                         <a id="gatePinForgot" class="gate__linkbtn" href="https://wa.me/917405806352?text=Hi%2C%20please%20reset%20my%20password%20for%20the%20Class%2012%20portal." target="_blank" rel="noopener">Forgot password?</a>
                     </div>
