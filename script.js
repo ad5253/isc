@@ -2533,17 +2533,37 @@
       busy: "The server is busy for a moment. Please try again.",
       limited: "Too many tries from this device. Please wait a few minutes, or WhatsApp 7405806352."
     };
+    // Sign-up codes are sent by the Cloudflare "class12-core" Worker (Brevo mail). If it is not set up or is
+    // down, the old Apps Script/Gmail route is used instead, so sign-up never stops working.
+    let otpVia = "";
+    const coreUrl = () => {
+      const c = SITE_CONFIG.coreApi && SITE_CONFIG.coreApi.url;
+      if (c && /^https:\/\//.test(c)) return c;
+      const cb = cacheBase();
+      return cb && cb.indexOf("class12-api-cache") !== -1 ? cb.replace("class12-api-cache", "class12-core") : "";
+    };
+    const rawPost = async (url, payload, tries) => {
+      const once = async () => {
+        const c = new AbortController(), t = setTimeout(() => c.abort(), 20000);
+        try { const r = await fetch(url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload, signal: c.signal }); return await r.json(); }
+        finally { clearTimeout(t); }
+      };
+      try { return await once(); } catch { if (tries < 2) return null; try { return await once(); } catch { return null; } }
+    };
     const post = async (body) => {
       const ep = endpoint();
       if (!ep || ep.indexOf("PASTE_YOUR") === 0) return { error: "unavailable" };
       let device = ""; try { device = await getDeviceId(); } catch {}
       const payload = JSON.stringify(Object.assign({ device }, body));
-      const once = async () => {
-        const c = new AbortController(), t = setTimeout(() => c.abort(), 20000);
-        try { const r = await fetch(ep, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload, signal: c.signal }); return await r.json(); }
-        finally { clearTimeout(t); }
-      };
-      try { return await once(); } catch { try { return await once(); } catch { return null; } }
+      const core = coreUrl();
+      if (core && (body.type === "signupOtp" || (body.type === "signupVerify" && otpVia === "core"))) {
+        const r = await rawPost(core, payload, 1);
+        const down = !r || (!r.ok && (r.error === "not_set_up" || r.error === "forbidden" || r.error === "busy" || r.error === "unknown"));
+        if (!down && !(body.type === "signupOtp" && !r.ok && r.error === "mail_failed")) { if (body.type === "signupOtp" && r.ok) otpVia = "core"; return r; }
+        if (body.type === "signupVerify") return r || null;   // the code lives in Cloudflare: do not switch mid-way
+      }
+      if (body.type === "signupOtp") otpVia = "gas";
+      return rawPost(ep, payload, 2);
     };
     const NET = "Couldn't reach the server. Check your internet and try again — nothing is lost.";
     const why = (res) => res.limited ? MSG.limited : (res.error === "unavailable" ? "Sign-up is not available right now. Please WhatsApp 7405806352." : (MSG[res.error] || "Something went wrong. Please try again or WhatsApp 7405806352."));
