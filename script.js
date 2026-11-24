@@ -2553,91 +2553,149 @@
   // reliably reject things like "asdf@asdf", "a@b.c", or
   // "test@@test.com" instead of letting anything with an @ sign through.
 
-  // ── Paid sign-up: QR payment → "I've paid" → create login → manual approval ──
+  // ── Paid sign-up wizard: plan → email → code → account → payment → thank you ──
   function initPayModal() {
     const modal = $("#payModal");
     const openBtn = $("#payOpenBtn");
     if (!modal || !openBtn) return;
-    const s1 = $("#payStep1"), s2 = $("#payStep2"), s3 = $("#payStep3");
-    const form = $("#payForm"), err = $("#payError"), submit = $("#paySubmit");
-    const fName = $("#payName"), fEmail = $("#payEmail"), fPhone = $("#payPhone"), fUtr = $("#payUtr"), fPw = $("#payPw"), fPw2 = $("#payPw2"), fAgree = $("#payAgree"), fTrap = $("#payWebsite");
-    let opener = null, sending = false;
+    const $$ = (id) => document.getElementById(id);
+    const prog = $$("payProgress");
+    const fEmail = $$("payEmail"), fPhone = $$("payPhone"), fCode = $$("payCode"), fName = $$("payName"), fPw = $$("payPw"), fPw2 = $$("payPw2"), fAgree = $$("payAgree"), fUtr = $$("payUtr"), fTrap = $$("payWebsite");
+    const endpoint = () => (SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint) || "";
+    let opener = null, busy = false, vtoken = "", cur = 0, resendTimer = null;
 
-    const step = (n) => {
-      s1.classList.toggle("hidden", n !== 1); s2.classList.toggle("hidden", n !== 2); s3.classList.toggle("hidden", n !== 3);
-      modal.querySelector(".pay__panel").scrollTop = 0; modal.scrollTop = 0;
+    const showErr = (n, m) => { const e = $$("payE" + n); e.textContent = m; e.classList.remove("hidden"); };
+    const clrErr = () => { for (let i = 1; i <= 4; i++) $$("payE" + i).classList.add("hidden"); };
+    const go = (n) => {
+      cur = n; clrErr();
+      for (let i = 0; i <= 5; i++) $$("payS" + i).classList.toggle("hidden", i !== n);
+      prog.classList.toggle("hidden", n < 1 || n > 4);
+      prog.querySelectorAll("li").forEach((li) => {
+        const k = Number(li.dataset.s);
+        li.classList.toggle("is-done", k < n); li.classList.toggle("is-now", k === n);
+      });
+      const p = modal.querySelector(".pay__panel"); if (p) p.scrollTop = 0; modal.scrollTop = 0;
+      const f = { 1: fEmail, 2: fCode, 3: fName }[n]; if (f) setTimeout(() => { try { f.focus(); } catch {} }, 60);
     };
-    const open = () => { opener = document.activeElement; step(1); err.classList.add("hidden"); modal.classList.remove("hidden"); document.body.style.overflow = "hidden"; try { $("#payClose").focus(); } catch {} };
+    const open = () => { opener = document.activeElement; go(0); modal.classList.remove("hidden"); document.body.style.overflow = "hidden"; };
     const close = () => { modal.classList.add("hidden"); document.body.style.overflow = ""; try { if (opener && opener.focus) opener.focus(); } catch {} };
-    const showErr = (m) => { err.textContent = m; err.classList.remove("hidden"); };
 
     openBtn.addEventListener("click", open);
-    $("#payClose").addEventListener("click", close);
-    $("#payOverlay").addEventListener("click", close);
-    $("#payDone").addEventListener("click", close);
+    $$("payClose").addEventListener("click", close);
+    $$("payOverlay").addEventListener("click", close);
+    $$("payDone").addEventListener("click", close);
+    $$("payStart").addEventListener("click", () => go(1));
+    modal.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => { if (!busy) go(Number(b.dataset.go)); }));
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.classList.contains("hidden")) close(); });
-    $("#payPaidBtn").addEventListener("click", () => { step(2); try { fName.focus(); } catch {} });
-    $("#payBack").addEventListener("click", () => step(1));
-    $("#payCopyVpa").addEventListener("click", async (e) => {
-      const b = e.currentTarget, v = $("#payVpa").textContent.trim();
+    $$("payEye").addEventListener("click", (e) => {
+      const show = fPw.type === "password"; fPw.type = show ? "text" : "password"; fPw2.type = fPw.type; e.currentTarget.textContent = show ? "Hide" : "Show";
+    });
+    $$("payCopyVpa").addEventListener("click", async (e) => {
+      const b = e.currentTarget, v = $$("payVpa").textContent.trim();
       try { await navigator.clipboard.writeText(v); b.textContent = "Copied"; } catch { b.textContent = v; }
       setTimeout(() => { b.textContent = "Copy"; }, 1800);
     });
-    // A direct link (…/isc/#join) opens this screen — handy for the reel, Instagram bio and WhatsApp.
     try { if (/^#join$/i.test(location.hash)) setTimeout(open, 400); } catch {}
 
     const MSG = {
-      agree: "Please tick the box to accept the Terms, Privacy and Refund policy.",
-      bad_name: "Please enter your full name (first name and surname, letters only).",
       bad_email: "That email address doesn't look right.",
+      already_member: "This email already has access. Close this screen and sign in with your name and password.",
+      mail_busy: "We're sending a lot of codes right now. Please try again in a few minutes, or WhatsApp 7405806352.",
+      mail_failed: "We couldn't send the email. Check the address and try again, or WhatsApp 7405806352.",
+      bad_code: "That code isn't right.",
+      expired: "That code has expired. Please request a new one.",
+      too_many: "Too many wrong tries. Please request a new code.",
+      email_unverified: "Your email check expired. Please verify your email again.",
+      bad_name: "Please enter your full name (first name and surname, letters only).",
       bad_phone: "The phone number should be 10 digits.",
       bad_utr: "The transaction ID should be 6–30 letters/numbers with no spaces. You can also leave it blank and WhatsApp it.",
       bad_pin: "Your password must be 4–32 characters.",
       weak_pin: "That password is too easy to guess. Please choose something harder (not 1234, abcd, your name, etc.).",
-      already_member: "This name or email already has access. Close this screen and sign in with your name and password.",
       name_clash: "A student with a very similar name already has access. Please WhatsApp 7405806352 and we'll sort it out quickly.",
-      busy: "The server is busy for a moment. Please press Submit again.",
+      busy: "The server is busy for a moment. Please try again.",
       limited: "Too many tries from this device. Please wait a few minutes, or WhatsApp 7405806352."
     };
-    const done = (name, utr) => {
-      const text = "Hi, I paid Rs 1199 for ISC Portal lifetime access.\nName: " + name + "\nTransaction ID: " + (utr || "(attached screenshot)");
-      $("#payWaLink").href = "https://wa.me/917405806352?text=" + encodeURIComponent(text);
-      step(3);
-    };
-
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      if (sending) return;
-      err.classList.add("hidden");
-      const name = fName.value.replace(/\s+/g, " ").trim(), email = fEmail.value.trim(), phone = fPhone.value.trim(), utr = fUtr.value.replace(/\s+/g, "");
-      if (name.length < 3 || name.split(" ").length < 2 || /[^A-Za-zÀ-ɏ .'\-]/.test(name)) return showErr(MSG.bad_name);
-      if (!isValidEmail(email)) return showErr(MSG.bad_email);
-      if (phone && !/^\+?[0-9 \-]{10,16}$/.test(phone)) return showErr(MSG.bad_phone);
-      if (utr && !/^[A-Za-z0-9]{6,30}$/.test(utr)) return showErr(MSG.bad_utr);
-      if (fPw.value.length < 4 || fPw.value.length > 32) return showErr(MSG.bad_pin);
-      if (typeof c12WeakPassword === "function" && c12WeakPassword(fPw.value, name)) return showErr(MSG.weak_pin);
-      if (fPw.value !== fPw2.value) return showErr("The two passwords don't match.");
-      if (!fAgree.checked) return showErr(MSG.agree);
-      const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
-      if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return showErr("Sign-up is not available right now. Please WhatsApp 7405806352.");
-      sending = true; submit.disabled = true; submit.textContent = "Submitting…";
+    const post = async (body) => {
+      const ep = endpoint();
+      if (!ep || ep.indexOf("PASTE_YOUR") === 0) return { error: "unavailable" };
       let device = ""; try { device = await getDeviceId(); } catch {}
-      const payload = JSON.stringify({ type: "signup", name, email, phone: phone.replace(/[^0-9+]/g, ""), utr, password: fPw.value, agree: true, website: fTrap.value, device });
-      const send = async () => {
+      const payload = JSON.stringify(Object.assign({ device }, body));
+      const once = async () => {
         const c = new AbortController(), t = setTimeout(() => c.abort(), 20000);
-        try {
-          const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload, signal: c.signal });
-          return await r.json();
-        } finally { clearTimeout(t); }
+        try { const r = await fetch(ep, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload, signal: c.signal }); return await r.json(); }
+        finally { clearTimeout(t); }
       };
-      let res = null;
-      try { res = await send(); } catch { try { res = await send(); } catch { res = null; } }
-      sending = false; submit.disabled = false; submit.textContent = "Submit for approval";
-      if (!res) return showErr("Couldn't reach the server. Check your internet and press Submit again — nothing is lost. If it keeps failing, WhatsApp 7405806352 with your transaction ID.");
-      if (res.ok) { fPw.value = ""; fPw2.value = ""; done(name, utr); return; }
-      // A retry after a lost reply: the first try had already been saved.
-      if (res.error === "already_pending") { fPw.value = ""; fPw2.value = ""; done(name, utr); return; }
-      showErr(res.limited ? MSG.limited : (MSG[res.error] || "Something went wrong. Please try again or WhatsApp 7405806352."));
+      try { return await once(); } catch { try { return await once(); } catch { return null; } }
+    };
+    const NET = "Couldn't reach the server. Check your internet and try again — nothing is lost.";
+    const why = (res) => res.limited ? MSG.limited : (res.error === "unavailable" ? "Sign-up is not available right now. Please WhatsApp 7405806352." : (MSG[res.error] || "Something went wrong. Please try again or WhatsApp 7405806352."));
+    const lock = (btn, on, txt) => { busy = on; btn.disabled = on; if (on) { btn.dataset.t = btn.textContent; btn.textContent = txt; } else if (btn.dataset.t) btn.textContent = btn.dataset.t; };
+
+    const startCooldown = () => {
+      const b = $$("payResend"); let n = 45; clearInterval(resendTimer); b.disabled = true;
+      const tick = () => { if (n <= 0) { clearInterval(resendTimer); b.disabled = false; b.textContent = "Send a new code"; } else { b.textContent = "Send a new code (" + n + "s)"; n--; } };
+      tick(); resendTimer = setInterval(tick, 1000);
+    };
+    const sendCode = async (fromResend) => {
+      if (busy) return;
+      const btn = fromResend ? $$("payResend") : $$("payB1"), E = fromResend ? 2 : 1;
+      clrErr();
+      const email = fEmail.value.trim(), phone = fPhone.value.trim();
+      if (!isValidEmail(email)) return showErr(1, MSG.bad_email) || (fromResend && go(1));
+      if (phone && !/^\+?[0-9 \-]{10,16}$/.test(phone)) return showErr(1, MSG.bad_phone);
+      lock(btn, true, "Sending…");
+      const res = await post({ type: "signupOtp", email });
+      lock(btn, false);
+      if (!res) return showErr(E, NET);
+      if (!res.ok) { if (fromResend) go(1); return showErr(1, why(res)); }
+      $$("payShownEmail").textContent = email; fCode.value = "";
+      go(2); startCooldown();
+    };
+    $$("payF1").addEventListener("submit", (e) => { e.preventDefault(); sendCode(false); });
+    $$("payResend").addEventListener("click", () => sendCode(true));
+
+    $$("payF2").addEventListener("submit", async (e) => {
+      e.preventDefault(); if (busy) return; clrErr();
+      const code = fCode.value.replace(/\D/g, "");
+      if (code.length !== 6) return showErr(2, "Enter the 6-digit code from your email.");
+      lock($$("payB2"), true, "Checking…");
+      const res = await post({ type: "signupVerify", email: fEmail.value.trim(), code });
+      lock($$("payB2"), false);
+      if (!res) return showErr(2, NET);
+      if (res.ok && res.vtoken) { vtoken = res.vtoken; go(3); return; }
+      let m = why(res);
+      if (res.error === "bad_code" && typeof res.left === "number") m += " " + res.left + (res.left === 1 ? " try" : " tries") + " left.";
+      showErr(2, m);
+    });
+
+    $$("payF3").addEventListener("submit", (e) => {
+      e.preventDefault(); clrErr();
+      const name = fName.value.replace(/\s+/g, " ").trim();
+      if (name.length < 3 || name.split(" ").length < 2 || /[^A-Za-zÀ-ɏ .'\-]/.test(name)) return showErr(3, MSG.bad_name);
+      if (fPw.value.length < 4 || fPw.value.length > 32) return showErr(3, MSG.bad_pin);
+      if (typeof c12WeakPassword === "function" && c12WeakPassword(fPw.value, name)) return showErr(3, MSG.weak_pin);
+      if (fPw.value !== fPw2.value) return showErr(3, "The two passwords don't match.");
+      if (!fAgree.checked) return showErr(3, "Please tick the box to accept the Terms, Privacy and Refund policy.");
+      go(4);
+    });
+
+    $$("payF4").addEventListener("submit", async (e) => {
+      e.preventDefault(); if (busy) return; clrErr();
+      const name = fName.value.replace(/\s+/g, " ").trim(), email = fEmail.value.trim(), phone = fPhone.value.replace(/[^0-9+]/g, ""), utr = fUtr.value.replace(/\s+/g, "");
+      if (utr && !/^[A-Za-z0-9]{6,30}$/.test(utr)) return showErr(4, MSG.bad_utr);
+      lock($$("payB4"), true, "Submitting…");
+      const res = await post({ type: "signup", name, email, phone, utr, password: fPw.value, agree: true, vtoken, website: fTrap.value });
+      lock($$("payB4"), false);
+      if (!res) return showErr(4, NET + " If it keeps failing, WhatsApp 7405806352 with your transaction ID.");
+      if (res.ok || res.error === "already_pending") {
+        fPw.value = ""; fPw2.value = "";
+        $$("payDoneEmail").textContent = email;
+        $$("payWaLink").href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, I paid Rs 1199 for ISC Portal lifetime access.\nName: " + name + "\nEmail: " + email + "\nTransaction ID: " + (utr || "(attached screenshot)"));
+        go(5); return;
+      }
+      if (res.error === "email_unverified") { vtoken = ""; go(1); return showErr(1, MSG.email_unverified); }
+      if (res.error === "bad_name" || res.error === "bad_pin" || res.error === "weak_pin" || res.error === "name_clash") { go(3); return showErr(3, why(res)); }
+      showErr(4, why(res));
     });
   }
 
