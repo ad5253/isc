@@ -397,8 +397,7 @@
   const gatePinBox = $("#gatePinBox");
   const gatePinHint = $("#gatePinHint");
   const gatePinInput = $("#gatePinInput");
-  const gatePinConfirmField = $("#gatePinConfirmField");
-  const gatePinConfirm = $("#gatePinConfirm");
+  const gatePinConfirmField = null, gatePinConfirm = null;   // (sign-up creates the password now — the sign-in screen has no "create" step)
   const gatePinForgot = $("#gatePinForgot");
   const gatePinAsk = $("#gatePinAsk");
   const gateError   = $("#gateError");
@@ -1060,7 +1059,6 @@
     nameForm.addEventListener("submit", onNameSubmit);
     nameInput.addEventListener("input", () => {
       hideGateError();
-      if (pinMode && normalizeName(nameInput.value) !== previewName) resetPinUI();
       schedulePreview();
     });
     nameInput.addEventListener("change", schedulePreview);
@@ -1071,16 +1069,9 @@
       if (gateKeep && localStorage.getItem("c12_keep") !== null) gateKeep.checked = true;
     } catch (e) {}
     try { gatePasswordField.remove(); } catch (e) {}   // the old separate password box (unused since fix #1) confused the browser's password manager
-    [gatePinInput, gatePinConfirm].forEach(addEyeButton);
-    // Name remembered + password known on this device -> show both boxes at once (no waiting at all).
-    try {
-      const ln0 = nameInput.value.trim();
-      if (ln0 && normalizeName(ln0).length >= 2 && knowsHasPassword(ln0) && !SURNAME_REQUIRED.includes(normalizeName(ln0))) {
-        previewName = normalizeName(ln0);
-        showPinUI("enter", ln0, { noFocus: true });
-        setTimeout(() => { try { gatePinInput.focus(); } catch {} }, 60);
-      }
-    } catch (e) {}
+    addEyeButton(gatePinInput);
+    // Both boxes are always on screen. A remembered name goes straight to the password box.
+    setTimeout(() => { try { (nameInput.value.trim() ? gatePinInput : nameInput).focus(); } catch {} }, 80);
     fetchLoginCheck("").then(schedulePreview).catch(() => {});
     schedulePreview();
     // Mandatory so an approval can actually be followed up on — the
@@ -1478,38 +1469,14 @@
     return "";
   }
 
+  // The two boxes never disappear. After a correct password the typed text stays for a moment: the browser's
+  // "Save password?" offer reads it while the gate closes (clearing it first made Chrome skip the offer).
   function resetPinUI(keepTyped) {
-    pinMode = null;
-    gatePinBox.classList.add("hidden");
-    // After a correct password the typed text is left in the box for a moment: the browser's
-    // "Save password?" prompt reads it as the gate closes (clearing it first made Chrome skip the offer).
+    pinMode = "enter";
     if (!keepTyped) gatePinInput.value = "";
-    else setTimeout(() => { gatePinInput.value = ""; }, 2500);
-    gatePinConfirm.value = "";
-    gatePinConfirm.disabled = true;
-    gatePinConfirmField.classList.add("hidden");
-    gatePinForgot.classList.add("hidden");
-    if (gatePinAsk) { gatePinAsk.classList.add("hidden"); gatePinAsk.disabled = false; gatePinAsk.textContent = "Ask admin to reset it"; }
+    else setTimeout(() => { gatePinInput.value = ""; }, 4000);
   }
-
-  function showPinUI(mode, name, opts) {
-    pinMode = mode;
-    gatePinBox.classList.remove("hidden");
-    gatePinInput.value = "";
-    gatePinConfirm.value = "";
-    const create = mode === "create";
-    gatePinConfirmField.classList.toggle("hidden", !create);
-    gatePinConfirm.disabled = !create;   // a hidden 2nd password box made Chrome think this was a "change password" form
-    gatePinInput.autocomplete = create ? "new-password" : "current-password";
-    gatePinInput.placeholder = "Password";
-    gatePinForgot.classList.toggle("hidden", create);
-    if (gatePinAsk) { gatePinAsk.classList.toggle("hidden", create); gatePinAsk.dataset.name = name; }
-    gatePinForgot.href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, please reset my password for the Class 12 portal. My name: " + name);
-    gatePinHint.textContent = create
-      ? "Choose a password (4–32 characters) — you need it every time you sign in, so nobody else can use your name. The admin can also see which files you tick as revised."
-      : "Enter your password to continue.";
-    if (!(opts && opts.noFocus)) gatePinInput.focus();
-  }
+  function showPinUI() { pinMode = "enter"; }
 
   if (gatePinAsk) gatePinAsk.addEventListener("click", async () => {
     const nm = gatePinAsk.dataset.name || "";
@@ -1535,72 +1502,31 @@
     try { logEvent("login", name, what, `${location.href} || loginMs:${Math.round(performance.now() - (gateLoginT0 || performance.now()))}`); } catch (e) {}
   }
 
+  const NO_PW_MSG = "Your password has not been set yet. Please WhatsApp 7405806352 and we'll set it for you.";
   async function runPinStep(name) {
-    if (pinMode === null) {
-      // Fast path: the list of password-holders already arrived with the login
-      // check, so the password box can appear at once — no waiting on the server.
-      const lc = cachedLoginCheck;
-      if (lc && lc.answered) {
-        if (lc.hasPassword) {
-          pinStateP = null;
-          showPinUI("enter", name);
-          return "wait";
-        }
-        // Not in the quick list: ask the server before offering "create a password" —
-        // the same student may already have one under another spelling of their name
-        // (first name / first + surname / full name all share ONE password).
-        pinStateP = null;
-      }
-      const st = await (pinStateP || pinApi({ op: "state", name })); // no device-trust: asked at EVERY login
-      pinStateP = null;
-      if (!st) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
-      if (!st.ok || !st.state) return "ok"; // an older backend that doesn't know passwords yet
-      if (st.state === "trusted") return "ok";
-      if (st.state === "none") {
-        showPinUI("create", name); // mandatory: no way past this without choosing a password
-        return "wait";
-      }
-      showPinUI("enter", name);
-      return "wait";
-    }
-
-    if (pinMode === "create") {
-      const pin = gatePinInput.value;
-      if (pin.length < 4 || pin.length > 32) { showGateError("Password must be 4 to 32 characters."); gatePinInput.focus(); return "wait"; }
-      if (c12WeakPassword(pin, name)) { showGateError(WEAK_PW_MSG); gatePinInput.focus(); return "wait"; }
-      if (pin !== gatePinConfirm.value) { showGateError("The two passwords don't match."); gatePinConfirm.value = ""; gatePinConfirm.focus(); return "wait"; }
-      lastLoginPw = pin;
-      const r = await pinApi({ op: "set", name, pin });
-      if (!r) { showGateError("The server didn't answer in time. Just press Continue again."); return "wait"; }
-      if (r.ok) { setDt(name, r.dt); rememberHasPassword(name); resetPinUI(true); return "ok"; }
-      if (r.error === "exists") { showPinUI("enter", name); showGateError("This name already has a password — enter it."); return "wait"; }
-      if (r.error === "bad_pin") { showGateError("Password must be 4 to 32 characters."); return "wait"; }
-      if (r.error === "weak_pin") { showGateError(WEAK_PW_MSG); return "wait"; }
-      if (r.error === "ask_admin") { resetPinUI(); showGateError("This account's password is set by the site owner. Please contact him."); return "wait"; }   // fix #1
-      showGateError("Couldn't save your password — please try again."); return "wait";
-    }
-
-    // enter
     const pin = gatePinInput.value;
-    if (!pin) { gatePinInput.focus(); return "wait"; }
+    if (!pin) { showGateError("Please enter your password."); gatePinInput.focus(); return "wait"; }
+    // The quick list already says whether this name has a password; only ask the server when it is unsure.
+    const lc = cachedLoginCheck;
+    if (!(lc && lc.answered && lc.hasPassword)) {
+      const st = await pinApi({ op: "state", name });
+      if (!st) { showGateError("The server didn't answer in time. Just press Sign in again."); return "wait"; }
+      if (st.ok && st.state === "none") { showGateError(NO_PW_MSG); return "wait"; }
+      if (st.ok && st.state === "trusted") return "ok";
+    }
     lastLoginPw = pin;
     let r = null;
     const fast = await authFast({ op: "check", name, pin });
     if (fast && fast.valid && fast.dt) r = fast;
-    else if (fast && fast.valid === false && (fast.locked || typeof fast.left === "number")) r = fast;   // fix #3: "4 tries left" ... then locked
+    else if (fast && fast.valid === false && (fast.locked || typeof fast.left === "number")) r = fast;
     else r = await pinApi({ op: "check", name, pin });
-    if (!r || !r.ok) { noteLoginFail(name, "check_failed"); showGateError("The server didn't answer in time. Nothing was lost — just press Continue again."); return "wait"; }
-    if (r.valid && !r.dt) {
-      // The server has no password for this name (it was just reset) — choose a new one.
-      showPinUI("create", name);
-      showGateError("Please choose a new password to continue.");
-      return "wait";
-    }
+    if (!r || !r.ok) { noteLoginFail(name, "check_failed"); showGateError("The server didn't answer in time. Nothing was lost — just press Sign in again."); return "wait"; }
+    if (r.valid && !r.dt) { showGateError(NO_PW_MSG); return "wait"; }   // no password stored for this name (e.g. just reset)
     if (r.valid) { setDt(name, r.dt); rememberHasPassword(name); resetPinUI(true); return "ok"; }
     gatePinInput.value = "";
     gatePinInput.focus();
     if (r.locked) showGateError(`Too many wrong tries. Try again in ${r.locked} minute${r.locked === 1 ? "" : "s"}, or tap Forgot password.`);
-    else showGateError(`Wrong password.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);   // fix #3
+    else showGateError(`Wrong password.${r.left ? " " + r.left + " " + (r.left === 1 ? "try" : "tries") + " left." : ""}`);
     return "wait";
   }
 
@@ -1613,19 +1539,8 @@
   function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewPasswordBox, 120); }
   async function previewPasswordBox() {
     const raw = nameInput.value.trim();
-    const norm = normalizeName(raw);
-    if (norm.length < 2) { if (pinMode) resetPinUI(); previewName = ""; if (!gatePasswordInput.value) gatePasswordField.classList.add("hidden"); return; }
-    // Fix #1: the special accounts no longer have their own password box; they use the normal one.
-    gatePasswordField.classList.add("hidden");
-    const lc = await fetchLoginCheck(raw);           // fix #6: asks the server about this one name
-    if (normalizeName(nameInput.value) !== norm) return; // they kept typing
-    if (!lc || !lc.answered) return;                  // no answer yet: the Continue button still handles it
-    if (!lc.allowed || lc.suspended || lc.needSurname) { if (pinMode) resetPinUI(); previewName = ""; return; }
-    const mode = lc.hasPassword ? "enter" : "create";
-    if (mode === "create") { if (pinMode && previewName) resetPinUI(); previewName = ""; return; }   // the server decides on Continue
-    if (pinMode === mode && previewName === norm) return;
-    previewName = norm;
-    showPinUI(mode, raw, { noFocus: true });
+    if (normalizeName(raw).length < 2) return;
+    fetchLoginCheck(raw).catch(() => {});   // warms the answer so Sign in feels instant
   }
 
   const EYE_ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -1722,12 +1637,11 @@
       // isSuspended()/isAuthorized()/isNameActive() below just read
       // the already-resolved, cached result instead of each firing
       // their own request.
-      if (pinMode === null && !credentialsVerified && !(cachedLoginCheck && cachedLoginCheck.answered)) pinStateP = pinApi({ op: "state", name });
-      const [deviceId, ip] = await Promise.all([
+      const [deviceId] = await Promise.all([
         getDeviceId(),
-        getClientIp(),
         fetchLoginCheck(name)
       ]);
+      const ip = cachedIp || "";   // the IP lookup (third-party) no longer holds up sign-in
       const trace = `${location.href} || device:${deviceId} || ip:${ip || "unknown"} || label:${parseDeviceLabel()}`;
 
       // Harassment/abuse in the name field itself (e.g. someone typing
@@ -1747,7 +1661,7 @@
 
       if (looksAbusive(name)) {
         logEvent("login", name, "abusive", trace);
-        showGateError("You're not authorized to view this page. Please enter your actual name.");
+        showGateError("Please enter your actual name.");
         return;
       }
 
@@ -1781,8 +1695,9 @@
           showGateError("Your payment is under approval \u2014 this usually takes up to 15 minutes. For faster access, WhatsApp your transaction details to 7405806352.");
           return;
         }
-        showGateError("You're not authorized to view this page yet.");
-        showGateApprovalOption(name, trace);
+        showGateError("Please sign up to view this page.");
+        const sg = document.getElementById("gateSignup");
+        if (sg) { sg.classList.remove("is-hint"); void sg.offsetWidth; sg.classList.add("is-hint"); }
         return;
       }
 
@@ -1810,16 +1725,19 @@
         if (gateKeep && gateKeep.checked) localStorage.setItem("c12_keep", JSON.stringify({ name, until: Date.now() + 12 * 3600 * 1000 }));
         else localStorage.removeItem("c12_keep");
       } catch (e) {}
+      // Ask the browser to offer "Save password?" every time a sign-in works (Chrome/Google, Edge, Android).
+      // The form stays on screen, filled in, while the offer is made — then the gate fades out.
       try {
         if (lastLoginPw && window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
-          navigator.credentials.store(new PasswordCredential({ id: name, password: lastLoginPw, name })).catch(() => {});
+          await Promise.race([
+            navigator.credentials.store(new PasswordCredential({ id: nameInput.value.trim() || name, password: lastLoginPw, name })).catch(() => {}),
+            new Promise((r) => setTimeout(r, 450))
+          ]);
         }
       } catch (e) {}
       lastLoginPw = "";
-      gatePasswordField.classList.add("hidden");
-      gatePasswordInput.value = "";
       gate.classList.add("fade-out");
-      setTimeout(() => { gate.classList.add("hidden"); showApp(name); }, 300);
+      setTimeout(() => { gate.classList.add("hidden"); showApp(name); }, 350);
     } finally {
       // Always release the busy state — on a rejected path the person
       // needs the button back immediately to retry; on the success
