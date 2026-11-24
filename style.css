@@ -3712,3 +3712,11 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 /* create-password step on the login screen */
 .gate__create{margin:10px 2px 2px;font-size:.82rem;line-height:1.45;color:var(--gate-muted,#9aa3b2);text-align:left}
 .gate__create b{color:inherit;font-weight:600}
+
+/* audit: easier-to-tap links and tick box on phones */
+.gate__subject-links a{display:inline-block;padding:10px 8px;min-height:40px;box-sizing:border-box}
+.gate__keep{min-height:40px;display:flex;align-items:center}
+.gate__linkbtn{display:inline-flex;align-items:center;min-height:40px}
+.contact-line a{display:inline-flex;align-items:center;min-height:40px}
+.foot__legal a,.pay__foot a{display:inline-block;padding:10px 4px;min-height:40px;box-sizing:border-box}
+.foot__support-btn{min-height:40px}
