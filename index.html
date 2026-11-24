@@ -131,6 +131,13 @@
                 <p id="gateRequestSent" class="gate__request-sent hidden">Request sent — you'll get an email once it's approved.</p>
             </div>
 
+
+            <!-- Paid sign-up: opens the pay screen (QR → "I've paid" → create login → manual approval) -->
+            <button type="button" id="payOpenBtn" class="gate__pay">
+                <span class="gate__pay-top">New here? Get lifetime access</span>
+                <span class="gate__pay-price"><s>&#8377;1499</s> &#8377;1199 &middot; one-time</span>
+            </button>
+
             <div class="gate__contact">
                 <span class="gate__contact-label">Trouble logging in?</span>
                 <div class="contact-line">
@@ -220,6 +227,7 @@
                 <svg class="am-mark am-mark--foot" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg>
                 Designed by AM
             </p>
+            <p class="foot__legal"><a href="terms.html">Terms</a> &middot; <a href="privacy.html">Privacy</a> &middot; <a href="refund.html">Refund policy</a></p>
             <div class="foot__contact">
                 <div class="contact-line">
                     <span>Questions or download issues?</span>
@@ -262,6 +270,72 @@
                 <span>Progress</span>
             </button>
         </nav>
+    </div>
+
+
+    <!-- ═══ PAID SIGN-UP (QR payment, manual approval) ═══ -->
+    <div id="payModal" class="pay hidden" role="dialog" aria-modal="true" aria-labelledby="payTitle">
+        <div class="pay__overlay" id="payOverlay"></div>
+        <div class="pay__panel">
+            <button type="button" class="pay__close" id="payClose" aria-label="Close">&times;</button>
+
+            <!-- Step 1: price + QR -->
+            <section id="payStep1">
+                <p class="pay__eyebrow">ISC &amp; CBSE Class 12</p>
+                <h2 class="pay__title" id="payTitle">Lifetime access</h2>
+                <p class="pay__price"><s>&#8377;1499</s> <b>&#8377;1199</b> <span>one-time &middot; launch offer</span></p>
+                <ul class="pay__list">
+                    <li>Complete notes, formula sheets and worked solutions</li>
+                    <li>All 34 physics &amp; chemistry practical labs, including exam mode</li>
+                    <li>Pay once &mdash; use it any day, no renewals</li>
+                </ul>
+                <h3 class="pay__h">1 &middot; Pay &#8377;1199 by UPI</h3>
+                <img class="pay__qr" src="pay/upi-qr.png" width="220" height="220" alt="UPI QR code for 1199 rupees. Scan with any UPI app.">
+                <a class="pay__btn pay__btn--ghost" id="payUpiLink" href="upi://pay?pa=7405806352@fam&amp;pn=Adnan%20Merchant&amp;am=1199.00&amp;cu=INR&amp;tn=ISC%20Portal%20Lifetime%20Access">Pay with my UPI app (phone)</a>
+                <p class="pay__vpa">UPI ID: <b id="payVpa">7405806352@fam</b> <button type="button" class="pay__copy" id="payCopyVpa">Copy</button></p>
+                <p class="pay__note">Pay exactly &#8377;1199. After paying, note the <b>transaction ID (UTR)</b> shown in your UPI app &mdash; you will enter it in the next step.</p>
+                <h3 class="pay__h">Need help or paying differently?</h3>
+                <p class="pay__contact">Call or WhatsApp <a href="tel:+917405806352">7405806352</a> &middot; <a href="https://wa.me/917405806352" target="_blank" rel="noopener">WhatsApp</a> &middot; <a href="mailto:merchantadnan052@gmail.com">Email</a></p>
+                <button type="button" class="pay__btn" id="payPaidBtn">I&rsquo;ve paid &mdash; continue</button>
+                <p class="pay__fine"><a href="terms.html" target="_blank" rel="noopener">Terms</a> &middot; <a href="privacy.html" target="_blank" rel="noopener">Privacy</a> &middot; <a href="refund.html" target="_blank" rel="noopener">Refund policy</a></p>
+            </section>
+
+            <!-- Step 2: details + login -->
+            <section id="payStep2" class="hidden">
+                <h2 class="pay__title">Create your login</h2>
+                <p class="pay__note">Your payment will be checked and approved by hand. Only this email and name get access.</p>
+                <form id="payForm" class="pay__form" autocomplete="on" novalidate>
+                    <label class="pay__label" for="payName">Full name <small>(this is what you will type to sign in)</small></label>
+                    <input id="payName" name="username" class="pay__input" type="text" autocomplete="username" autocapitalize="words" maxlength="60" placeholder="e.g. Riya Shah" required>
+                    <label class="pay__label" for="payEmail">Email <small>(we will tell you here once you are approved)</small></label>
+                    <input id="payEmail" name="email" class="pay__input" type="email" autocomplete="email" inputmode="email" maxlength="80" placeholder="name@gmail.com" required>
+                    <label class="pay__label" for="payPhone">Phone / WhatsApp <small>(optional)</small></label>
+                    <input id="payPhone" name="tel" class="pay__input" type="tel" autocomplete="tel" inputmode="tel" maxlength="16" placeholder="10-digit number">
+                    <label class="pay__label" for="payUtr">Transaction ID (UTR) <small>(recommended &mdash; approval is faster)</small></label>
+                    <input id="payUtr" name="utr" class="pay__input" type="text" autocomplete="off" autocapitalize="characters" maxlength="30" placeholder="12-digit UPI reference number">
+                    <label class="pay__label" for="payPw">Create a password <small>(4&ndash;32 characters, not easy to guess)</small></label>
+                    <input id="payPw" name="password" class="pay__input" type="password" autocomplete="new-password" maxlength="32" required>
+                    <label class="pay__label" for="payPw2">Repeat password</label>
+                    <input id="payPw2" name="password2" class="pay__input" type="password" autocomplete="new-password" maxlength="32" required>
+                    <input type="text" id="payWebsite" name="website" class="pay__trap" tabindex="-1" autocomplete="off" aria-hidden="true">
+                    <label class="pay__agree"><input type="checkbox" id="payAgree"> <span>I am 18 or older, or my parent/guardian has agreed. I accept the <a href="terms.html" target="_blank" rel="noopener">Terms</a>, <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a> and <a href="refund.html" target="_blank" rel="noopener">Refund Policy</a>.</span></label>
+                    <p id="payError" class="pay__error hidden" role="alert"></p>
+                    <button type="submit" class="pay__btn" id="paySubmit">Submit for approval</button>
+                    <button type="button" class="pay__link" id="payBack">&larr; Back to payment</button>
+                </form>
+            </section>
+
+            <!-- Step 3: done -->
+            <section id="payStep3" class="hidden">
+                <div class="pay__done-mark" aria-hidden="true">&#10003;</div>
+                <h2 class="pay__title">Under approval</h2>
+                <p class="pay__note pay__note--big">Your payment is being checked. You will be approved within <b>15 minutes</b> (usually sooner) and we will email you.</p>
+                <p class="pay__note">For <b>faster access</b>, send your transaction details (UTR or a screenshot of the payment) with your name on WhatsApp <b>7405806352</b>.</p>
+                <a class="pay__btn" id="payWaLink" href="https://wa.me/917405806352" target="_blank" rel="noopener">Send details on WhatsApp</a>
+                <p class="pay__note">After approval, open this site and sign in with your <b>name</b> and the <b>password you just created</b>.</p>
+                <button type="button" class="pay__link" id="payDone">Close</button>
+            </section>
+        </div>
     </div>
 
     <!-- ═══ SUPPORT / UPI MODAL ═══ -->

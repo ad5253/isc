@@ -700,7 +700,8 @@
           suspended: !!data.suspended,
           deviceBlocked: !!data.deviceBlocked,
           hasPassword: !!data.hasPassword,
-          needSurname: !!data.needSurname
+          needSurname: !!data.needSurname,
+          pending: !!data.pending
         };
         cachedLoginCheckName = norm;
         cachedLoginCheckAt = Date.now();
@@ -1241,6 +1242,7 @@
     });
 
     initAdminUI();
+    initPayModal();
 
     viewerClose.addEventListener("click", closeViewer);
     const viewerDoneBtn = document.getElementById("viewerDoneBtn");
@@ -1773,6 +1775,12 @@
         // in-form button below is now the actual way to request it —
         // WhatsApp/Email further down the page still work too, for
         // anyone who'd rather message directly.
+        // A paid sign-up that is waiting for approval gets its own message (no "not authorized" scare).
+        const lcP = (cachedLoginCheck && cachedLoginCheckName === normalizeName(name)) ? cachedLoginCheck : null;
+        if (lcP && lcP.pending) {
+          showGateError("Your payment is under approval \u2014 this usually takes up to 15 minutes. For faster access, WhatsApp your transaction details to 7405806352.");
+          return;
+        }
         showGateError("You're not authorized to view this page yet.");
         showGateApprovalOption(name, trace);
         return;
@@ -2544,6 +2552,96 @@
   // verification email, which this feature doesn't do — but it does
   // reliably reject things like "asdf@asdf", "a@b.c", or
   // "test@@test.com" instead of letting anything with an @ sign through.
+
+  // ── Paid sign-up: QR payment → "I've paid" → create login → manual approval ──
+  function initPayModal() {
+    const modal = $("#payModal");
+    const openBtn = $("#payOpenBtn");
+    if (!modal || !openBtn) return;
+    const s1 = $("#payStep1"), s2 = $("#payStep2"), s3 = $("#payStep3");
+    const form = $("#payForm"), err = $("#payError"), submit = $("#paySubmit");
+    const fName = $("#payName"), fEmail = $("#payEmail"), fPhone = $("#payPhone"), fUtr = $("#payUtr"), fPw = $("#payPw"), fPw2 = $("#payPw2"), fAgree = $("#payAgree"), fTrap = $("#payWebsite");
+    let opener = null, sending = false;
+
+    const step = (n) => {
+      s1.classList.toggle("hidden", n !== 1); s2.classList.toggle("hidden", n !== 2); s3.classList.toggle("hidden", n !== 3);
+      modal.querySelector(".pay__panel").scrollTop = 0; modal.scrollTop = 0;
+    };
+    const open = () => { opener = document.activeElement; step(1); err.classList.add("hidden"); modal.classList.remove("hidden"); document.body.style.overflow = "hidden"; try { $("#payClose").focus(); } catch {} };
+    const close = () => { modal.classList.add("hidden"); document.body.style.overflow = ""; try { if (opener && opener.focus) opener.focus(); } catch {} };
+    const showErr = (m) => { err.textContent = m; err.classList.remove("hidden"); };
+
+    openBtn.addEventListener("click", open);
+    $("#payClose").addEventListener("click", close);
+    $("#payOverlay").addEventListener("click", close);
+    $("#payDone").addEventListener("click", close);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.classList.contains("hidden")) close(); });
+    $("#payPaidBtn").addEventListener("click", () => { step(2); try { fName.focus(); } catch {} });
+    $("#payBack").addEventListener("click", () => step(1));
+    $("#payCopyVpa").addEventListener("click", async (e) => {
+      const b = e.currentTarget, v = $("#payVpa").textContent.trim();
+      try { await navigator.clipboard.writeText(v); b.textContent = "Copied"; } catch { b.textContent = v; }
+      setTimeout(() => { b.textContent = "Copy"; }, 1800);
+    });
+    // A direct link (…/isc/#join) opens this screen — handy for the reel, Instagram bio and WhatsApp.
+    try { if (/^#join$/i.test(location.hash)) setTimeout(open, 400); } catch {}
+
+    const MSG = {
+      agree: "Please tick the box to accept the Terms, Privacy and Refund policy.",
+      bad_name: "Please enter your full name (first name and surname, letters only).",
+      bad_email: "That email address doesn't look right.",
+      bad_phone: "The phone number should be 10 digits.",
+      bad_utr: "The transaction ID should be 6–30 letters/numbers with no spaces. You can also leave it blank and WhatsApp it.",
+      bad_pin: "Your password must be 4–32 characters.",
+      weak_pin: "That password is too easy to guess. Please choose something harder (not 1234, abcd, your name, etc.).",
+      already_member: "This name or email already has access. Close this screen and sign in with your name and password.",
+      name_clash: "A student with a very similar name already has access. Please WhatsApp 7405806352 and we'll sort it out quickly.",
+      busy: "The server is busy for a moment. Please press Submit again.",
+      limited: "Too many tries from this device. Please wait a few minutes, or WhatsApp 7405806352."
+    };
+    const done = (name, utr) => {
+      const text = "Hi, I paid Rs 1199 for ISC Portal lifetime access.\nName: " + name + "\nTransaction ID: " + (utr || "(attached screenshot)");
+      $("#payWaLink").href = "https://wa.me/917405806352?text=" + encodeURIComponent(text);
+      step(3);
+    };
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (sending) return;
+      err.classList.add("hidden");
+      const name = fName.value.replace(/\s+/g, " ").trim(), email = fEmail.value.trim(), phone = fPhone.value.trim(), utr = fUtr.value.replace(/\s+/g, "");
+      if (name.length < 3 || name.split(" ").length < 2 || /[^A-Za-zÀ-ɏ .'\-]/.test(name)) return showErr(MSG.bad_name);
+      if (!isValidEmail(email)) return showErr(MSG.bad_email);
+      if (phone && !/^\+?[0-9 \-]{10,16}$/.test(phone)) return showErr(MSG.bad_phone);
+      if (utr && !/^[A-Za-z0-9]{6,30}$/.test(utr)) return showErr(MSG.bad_utr);
+      if (fPw.value.length < 4 || fPw.value.length > 32) return showErr(MSG.bad_pin);
+      if (typeof c12WeakPassword === "function" && c12WeakPassword(fPw.value, name)) return showErr(MSG.weak_pin);
+      if (fPw.value !== fPw2.value) return showErr("The two passwords don't match.");
+      if (!fAgree.checked) return showErr(MSG.agree);
+      const endpoint = SITE_CONFIG.logging && SITE_CONFIG.logging.endpoint;
+      if (!endpoint || endpoint.indexOf("PASTE_YOUR") === 0) return showErr("Sign-up is not available right now. Please WhatsApp 7405806352.");
+      sending = true; submit.disabled = true; submit.textContent = "Submitting…";
+      let device = ""; try { device = await getDeviceId(); } catch {}
+      const payload = JSON.stringify({ type: "signup", name, email, phone: phone.replace(/[^0-9+]/g, ""), utr, password: fPw.value, agree: true, website: fTrap.value, device });
+      const send = async () => {
+        const c = new AbortController(), t = setTimeout(() => c.abort(), 20000);
+        try {
+          const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload, signal: c.signal });
+          return await r.json();
+        } finally { clearTimeout(t); }
+      };
+      let res = null;
+      try { res = await send(); } catch { try { res = await send(); } catch { res = null; } }
+      sending = false; submit.disabled = false; submit.textContent = "Submit for approval";
+      if (!res) return showErr("Couldn't reach the server. Check your internet and press Submit again — nothing is lost. If it keeps failing, WhatsApp 7405806352 with your transaction ID.");
+      if (res.ok) { fPw.value = ""; fPw2.value = ""; done(name, utr); return; }
+      // A retry after a lost reply: the first try had already been saved.
+      if (res.error === "already_pending") { fPw.value = ""; fPw2.value = ""; done(name, utr); return; }
+      showErr(res.limited ? MSG.limited : (MSG[res.error] || "Something went wrong. Please try again or WhatsApp 7405806352."));
+    });
+  }
+
+
   function isValidEmail(email) {
     const trimmed = email.trim();
     if (!trimmed || /\s/.test(trimmed) || trimmed.includes("..")) return false;
@@ -5960,6 +6058,7 @@
           <div class="adm-row__main">
             <div class="adm-row__title">${esc(q.name)}</div>
             <div class="adm-row__meta">
+              ${q.kind === "paid" ? `<span class="adm-tag adm-tag--good">PAID \u20B9${esc(String(q.amount || 1199))}</span>${q.utr ? `<span class="adm-tag adm-tag--brass">UTR ${esc(q.utr)}</span>` : '<span class="adm-tag adm-tag--bad">no UTR</span>'}${q.phone ? `<a class="adm-tag" href="https://wa.me/${esc(String(q.phone).replace(/[^0-9]/g, "").replace(/^(\d{10})$/, "91$1"))}" target="_blank" rel="noopener">${esc(q.phone)}</a>` : ""}` : ""}
               <span class="adm-tag ${q.email ? "" : "adm-tag--bad"}">${q.email ? esc(q.email) : "No email given"}</span>
               <span>${q.count} request${q.count === 1 ? "" : "s"}</span>
               <span>${whenHtml(q.lastAttempt)}</span>
@@ -6119,6 +6218,7 @@
           <div class="adm-person__name">${esc(p.name)}
             ${live ? '<span class="adm-tag adm-tag--good">online</span>' : ""}
             ${p.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : ""}
+            <span class="adm-tag ${p.plan === "paid" ? "adm-tag--good" : ""}">${p.plan === "paid" ? "paid" : "free"}</span>
             ${p.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(p.expiresAt).toLocaleDateString())}</span>` : ""}
           </div>
           ${aka}
