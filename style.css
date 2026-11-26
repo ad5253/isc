@@ -3720,3 +3720,33 @@ body.viewer-open .focus-pill { top: 64px; bottom: auto; right: 12px; left: auto;
 .contact-line a{display:inline-flex;align-items:center;min-height:40px}
 .foot__legal a,.pay__foot a{display:inline-block;padding:10px 4px;min-height:40px;box-sizing:border-box}
 .foot__support-btn{min-height:40px}
+
+
+/* ── Logo lock-up: AM mark with its name underneath ── */
+.am-lock { display:inline-flex; flex-direction:column; align-items:center; gap:5px; line-height:1; }
+.am-lock__t { font-family:var(--serif); font-weight:500; text-transform:uppercase; letter-spacing:.2em; color:var(--paper-dim); white-space:nowrap; }
+.am-lock .am-mark--nav { margin:0; }
+.am-lock--nav .am-lock__t { font-size:8.5px; font-style:normal; letter-spacing:.2em; }
+.am-lock--gate { margin-bottom:26px; gap:12px; align-items:flex-start; }
+.am-lock--gate .am-mark--gate { margin-bottom:0; }
+.am-lock--gate .am-lock__t { font-size:12px; letter-spacing:.34em; color:var(--brass); padding-left:2px; opacity:0; animation:fadeUp .9s var(--ease) .25s both; animation-play-state:paused; }
+html.fonts-ready .am-lock--gate .am-lock__t { animation-play-state:running; }
+.am-lock--pay { gap:4px; align-items:flex-start; }
+.am-lock--pay .am-lock__t { font-size:8.5px; letter-spacing:.22em; }
+@media (max-width:640px){ .am-lock--gate { margin-bottom:20px; } .am-lock--gate .am-lock__t { font-size:11px; letter-spacing:.3em; } }
+
+/* ── Promo code box (plan screen of the sign-up window) ── */
+.pay__promo { margin:14px 0 4px; }
+.pay__promo-row { display:flex; gap:8px; }
+.pay__promo-input { flex:1; min-width:0; text-transform:uppercase; letter-spacing:.08em; margin:0; }
+.pay__promo-apply { flex:none; border:1px solid var(--brass); background:transparent; color:var(--brass); font:600 14px var(--sans); border-radius:var(--r-pill); padding:0 18px; min-height:44px; cursor:pointer; }
+.pay__promo-apply:disabled { opacity:.5; cursor:default; }
+.pay__promo-hint { margin:8px 2px 0; font-size:12.5px; color:var(--paper-dim); }
+.pay__promo-chip { font:700 12.5px var(--sans); letter-spacing:.08em; color:var(--ink); background:var(--brass); border:0; border-radius:var(--r-pill); padding:3px 10px; cursor:pointer; }
+.pay__promo-msg { margin:8px 2px 0; font-size:13px; }
+.pay__promo-msg.is-ok { color:#7fd6a0; }
+.pay__promo-msg.is-bad { color:#ff9b8f; }
+.pay__promo-msg button { background:none; border:0; color:inherit; text-decoration:underline; cursor:pointer; font:inherit; padding:0 0 0 6px; }
+
+.am-mark--gate, .am-mark--nav { aspect-ratio: 276 / 177; }
+.am-lock--gate .am-mark--gate { height:auto; }

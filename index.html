@@ -10,7 +10,7 @@
     <script>try{if(sessionStorage.getItem("c12_name")||localStorage.getItem("c12_keep")){document.documentElement.classList.add("resuming");}}catch(e){}</script>
     <meta name="author" content="Adnan Merchant">
     <!-- Fix #20: the browser may only run code from this site and the PDF viewer library, and may only talk to this site's own servers. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; worker-src blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https://api.qrserver.com; font-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://class12-api-cache.merchantadnan052.workers.dev https://class12-pdf-gate.merchantadnan052.workers.dev https://class12-lab-gate.merchantadnan052.workers.dev https://class12-core.merchantadnan052.workers.dev https://api.ipify.org https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https://api.qrserver.com; font-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://class12-api-cache.merchantadnan052.workers.dev https://class12-pdf-gate.merchantadnan052.workers.dev https://class12-lab-gate.merchantadnan052.workers.dev https://class12-core.merchantadnan052.workers.dev https://api.ipify.org https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 
     <!-- Canonical + social preview. -->
     <link rel="canonical" href="https://ad5253.github.io/isc/">
@@ -28,12 +28,16 @@
     <meta name="twitter:image" content="https://ad5253.github.io/isc/og-image.png">
 
     <link rel="manifest" href="manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="ISC Class 12">
+    <meta name="application-name" content="ISC Class 12">
     <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
     <link rel="preconnect" href="https://class12-pdf-gate.merchantadnan052.workers.dev" crossorigin>
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=55">
+    <link rel="stylesheet" href="style.css?v=56">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -83,7 +87,7 @@
         <span class="gate__spine">ISC · Class XII · Study Index</span>
 
         <div class="gate__content">
-            <svg class="am-mark am-mark--gate" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg>
+            <div class="am-lock am-lock--gate"><svg class="am-mark am-mark--gate" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg><span class="am-lock__t">ISC Class 12 Portal</span></div>
             <p class="gate__eyebrow">Welcome to</p>
             <h1 class="gate__title">Class 12</h1>
             <div class="gate__divider"></div>
@@ -169,8 +173,7 @@
         <nav class="nav">
             <div class="nav__inner">
                 <button class="nav__logo" id="homeBtn">
-                    <svg class="am-mark am-mark--nav" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg>
-                    <span>Class 12</span>
+                    <span class="am-lock am-lock--nav"><svg class="am-mark am-mark--nav" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg><span class="am-lock__t">ISC Class 12 Portal</span></span>
                 </button>
                 <div class="nav__right">
                     <a class="nav__contact nav__contact--wa" href="https://wa.me/917405806352" target="_blank" rel="noopener" aria-label="Contact on WhatsApp" title="WhatsApp">
@@ -263,7 +266,7 @@
         <div class="pay__overlay" id="payOverlay"></div>
         <div class="pay__panel">
             <header class="pay__top">
-                <span class="pay__brand"><svg class="am-mark" width="26" height="17" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg> Class 12 Study Portal</span>
+                <span class="pay__brand am-lock am-lock--pay"><svg class="am-mark" width="26" height="17" aria-hidden="true"><use href="#am-mark" xlink:href="#am-mark"></use></svg><span class="am-lock__t">ISC Class 12 Portal</span></span>
                 <span class="pay__secure"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg> Secure sign-up</span>
                 <button type="button" class="pay__close" id="payClose" aria-label="Close">&times;</button>
             </header>
@@ -274,9 +277,17 @@
             <!-- 0 · plan -->
             <section id="payS0" class="pay__sec">
                 <div class="pay__plan">
-                    <div class="pay__plan-head"><h2 class="pay__plan-name">Lifetime access</h2><span class="pay__badge">Launch offer &middot; save 20%</span></div>
+                    <div class="pay__plan-head"><h2 class="pay__plan-name">Lifetime access</h2><span class="pay__badge">Launch offer &middot; save 33%</span></div>
                     <p class="pay__plan-sub">Everything you need for ISC &amp; CBSE Class 12, in one place.</p>
-                    <div class="pay__plan-price"><b>&#8377;1199</b><s>&#8377;1499</s><span>one-time payment</span></div>
+                    <div class="pay__plan-price"><b id="payPlanPrice">&#8377;999</b><s id="payPlanList">&#8377;1499</s><span>one-time payment</span></div>
+                    <div class="pay__promo">
+                        <form id="payPromoForm" class="pay__promo-row" autocomplete="off" novalidate>
+                            <input id="payPromoInput" class="pay__input pay__promo-input" type="text" name="promo" maxlength="20" placeholder="Promo code" autocapitalize="characters" autocorrect="off" spellcheck="false" aria-label="Promo code">
+                            <button type="submit" class="pay__promo-apply" id="payPromoApply">Apply</button>
+                        </form>
+                        <p class="pay__promo-hint" id="payPromoHint">Use code <button type="button" class="pay__promo-chip" id="payPromoChip">NEW200</button> to get &#8377;200 off</p>
+                        <p class="pay__promo-msg hidden" id="payPromoMsg" role="status"></p>
+                    </div>
                     <button type="button" class="pay__btn" id="payStart">Get lifetime access</button>
                     <p class="pay__plan-fine">No subscription &middot; No renewals &middot; Pay once, use it any day</p>
                     <hr class="pay__hr">
@@ -349,12 +360,12 @@
             <!-- 4 · payment -->
             <section id="payS4" class="pay__sec hidden">
                 <p class="pay__kicker">Step 4 of 4</p>
-                <h2 class="pay__h">Pay &#8377;1199</h2>
-                <p class="pay__lead">Scan the QR with any UPI app (Google Pay, PhonePe, Paytm, BHIM&hellip;). Pay exactly <b>&#8377;1199</b>.</p>
+                <h2 class="pay__h" id="payH">Pay &#8377;999</h2>
+                <p class="pay__lead">Scan the QR with any UPI app (Google Pay, PhonePe, Paytm, BHIM&hellip;). Pay exactly <b id="payLeadAmt">&#8377;999</b>.</p>
                 <div class="pay__qrcard">
-                    <img class="pay__qr" src="pay/upi-qr.png" width="220" height="220" alt="UPI QR code for 1199 rupees">
-                    <p class="pay__amount">&#8377;1199 <span>one-time &middot; lifetime access</span></p>
-                    <a class="pay__btn pay__btn--ghost" id="payUpiLink" href="upi://pay?pa=7405806352@fam&amp;pn=Adnan%20Merchant&amp;am=1199.00&amp;cu=INR&amp;tn=ISC%20Portal%20Lifetime%20Access">Open my UPI app (on phone)</a>
+                    <canvas class="pay__qr" id="payQr" width="220" height="220" role="img" aria-label="UPI QR code"></canvas>
+                    <p class="pay__amount"><span id="payAmtTxt" style="display:inline;font:inherit;color:inherit">&#8377;999</span> <span>one-time &middot; lifetime access</span></p>
+                    <a class="pay__btn pay__btn--ghost" id="payUpiLink" href="upi://pay?pa=7405806352@fam&amp;pn=Adnan%20Merchant&amp;am=999.00&amp;cu=INR&amp;tn=ISC%20Portal%20Lifetime%20Access">Open my UPI app (on phone)</a>
                     <p class="pay__vpa">UPI ID <b id="payVpa">7405806352@fam</b> <button type="button" class="pay__copy" id="payCopyVpa">Copy</button></p>
                 </div>
                 <form id="payF4" novalidate>
@@ -855,13 +866,8 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=8"></script>
-    <script defer src="script.js?v=65"></script>
-    <script>
-        // Online only: remove any offline copy a browser may have saved earlier.
-        if ("serviceWorker" in navigator) {
-            navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r) { r.unregister(); }); }).catch(function () {});
-            if (window.caches) caches.keys().then(function (ks) { ks.forEach(function (k) { if (k.indexOf("c12-") === 0) caches.delete(k); }); }).catch(function () {});
-        }
-    </script>
+    <script defer src="script.js?v=66"></script>
+    <script defer src="qr.js?v=1"></script>
+    <script defer src="install.js?v=1"></script>
 </body>
 </html>

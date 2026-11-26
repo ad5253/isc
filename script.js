@@ -2552,6 +2552,7 @@
       });
       const p = modal.querySelector(".pay__panel"); if (p) p.scrollTop = 0; modal.scrollTop = 0;
       const f = { 1: fEmail, 2: fCode, 3: fName }[n]; if (f) setTimeout(() => { try { f.focus(); } catch {} }, 60);
+      if (n === 4) renderPay();
     };
     const open = () => { opener = document.activeElement; go(0); modal.classList.remove("hidden"); document.body.style.overflow = "hidden"; };
     const close = () => { modal.classList.add("hidden"); document.body.style.overflow = ""; try { if (opener && opener.focus) opener.focus(); } catch {} };
@@ -2573,6 +2574,46 @@
     });
     try { if (/^#join$/i.test(location.hash)) setTimeout(open, 400); } catch {}
 
+    // ── Price + promo code. The server re-checks the code when the form is sent: it decides the real amount. ──
+    const PRICE = 999, LIST_PRICE = 1499;
+    let promo = null;                                   // { code, off, amount } once a valid code was applied
+    const amountNow = () => (promo ? promo.amount : PRICE);
+    const rupee = (n) => "\u20B9" + n;
+    const upiUrl = () => "upi://pay?pa=7405806352@fam&pn=Adnan%20Merchant&am=" + amountNow() + ".00&cu=INR&tn=ISC%20Portal%20Lifetime%20Access";
+    function renderPay() {
+      const a = amountNow();
+      $$("payPlanPrice").textContent = rupee(a);
+      $$("payPlanList").textContent = rupee(promo ? PRICE : LIST_PRICE);
+      $$("payH").textContent = "Pay " + rupee(a);
+      $$("payLeadAmt").textContent = rupee(a);
+      $$("payAmtTxt").textContent = rupee(a);
+      $$("payUpiLink").href = upiUrl();
+      const cv = $$("payQr"); if (cv && window.c12Qr) window.c12Qr.draw(cv, upiUrl());
+    }
+    const promoMsg = (text, kind, withRemove) => {
+      const m = $$("payPromoMsg"); m.className = "pay__promo-msg " + (kind || ""); m.textContent = text;
+      if (withRemove) { const b = document.createElement("button"); b.type = "button"; b.textContent = "Remove"; b.addEventListener("click", clearPromo); m.appendChild(b); }
+      m.classList.toggle("hidden", !text);
+    };
+    function clearPromo() { promo = null; $$("payPromoInput").value = ""; $$("payPromoHint").classList.remove("hidden"); promoMsg("", ""); renderPay(); }
+    async function applyPromo(code) {
+      code = String(code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!code) return promoMsg("Type your promo code first.", "is-bad");
+      const btn = $$("payPromoApply"); btn.disabled = true; promoMsg("Checking\u2026", "");
+      const res = await post({ type: "promoCheck", code });
+      btn.disabled = false;
+      if (res && res.ok && res.amount > 0) {
+        promo = { code: res.code, off: res.off, amount: res.amount };
+        $$("payPromoInput").value = res.code; $$("payPromoHint").classList.add("hidden");
+        promoMsg("Code " + res.code + " applied \u2014 " + rupee(res.off) + " off. You pay " + rupee(res.amount) + ".", "is-ok", true);
+        renderPay();
+      } else if (!res) promoMsg("Couldn't check the code. Check your internet and try again.", "is-bad");
+      else promoMsg(res.limited ? "Too many tries. Please wait a few minutes." : "That promo code isn't valid.", "is-bad");
+    }
+    $$("payPromoForm").addEventListener("submit", (e) => { e.preventDefault(); applyPromo($$("payPromoInput").value); });
+    $$("payPromoChip").addEventListener("click", () => { $$("payPromoInput").value = "NEW200"; applyPromo("NEW200"); });
+    renderPay();
+
     const MSG = {
       bad_email: "That email address doesn't look right.",
       already_member: "This email already has access. Close this screen and sign in with your name and password.",
@@ -2589,6 +2630,7 @@
       weak_pin: "That password is too easy to guess. Please choose something harder (not 1234, abcd, your name, etc.).",
       name_clash: "A student with a very similar name already has access. Please WhatsApp 7405806352 and we'll sort it out quickly.",
       busy: "The server is busy for a moment. Please try again.",
+      bad_promo: "That promo code is not valid any more. Please check the price and try again.",
       limited: "Too many tries from this device. Please wait a few minutes, or WhatsApp 7405806352."
     };
     // Sign-up codes are sent by the Cloudflare "class12-core" Worker (Brevo mail). If it is not set up or is
@@ -2680,15 +2722,16 @@
       const name = fName.value.replace(/\s+/g, " ").trim(), email = fEmail.value.trim(), phone = fPhone.value.replace(/[^0-9+]/g, ""), utr = fUtr.value.replace(/\s+/g, "");
       if (utr && !/^[A-Za-z0-9]{6,30}$/.test(utr)) return showErr(4, MSG.bad_utr);
       lock($$("payB4"), true, "Submitting…");
-      const res = await post({ type: "signup", name, email, phone, utr, password: fPw.value, agree: true, vtoken, website: fTrap.value });
+      const res = await post({ type: "signup", name, email, phone, utr, password: fPw.value, agree: true, vtoken, website: fTrap.value, promo: promo ? promo.code : "" });
       lock($$("payB4"), false);
       if (!res) return showErr(4, NET + " If it keeps failing, WhatsApp 7405806352 with your transaction ID.");
       if (res.ok || res.error === "already_pending") {
         fPw.value = ""; fPw2.value = "";
         $$("payDoneEmail").textContent = email;
-        $$("payWaLink").href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, I paid Rs 1199 for ISC Portal lifetime access.\nName: " + name + "\nEmail: " + email + "\nTransaction ID: " + (utr || "(attached screenshot)"));
+        $$("payWaLink").href = "https://wa.me/917405806352?text=" + encodeURIComponent("Hi, I paid Rs " + amountNow() + " for ISC Portal lifetime access.\nName: " + name + "\nEmail: " + email + "\nTransaction ID: " + (utr || "(attached screenshot)"));
         go(5); return;
       }
+      if (res.error === "bad_promo") { clearPromo(); go(0); return; }
       if (res.error === "email_unverified") { vtoken = ""; go(1); return showErr(1, MSG.email_unverified); }
       if (res.error === "bad_name" || res.error === "bad_pin" || res.error === "weak_pin" || res.error === "name_clash") { go(3); return showErr(3, why(res)); }
       showErr(4, why(res));
@@ -6112,7 +6155,7 @@
           <div class="adm-row__main">
             <div class="adm-row__title">${esc(q.name)}</div>
             <div class="adm-row__meta">
-              ${q.kind === "paid" ? `<span class="adm-tag adm-tag--good">PAID \u20B9${esc(String(q.amount || 1199))}</span>${q.utr ? `<span class="adm-tag adm-tag--brass">UTR ${esc(q.utr)}</span>` : '<span class="adm-tag adm-tag--bad">no UTR</span>'}${q.phone ? `<a class="adm-tag" href="https://wa.me/${esc(String(q.phone).replace(/[^0-9]/g, "").replace(/^(\d{10})$/, "91$1"))}" target="_blank" rel="noopener">${esc(q.phone)}</a>` : ""}` : ""}
+              ${q.kind === "paid" ? `<span class="adm-tag adm-tag--good">PAID \u20B9${esc(String(q.amount || 999))}</span>${q.promo ? `<span class="adm-tag adm-tag--brass">PROMO ${esc(q.promo)}</span>` : ""}${q.utr ? `<span class="adm-tag adm-tag--brass">UTR ${esc(q.utr)}</span>` : '<span class="adm-tag adm-tag--bad">no UTR</span>'}${q.phone ? `<a class="adm-tag" href="https://wa.me/${esc(String(q.phone).replace(/[^0-9]/g, "").replace(/^(\d{10})$/, "91$1"))}" target="_blank" rel="noopener">${esc(q.phone)}</a>` : ""}` : ""}
               <span class="adm-tag ${q.email ? "" : "adm-tag--bad"}">${q.email ? esc(q.email) : "No email given"}</span>
               <span>${q.count} request${q.count === 1 ? "" : "s"}</span>
               <span>${whenHtml(q.lastAttempt)}</span>
