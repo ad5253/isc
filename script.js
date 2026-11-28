@@ -975,6 +975,12 @@
     location.reload();
   }
 
+  // The home-screen app (installed from the browser): signing in there can be kept for months on the student's own phone.
+  function isInstalledApp() { try { return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true; } catch (e) { return false; } }
+  function setupKeepLabel() {
+    const l = document.querySelector(".gate__keep span"); if (!l) return;
+    if (isInstalledApp()) { l.textContent = "This is my own phone \u2014 keep me signed in"; try { if (localStorage.getItem("c12_keep") === null && gateKeep) gateKeep.checked = true; } catch (e) {} }
+  }
   // ── Init ───────────────────────────────────────────────
   async function init() {
     // Wake the Apps Script backend as soon as the page opens (cold start is a few seconds).
@@ -988,7 +994,7 @@
       // "Keep me signed in" ticked earlier on this device: pick the session back up.
       try {
         const k = JSON.parse(localStorage.getItem("c12_keep") || "null");
-        if (k && k.name && k.until > Date.now()) { saveSession(k.name, makeId()); saved = readSession(); }
+        if (k && k.name && k.until > Date.now()) { saveSession(k.name, makeId()); saved = readSession(); if (isInstalledApp()) { k.until = Date.now() + 180 * 86400000; localStorage.setItem("c12_keep", JSON.stringify(k)); } }
         else if (k) localStorage.removeItem("c12_keep");
       } catch (e) {}
     }
@@ -1068,6 +1074,7 @@
       if (ln && !nameInput.value) nameInput.value = ln;
       if (gateKeep && localStorage.getItem("c12_keep") !== null) gateKeep.checked = true;
     } catch (e) {}
+    setupKeepLabel();
     try { gatePasswordField.remove(); } catch (e) {}   // the old separate password box (unused since fix #1) confused the browser's password manager
     addEyeButton(gatePinInput);
     // Both boxes are always on screen. A remembered name goes straight to the password box.
@@ -1780,7 +1787,7 @@
       logEvent("login", name, "authorized", `${trace} || loginMs:${Math.round(performance.now() - loginT0)}`);
       // Stay signed in (only if ticked), and offer the browser's "save password" prompt.
       try {
-        if (gateKeep && gateKeep.checked) localStorage.setItem("c12_keep", JSON.stringify({ name, until: Date.now() + 12 * 3600 * 1000 }));
+        if (gateKeep && gateKeep.checked) localStorage.setItem("c12_keep", JSON.stringify({ name, until: Date.now() + (isInstalledApp() ? 180 * 86400000 : 12 * 3600 * 1000) }));
         else localStorage.removeItem("c12_keep");
       } catch (e) {}
       // Ask the browser to offer "Save password?" every time a sign-in works (Chrome/Google, Edge, Android).
@@ -5413,8 +5420,20 @@
 
   function subjectOfFile(detail, map) {
     if (String(detail || "").indexOf("Practical: ") === 0) return "Practicals";
-    const m = (map || getFileSubjectMap())[detail];
-    return m ? m.subject : "Other";
+    map = map || getFileSubjectMap();
+    let m = map[detail];
+    if (!m) {
+      const k = (x) => String(x || "").toLowerCase().replace(/\.[a-z0-9]{2,4}$/, "").replace(/[^a-z0-9]+/g, "");
+      if (!map.__n) { Object.defineProperty(map, "__n", { value: {}, enumerable: false }); Object.keys(map).forEach((n) => { map.__n[k(n)] = map[n]; }); }
+      m = map.__n[k(detail)];
+      if (!m) { const kd = k(detail); const hit = kd.length > 6 && Object.keys(map.__n).find((n) => n.length > 6 && (n.indexOf(kd) !== -1 || kd.indexOf(n) !== -1)); if (hit) m = map.__n[hit]; }
+    }
+    if (m) return m.subject;
+    const d = String(detail || "").toLowerCase();
+    if (/physic|optics|lens|mirror|current|magnet|electro|wave|semiconductor|ray|atom|nucle|ohm/.test(d)) return "Physics";
+    if (/chem|acid|organic|titrat|salt|solution|kinetic|electrochem|alcohol|amine|polymer|bio ?molecule|coordination|d-?block|p-?block/.test(d)) return "Chemistry";
+    if (/math|matri|determinant|integral|differential|vector|probab|calcul|linear|function|algebra|3d/.test(d)) return "Maths";
+    return "Other";
   }
 
   function getFileSubjectMap() {
@@ -5537,6 +5556,7 @@
     $$(".adm-tab", adminTabs).forEach((btn) => btn.classList.toggle("adm-tab--active", btn.dataset.tab === tabName));
     $$(".adm-panel").forEach((p) => p.classList.toggle("adm-panel--active", p.dataset.panel === tabName));
     if (tabName === "overview") renderChart();
+    if (tabName === "log") loadLogTab();
     if (tabName === "content") { refreshDigestUI(); refreshBackupUI(); refreshTidyUI(); }
     window.scrollTo(0, 0);
     adminApp.scrollTop = 0;
@@ -5671,33 +5691,56 @@
     const sum = (k) => list.reduce((a, t) => a + (t[k] || 0), 0);
     const top = list.filter((t) => t.tActive > 0).sort((a, b) => b.tActive - a.tActive).slice(0, 5);
     host.innerHTML = `
-      <div class="adm-row"><span class="adm-row__title">Site open (everyone, today)</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tOpen")))}</b></span></div>
-      <div class="adm-row"><span class="adm-row__title">Actually active</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tActive")))}</b></span></div>
-      <div class="adm-row"><span class="adm-row__title">Reading PDFs</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tRead")))}</b></span></div>
-      ${top.length ? `<div class="adm-row__meta" style="margin-top:10px">Most active today</div>${top.map((t) => `<div class="adm-row"><span class="adm-row__title">${esc(t.name)}</span><span class="adm-row__meta">active ${esc(fmtDur(t.tActive))} &middot; reading ${esc(fmtDur(t.tRead))}</span></div>`).join("")}` : emptyMsg("Nobody has been active today yet.")}`;
+      <div class="adm-row"><span class="adm-row__title">Active today (everyone)</span><span class="adm-row__meta"><b>${esc(fmtDur(sum("tActive")))}</b></span></div>
+      ${top.length ? `<div class="adm-row__meta" style="margin-top:10px">Most active today</div>${top.map((t) => `<div class="adm-row"><span class="adm-row__title">${esc(t.name)}</span><span class="adm-row__meta">active ${esc(fmtDur(t.tActive))}</span></div>`).join("")}` : emptyMsg("Nobody has been active today yet.")}`;
   }
-  function timeTable(o, a, r) {
-    return `<table class="adm-ttable"><thead><tr><th></th><th>Site open</th><th>Active</th><th>Reading</th></tr></thead><tbody>${[["Today", o.tOpen, o.tActive, o.tRead], ["Last 7 days", o.wOpen, o.wActive, o.wRead], ["All time", o.open, o.active, o.read]].map((x) => `<tr><th>${x[0]}</th><td>${esc(fmtDur(x[1]))}</td><td><b>${esc(fmtDur(x[2]))}</b></td><td>${esc(fmtDur(x[3]))}</td></tr>`).join("")}</tbody></table>`;
+  function clockT(ts) { return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+  function dayLabelOf(ts) { const d = new Date(ts); return sameDay(d, Date.now()) ? "Today" : sameDay(d, Date.now() - 86400000) ? "Yesterday" : d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" }); }
+  function prettyWhat(w) {
+    w = String(w || ""); const lab = /^Practical: /.test(w);
+    return { lab, text: lab ? w.replace(/^Practical: /, "") : w.replace(/\.pdf$/i, "") };
+  }
+  // One visit = one clean card: when they came, when they left, how long they were really active, and what they opened.
+  function visitHtml(v, showName) {
+    const left = v.live ? '<span class="adm-tag adm-tag--good">online now</span>' : esc(clockT(v.end));
+    const items = (v.items || []).map((i) => { const w = prettyWhat(i.what); return `<div class="adm-vi"><span class="adm-vi__t">${esc(clockT(i.t))}</span><span class="adm-vi__w">${w.lab ? '<span class="adm-vi__lab">Lab</span> ' : ""}${esc(w.text)}</span><span class="adm-vi__d">${i.sec ? esc(fmtDur(i.sec)) : ""}</span></div>`; }).join("");
+    return `<div class="adm-visit">
+      <div class="adm-visit__top">${showName ? `<b class="adm-visit__name">${esc(v.name)}</b>` : ""}<span>${esc(clockT(v.start))} \u2192 ${left}</span><span class="adm-visit__act">${esc(fmtDur(v.active))} active</span></div>
+      ${items || '<div class="adm-muted" style="padding:4px 0">Looked around, no file opened.</div>'}
+    </div>`;
+  }
+  function visitsHtml(list, showName) {
+    if (!list.length) return emptyMsg("No visits in this period.");
+    let out = "", last = "";
+    list.forEach((v) => { const dl = dayLabelOf(v.start); if (dl !== last) { out += `<div class="adm-day">${esc(dl)}</div>`; last = dl; } out += visitHtml(v, showName); });
+    return out;
   }
   async function fillPersonTimes(name, person) {
     const box = $id("admTimeBox"); if (!box) return;
-    const t = timeFor(person.name ? person : { name, aliases: [] }) || { open: 0, active: 0, read: 0, tOpen: 0, tActive: 0, tRead: 0, wOpen: 0, wActive: 0, wRead: 0, sessions: 0, logins: 0 };
-    const d = await adminFetch("personTimes", { name });
+    const [d, log] = await Promise.all([adminFetch("personTimes", { name }), adminFetch("activityLog", { name, days: 14, limit: 60 })]);
     if (!$id("admTimeBox")) return;
-    if (!d) { box.innerHTML = emptyMsg("Couldn't load time details."); return; }
-    const tot = d.totals || {};
-    const avg = tot.sessions ? tot.active / tot.sessions : 0;
-    const maxH = Math.max(1, ...(d.hours || [0]));
-    const hours = (d.hours || []).map((v, i) => `<span class="adm-hour" title="${i}:00 \u2014 ${esc(fmtDur(v))} active" style="height:${Math.max(3, Math.round(v / maxH * 100))}%"></span>`).join("");
-    box.innerHTML = `${timeTable(t)}
-      <div class="adm-facts" style="margin-top:10px">
-        <div class="adm-fact"><div class="adm-fact__num">${t.logins || 0}</div><div class="adm-fact__label">logins</div></div>
+    if (!d && !log) { box.innerHTML = emptyMsg("Couldn't load the visit log."); return; }
+    const tot = (d && d.totals) || {};
+    const maxH = Math.max(1, ...((d && d.hours) || [0]));
+    const hours = ((d && d.hours) || []).map((v, i) => `<span class="adm-hour" title="${i}:00 \u2014 ${esc(fmtDur(v))} active" style="height:${Math.max(3, Math.round(v / maxH * 100))}%"></span>`).join("");
+    const t = timeFor(person.name ? person : { name, aliases: [] }) || {};
+    box.innerHTML = `
+      <div class="adm-facts">
+        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtDur(tot.active))}</div><div class="adm-fact__label">active in total</div></div>
         <div class="adm-fact"><div class="adm-fact__num">${tot.sessions || 0}</div><div class="adm-fact__label">visits</div></div>
-        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtDur(avg))}</div><div class="adm-fact__label">active per visit</div></div>
+        <div class="adm-fact"><div class="adm-fact__num">${t.logins || 0}</div><div class="adm-fact__label">logins</div></div>
       </div>
-      <p class="adm-h">When they study (hour of day)</p><div class="adm-hours">${hours}</div><div class="adm-hours__ax"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span></div>
-      <p class="adm-h">Day by day</p>${(d.days || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${esc(x.day)}</span><span class="adm-row__meta">${x.visits} visit${x.visits === 1 ? "" : "s"} &middot; open ${esc(fmtDur(x.open))} &middot; active <b>${esc(fmtDur(x.active))}</b> &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("") || emptyMsg("No timed visits yet.")}
-      <p class="adm-h">Recent visits</p>${(d.recent || []).map((x) => `<div class="adm-row"><span class="adm-row__title">${x.start ? esc(new Date(x.start).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })) : ""}</span><span class="adm-row__meta">open ${esc(fmtDur(x.open))} &middot; active ${esc(fmtDur(x.active))} &middot; reading ${esc(fmtDur(x.read))}</span></div>`).join("")}`;
+      <p class="adm-h">When they study</p><div class="adm-hours">${hours}</div><div class="adm-hours__ax"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span></div>
+      <p class="adm-h">Visit log (last 14 days)</p>${visitsHtml((log && log.visits) || [], false)}`;
+  }
+  // ── Log tab: everyone's visits, newest first ──
+  const LOGS = { days: 1, name: "" };
+  async function loadLogTab() {
+    const host = $id("admLogList"); if (!host) return;
+    host.innerHTML = '<span class="adm-muted">Loading\u2026</span>';
+    const d = await adminFetch("activityLog", { days: LOGS.days, limit: 200, name: LOGS.name });
+    if (!d) { host.innerHTML = emptyMsg(adminErrText()); return; }
+    host.innerHTML = visitsHtml(d.visits || [], true);
   }
 
   async function loadDevtools() {
@@ -6320,7 +6363,7 @@
           </div>
           ${aka}
           <div class="adm-person__stats"><span>${esc(fmtMins(p.totalSessionSeconds))} on site</span><span>${p.sessionCount || 0} visit${p.sessionCount === 1 ? "" : "s"}</span><span>${p.filesTouched || 0}/${p.totalKnownFiles || 0} files</span></div>
-          ${(() => { const t = timeFor(p); return t ? `<div class="adm-person__stats adm-person__times"><span>open ${esc(fmtDur(t.open))}</span><span>active <b>${esc(fmtDur(t.active))}</b></span><span>reading ${esc(fmtDur(t.read))}</span><span>${t.logins} login${t.logins === 1 ? "" : "s"}</span></div>` : ""; })()}
+          ${(() => { const t = timeFor(p); return t ? `<div class="adm-person__stats adm-person__times"><span>active <b>${esc(fmtDur(t.active))}</b></span><span>${t.logins} login${t.logins === 1 ? "" : "s"}</span></div>` : ""; })()}
           <div class="adm-person__seen">Last seen ${whenHtml(p.lastSeen)}</div>
         </div>
         <input type="checkbox" class="adm-row__check adm-person__check" data-act="select" ${sel ? "checked" : ""} aria-label="Select ${esc(p.name)}">
@@ -6542,16 +6585,10 @@
         ${person.hasPin ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="resetpin">Reset password</button>` : ""}
         ${live ? `<button type="button" class="adm-btn adm-btn--ghost adm-btn--sm" data-dact="message">Message</button><button type="button" class="adm-btn adm-btn--danger-ghost adm-btn--sm" data-dact="logout">Log out</button>` : ""}
       </div>
-      <div class="adm-facts">
-        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalSessionSeconds))}</div><div class="adm-fact__label">on the site</div></div>
-        <div class="adm-fact"><div class="adm-fact__num">${esc(fmtMins(totals.totalViewSeconds))}</div><div class="adm-fact__label">inside PDFs</div></div>
-        <div class="adm-fact"><div class="adm-fact__num">${totals.sessionCount || 0}</div><div class="adm-fact__label">visits</div></div>
-      </div>
-      <p class="adm-h">Time (exact to the second)</p><div id="admTimeBox"><span class="adm-muted">Loading\u2026</span></div>
-      <p class="adm-h">Password</p><div id="admPwBox" class="adm-pw"><span class="adm-muted">Loading…</span></div>
+      <div id="admTimeBox"><span class="adm-muted">Loading\u2026</span></div>
       <p class="adm-h">Time by subject</p>${bars(subjectSeconds, subjectColor)}
       <p class="adm-h">Most-read files</p>${bars(fileSeconds, (k) => subjectColor(subjectOfFile(k, subjectMap)))}
-      <p class="adm-h">Recent activity</p>${timeline || emptyMsg("No activity yet.")}`;
+      <p class="adm-h">Password</p><div id="admPwBox" class="adm-pw"><span class="adm-muted">Loading…</span></div>`;
 
     loadPasswordBox(name, person);
     fillPersonTimes(name, person);
@@ -6938,6 +6975,9 @@
 
     // People
     $id("adminRosterSearch").addEventListener("input", renderPeople);
+    $id("admLogDays").addEventListener("change", (e) => { LOGS.days = Number(e.target.value) || 1; loadLogTab(); });
+    $id("admLogRefresh").addEventListener("click", loadLogTab);
+    { let lt; $id("admLogName").addEventListener("input", (e) => { clearTimeout(lt); lt = setTimeout(() => { LOGS.name = e.target.value.trim(); loadLogTab(); }, 500); }); }
     $id("admPeopleSort").addEventListener("change", (e) => { peopleUI.sort = e.target.value; renderPeople(); });
     $id("admPeopleFilters").addEventListener("click", (e) => {
       const c = e.target.closest("[data-filter]");

@@ -37,7 +37,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=57">
+    <link rel="stylesheet" href="style.css?v=58">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -516,6 +516,7 @@
                 <button type="button" class="adm-tab adm-tab--active" data-tab="overview">Overview</button>
                 <button type="button" class="adm-tab" data-tab="approvals">Approvals <span id="admApprovalBadge" class="adm-badge hidden">0</span></button>
                 <button type="button" class="adm-tab" data-tab="people">People</button>
+                <button type="button" class="adm-tab" data-tab="log">Log</button>
                 <button type="button" class="adm-tab" data-tab="security">Security <span id="admFlagBadge" class="adm-badge adm-badge--warn hidden">0</span></button>
                 <button type="button" class="adm-tab" data-tab="content">Content <span id="admRequestBadge" class="adm-badge hidden">0</span></button>
             </nav>
@@ -630,6 +631,18 @@
                         <h2 class="adm-card__title">Rejected</h2>
                     </div>
                     <div id="admRejectedList" class="adm-list"></div>
+                </div>
+            </section>
+
+            <!-- Log -->
+            <section class="adm-panel" data-panel="log">
+                <div class="adm-card">
+                    <div class="adm-bar">
+                        <select id="admLogDays" class="adm-select" aria-label="Period"><option value="1">Last 24 hours</option><option value="3">Last 3 days</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select>
+                        <input type="search" id="admLogName" class="adm-input adm-input--grow" placeholder="Only this person…" autocomplete="off">
+                        <button type="button" id="admLogRefresh" class="adm-btn adm-btn--ghost adm-btn--sm">Refresh</button>
+                    </div>
+                    <div id="admLogList" class="adm-visits"></div>
                 </div>
             </section>
 
@@ -866,8 +879,8 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=8"></script>
-    <script defer src="script.js?v=66"></script>
+    <script defer src="script.js?v=67"></script>
     <script defer src="qr.js?v=1"></script>
-    <script defer src="install.js?v=1"></script>
+    <script defer src="install.js?v=2"></script>
 </body>
 </html>

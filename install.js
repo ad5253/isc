@@ -9,7 +9,7 @@
   window.__c12Install = true;
 
   var KEY = "c12_install_v1", DAY = 86400000;
-  var DELAY = typeof window.C12_INSTALL_DELAY === "number" ? window.C12_INSTALL_DELAY : 20000;   // wait before the first ask
+  var DELAY = typeof window.C12_INSTALL_DELAY === "number" ? window.C12_INSTALL_DELAY : 8000;    // wait before the first ask
   function read() { try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { return {}; } }
   function write(o) { try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {} }
 
@@ -29,6 +29,7 @@
   var ua = navigator.userAgent || "";
   var isIOS = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   var iosSafari = isIOS && /safari/i.test(ua) && !/crios|fxios|edgios|opios|gsa\/|instagram|fban|fbav|line\//i.test(ua);
+  if (!(isIOS || /android|mobile/i.test(ua))) return;   // phones and tablets only: no pop-up on laptops
   var deferred = null, shown = false, t0 = Date.now(), poll = null;
 
   function snoozed() { var s = read(); return s.done || (s.until && Date.now() < s.until); }
@@ -41,8 +42,8 @@
   function hiddenEl(id) { var el = document.getElementById(id); return !el || el.classList.contains("hidden"); }
   function quiet() {
     if (document.hidden) return false;
-    if (!hiddenEl("gate") || !hiddenEl("payModal")) return false;            // login screen / payment window open
-    var a = document.activeElement; if (a && /^(input|textarea|select)$/i.test(a.tagName)) return false;   // typing
+    if (!hiddenEl("payModal")) return false;            // payment window open (the login screen is fine: that is where people arrive)
+    var a = document.activeElement; if (a && /^(input|textarea|select)$/i.test(a.tagName) && (a.value || "").length) return false;   // someone is typing
     if (document.documentElement.classList.contains("resuming")) return false;
     return true;
   }
@@ -63,12 +64,12 @@
     if (shown) return; shown = true; css();
     bar = document.createElement("div"); bar.id = "c12Install"; bar.setAttribute("role", "dialog"); bar.setAttribute("aria-label", "Install ISC Class 12");
     var html = "<img src='icon-192.png' alt=''><div class='t'>";
-    if (kind === "android") html += "<b>Install ISC Class 12</b><span class='s'>Opens like an app. Faster and full-screen.</span></div><button class='no' type='button'>Not now</button><button class='go' type='button'>Install</button>";
-    else if (kind === "ios") html += "<b>Add to Home Screen</b><span class='s'>Tap " + SHARE + " Share, then <b style='display:inline;font-size:13px'>Add to Home Screen</b>.</span></div><button class='go' type='button'>Got it</button>";
+    if (kind === "android") html += "<b>Install ISC Class 12</b><span class='s'>Opens like an app and keeps you signed in on your own phone.</span></div><button class='no' type='button'>Not now</button><button class='go' type='button'>Install</button>";
+    else if (kind === "ios") html += "<b>Get the app</b><span class='s'>Stay signed in on your phone. Tap " + SHARE + " Share, then <b style='display:inline;font-size:13px'>Add to Home Screen</b>.</span></div><button class='go' type='button'>Got it</button>";
     else html += "<b>Get the app</b><span class='s'>Open this page in <b style='display:inline;font-size:13px'>Safari</b>, tap " + SHARE + " Share, then Add to Home Screen.</span></div><button class='go' type='button'>Got it</button>";
     bar.innerHTML = html; document.body.appendChild(bar);
     var go = bar.querySelector(".go"), no = bar.querySelector(".no");
-    if (no) no.addEventListener("click", function () { snooze(14); hide(); });
+    if (no) no.addEventListener("click", function () { snooze(5); hide(); });
     go.addEventListener("click", function () {
       if (kind !== "android") { snooze(30); hide(); return; }
       var d = deferred; deferred = null; hide();
