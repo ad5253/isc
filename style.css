@@ -3750,3 +3750,14 @@ html.fonts-ready .am-lock--gate .am-lock__t { animation-play-state:running; }
 
 .am-mark--gate, .am-mark--nav { aspect-ratio: 276 / 177; }
 .am-lock--gate .am-mark--gate { height:auto; }
+
+
+/* ── New logo (images) ── */
+img.am-mark { display:inline-block; height:auto; object-fit:contain; }
+img.am-mark--nav { width:56px; height:auto; margin:0 8px 0 0; vertical-align:middle; aspect-ratio:auto; }
+img.am-mark--gate { display:block; width:clamp(170px,46vw,250px); height:auto; margin:0 0 22px; aspect-ratio:auto; }
+img.am-mark--paylogo { width:50px; height:auto; display:block; }
+img.am-mark--foot { width:16px; height:auto; margin-right:6px; vertical-align:-2px; opacity:.8; }
+img.am-mark--viewer { width:16px; height:auto; flex-shrink:0; }
+img.am-mark--credit { width:10px; height:auto; vertical-align:-1px; flex-shrink:0; }
+@media (max-width:640px){ img.am-mark--gate { width:clamp(150px,52vw,210px); margin-bottom:18px; } img.am-mark--viewer { width:16px; height:auto; } }

@@ -11,7 +11,7 @@ var OFFLINE_URL = "offline.html";
 
 self.addEventListener("install", function (e) {
   e.waitUntil(caches.open(STATIC).then(function (c) {
-    return Promise.all([OFFLINE_URL, "icon-192.png", "favicon.svg"].map(function (u) { return c.add(u).catch(function () {}); }));
+    return Promise.all([OFFLINE_URL, "icon-192.png", "favicon.svg","logo-mark.png"].map(function (u) { return c.add(u).catch(function () {}); }));
   }).then(function () { return self.skipWaiting(); }));
 });
 
