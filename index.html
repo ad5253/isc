@@ -37,7 +37,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=58">
+    <link rel="stylesheet" href="style.css?v=60">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -262,6 +262,10 @@
 
 
     <!-- ═══ PAID SIGN-UP: plan → email → code → account → payment → thank you ═══ -->
+    <div id="demoWrap" class="demo hidden" role="dialog" aria-modal="true" aria-label="Free lab preview">
+        <div class="demo__top"><b>Free lab preview</b><button type="button" id="demoClose" class="demo__close" aria-label="Close preview">&times;</button></div>
+        <iframe id="demoFrame" class="demo__frame" title="Free lab preview" src="about:blank" allow="fullscreen"></iframe>
+    </div>
     <div id="payModal" class="pay hidden" role="dialog" aria-modal="true" aria-label="Get lifetime access">
         <div class="pay__overlay" id="payOverlay"></div>
         <div class="pay__panel">
@@ -279,6 +283,14 @@
                 <div class="pay__plan">
                     <div class="pay__plan-head"><h2 class="pay__plan-name">Lifetime access</h2><span class="pay__badge">Launch offer &middot; save 33%</span></div>
                     <p class="pay__plan-sub">Everything you need for ISC &amp; CBSE Class 12, in one place.</p>
+                    <div class="pay__peek">
+                        <div class="pay__clips" aria-label="A look inside the labs">
+                            <video class="pay__clip" muted loop playsinline preload="none" poster="preview/clip1.jpg" data-src="preview/clip1.mp4" aria-label="Chemistry titration lab"></video>
+                            <video class="pay__clip" muted loop playsinline preload="none" poster="preview/clip2.jpg" data-src="preview/clip2.mp4" aria-label="Physics circuit lab"></video>
+                            <video class="pay__clip" muted loop playsinline preload="none" poster="preview/clip3.jpg" data-src="preview/clip3.mp4" aria-label="Physics optics lab"></video>
+                        </div>
+                        <button type="button" class="pay__try" id="payTry"><span class="pay__try-ic">&#9654;</span><span><b>Try a real lab free</b><small>15 seconds, no sign-up needed</small></span></button>
+                    </div>
                     <div class="pay__plan-price"><b id="payPlanPrice">&#8377;999</b><s id="payPlanList">&#8377;1499</s><span>one-time payment</span></div>
                     <div class="pay__promo">
                         <form id="payPromoForm" class="pay__promo-row" autocomplete="off" novalidate>
@@ -290,6 +302,7 @@
                     </div>
                     <button type="button" class="pay__btn" id="payStart">Get lifetime access</button>
                     <p class="pay__plan-fine">No subscription &middot; No renewals &middot; Pay once, use it any day</p>
+                    <div class="pay__notes hidden" id="payNotes"><hr class="pay__hr"><p class="pay__plan-h">A peek at the handwritten notes</p><div class="pay__notes-row" id="payNotesRow"></div></div>
                     <hr class="pay__hr">
                     <p class="pay__plan-h">What&rsquo;s included</p>
                     <ul class="pay__ticks">
@@ -527,8 +540,8 @@
 
             <!-- Overview -->
             <section class="adm-panel adm-panel--active" data-panel="overview">
-                <div class="adm-stats" id="admStats"></div>
-                <div class="adm-grid">
+<div class="adm-stats" id="admStats"></div>
+<div class="adm-grid">
                     <div class="adm-card">
                         <div class="adm-card__head">
                             <h2 class="adm-card__title">Needs your attention</h2>
@@ -543,60 +556,44 @@
                         <div id="admOnline" class="adm-list"></div>
                     </div>
                 </div>
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Last 14 days</h2>
                         <div class="adm-legend"><span class="adm-legend__dot adm-legend__dot--views"></span>Files opened<span class="adm-legend__dot adm-legend__dot--people"></span>People</div>
                     </div>
                     <div id="admChart" class="adm-chart"></div>
                 </div>
-                <div class="adm-card">
+<div class="adm-grid">
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Studying today</h2>
+                    </div>
+                    <div id="admTimeToday" class="adm-list"></div>
+                </div>
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Most read chapters</h2>
                         <button type="button" class="adm-link" data-goto="content">All files</button>
                     </div>
                     <div id="admTopChapters" class="adm-list"></div>
                 </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Time spent today</h2>
-                    </div>
-                    <div id="admTimeToday" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Login speed (last 7 days)</h2>
-                    </div>
-                    <div id="admLoginSpeed" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Practical labs: use and speed</h2>
-                    </div>
-                    <p class="adm-note">How often each lab is opened, how long people stay, and how smoothly it runs on their devices. A lab with many people leaving within 20 s or many "laggy" runs needs a look.</p>
-                    <div id="admLabStats" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Who needs a hand</h2>
-                        <span id="admStuckCount" class="adm-card__sub"></span>
-                    </div>
-                    <div id="admStuckList" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
+</div>
+<details class="adm-fold"><summary><b>More</b><span>Class revision progress and recent admin actions</span></summary>
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Class revision progress</h2>
                         <span id="admClassSummary" class="adm-card__sub"></span>
                     </div>
                     <div id="admClassProgress" class="adm-list"></div>
                 </div>
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Recent admin actions</h2>
                         <button type="button" class="adm-link" data-goto="security">See all</button>
                     </div>
                     <div id="admRecent" class="adm-list"></div>
                 </div>
+</details>
             </section>
 
             <!-- Approvals -->
@@ -642,7 +639,7 @@
                         <input type="search" id="admLogName" class="adm-input adm-input--grow" placeholder="Only this person…" autocomplete="off">
                         <button type="button" id="admLogRefresh" class="adm-btn adm-btn--ghost adm-btn--sm">Refresh</button>
                     </div>
-                    <div id="admLogList" class="adm-visits"></div>
+                    <div id="admVisitList" class="adm-visits"></div>
                 </div>
             </section>
 
@@ -681,28 +678,7 @@
 
             <!-- Security -->
             <section class="adm-panel" data-panel="security">
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Developer-tools attempts</h2>
-                    </div>
-                    <p class="adm-note">Opening the browser's developer tools signs the student out and records it. A second time suspends the account automatically.</p>
-                    <div id="admDevtools" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Accounts used on many devices</h2>
-                    </div>
-                    <p class="adm-note">One account can only be signed in on one device. If someone keeps switching, the password is probably being shared.</p>
-                    <div id="admShared" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Browser errors students hit</h2>
-                        <button type="button" id="admErrReload" class="adm-btn adm-btn--ghost adm-btn--sm">Reload</button>
-                    </div>
-                    <div id="admErrList" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Flagged activity</h2>
                         <select id="admFlagFilter" class="adm-select adm-select--sm" aria-label="Filter flags">
@@ -714,13 +690,20 @@
                     </div>
                     <div id="admFlagsList" class="adm-list"></div>
                 </div>
-                <div class="adm-card">
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Developer-tools attempts</h2>
+                    </div>
+                    <p class="adm-note">Opening the browser's developer tools signs the student out and records it. A second time suspends the account automatically.</p>
+                    <div id="admDevtools" class="adm-list"></div>
+                </div>
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Blocked devices</h2>
                     </div>
                     <div id="admDevicesList" class="adm-list"></div>
                 </div>
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Admin log</h2>
                     </div>
@@ -730,9 +713,45 @@
                     </div>
                     <div id="admLogList" class="adm-list"></div>
                 </div>
-                <div class="adm-card">
+<details class="adm-fold"><summary><b>Technical</b><span>Only when something seems wrong: slow logins, lab speed, shared accounts, browser errors, students who need help</span></summary>
+<div class="adm-card">
                     <div class="adm-card__head">
-                        <h2 class="adm-card__title">Housekeeping</h2>
+                        <h2 class="adm-card__title">Who needs a hand</h2>
+                        <span id="admStuckCount" class="adm-card__sub"></span>
+                    </div>
+                    <div id="admStuckList" class="adm-list"></div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Login speed (last 7 days)</h2>
+                    </div>
+                    <div id="admLoginSpeed" class="adm-list"></div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Practical labs: use and speed</h2>
+                    </div>
+                    <p class="adm-note">How often each lab is opened, how long people stay, and how smoothly it runs on their devices. A lab with many people leaving within 20 s or many "laggy" runs needs a look.</p>
+                    <div id="admLabStats" class="adm-list"></div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Accounts used on many devices</h2>
+                    </div>
+                    <p class="adm-note">One account can only be signed in on one device. If someone keeps switching, the password is probably being shared.</p>
+                    <div id="admShared" class="adm-list"></div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Browser errors students hit</h2>
+                        <button type="button" id="admErrReload" class="adm-btn adm-btn--ghost adm-btn--sm">Reload</button>
+                    </div>
+                    <div id="admErrList" class="adm-list"></div>
+                </div>
+</details>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Maintenance</h2>
                     </div>
                     <p class="adm-muted">The activity log grows with every visit and makes this page slower to load. Archiving moves old rows to a separate tab in your Google Sheet. Nothing is deleted.</p>
                     <div id="admLogSize" class="adm-muted"></div>
@@ -745,7 +764,7 @@
 
             <!-- Content -->
             <section class="adm-panel" data-panel="content">
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Announcement banner</h2>
                     </div>
@@ -767,68 +786,13 @@
                         <button type="button" id="admAnnClear" class="adm-btn adm-btn--ghost adm-btn--sm">Remove banner</button>
                     </div>
                 </div>
-                <div class="adm-card">
-                    <div class="adm-card__head"><h2 class="adm-card__title">Fast login (Cloudflare)</h2></div>
-                    <p class="adm-muted">Lets the Cloudflare Worker check a correct password in a split second. New and changed passwords are sent over automatically; press the button once after setting it up, and any time you want to repair it. Status: <b id="admAuthState">…</b></p>
-                    <div class="adm-bar">
-                        <button type="button" id="admAuthSync" class="adm-btn adm-btn--sm">Sync passwords now</button>
-                    </div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head"><h2 class="adm-card__title">Automatic tidy-up</h2></div>
-                    <p class="adm-muted">Every Monday at 3 am the site moves activity older than 90 days into the archive and clears old leftovers, so the admin page stays fast. Nothing in use is touched. Status: <b id="admTidyState">…</b></p>
-                    <div class="adm-bar">
-                        <button type="button" id="admTidyToggle" class="adm-btn adm-btn--sm">Turn on</button>
-                        <button type="button" id="admTidyNow" class="adm-btn adm-btn--ghost adm-btn--sm">Run it now</button>
-                    </div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head"><h2 class="adm-card__title">Weekly backup email</h2></div>
-                    <p class="adm-muted">Every Monday morning you get one zip with a copy of your people, passwords, catalog and progress sheets. If the Sheet is ever lost or damaged, you can rebuild from it. Status: <b id="admBackupState">…</b></p>
-                    <div class="adm-bar">
-                        <button type="button" id="admBackupToggle" class="adm-btn adm-btn--sm">Turn on</button>
-                        <button type="button" id="admBackupNow" class="adm-btn adm-btn--ghost adm-btn--sm">Send one now</button>
-                    </div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head"><h2 class="adm-card__title">Weekly summary email</h2></div>
-                    <p class="adm-muted">A short email to you every Sunday evening: who came, new students, most-read files, who has gone quiet. Status: <b id="admDigestState">…</b></p>
-                    <div class="adm-bar">
-                        <button type="button" id="admDigestToggle" class="adm-btn adm-btn--sm">Turn on</button>
-                        <button type="button" id="admDigestNow" class="adm-btn adm-btn--ghost adm-btn--sm">Send one now</button>
-                    </div>
-                </div>
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">File requests <span id="admRequestCount" class="adm-muted"></span></h2>
                     </div>
                     <div id="admRequestList" class="adm-list"></div>
                 </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Content library</h2>
-                    </div>
-                    <p class="adm-muted">Scan checks Backblaze for files that are not on the site yet and lets you review them. Sync makes the whole site match Backblaze exactly.</p>
-                    <div class="adm-bar">
-                        <button type="button" id="adminScanBtn" class="adm-btn adm-btn--sm">Scan for new files</button>
-                        <button type="button" id="adminSyncBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Sync all files from Backblaze</button>
-                    </div>
-                    <div id="adminScanProgress" class="adm-progress hidden">
-                        <div class="adm-progress__bar"><div class="adm-progress__fill"></div></div>
-                        <span id="adminScanTimer" class="adm-muted">Scanning… 0.0s</span>
-                    </div>
-                    <div id="adminScanResults"></div>
-                </div>
-                <div class="adm-card">
-                    <div class="adm-card__head">
-                        <h2 class="adm-card__title">Most opened files</h2>
-                    </div>
-                    <div class="adm-bar">
-                        <input type="search" id="admStatsSearch" class="adm-input adm-input--grow" placeholder="Search files…" autocomplete="off">
-                    </div>
-                    <div id="admStatsList" class="adm-list"></div>
-                </div>
-                <div class="adm-card">
+<div class="adm-card">
                     <div class="adm-card__head">
                         <h2 class="adm-card__title">Feedback <span id="admFeedbackAvg" class="adm-muted"></span></h2>
                     </div>
@@ -844,6 +808,63 @@
                     </div>
                     <div id="admFeedbackList" class="adm-list"></div>
                 </div>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Content library</h2>
+                    </div>
+                    <p class="adm-muted">Scan checks Backblaze for files that are not on the site yet and lets you review them. Sync makes the whole site match Backblaze exactly.</p>
+                    <div class="adm-bar">
+                        <button type="button" id="adminScanBtn" class="adm-btn adm-btn--sm">Scan for new files</button>
+                        <button type="button" id="adminSyncBtn" class="adm-btn adm-btn--ghost adm-btn--sm">Sync all files from Backblaze</button>
+                    </div>
+                    <div id="adminScanProgress" class="adm-progress hidden">
+                        <div class="adm-progress__bar"><div class="adm-progress__fill"></div></div>
+                        <span id="adminScanTimer" class="adm-muted">Scanning… 0.0s</span>
+                    </div>
+                    <div id="adminScanResults"></div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head">
+                        <h2 class="adm-card__title">Most opened files</h2>
+                    </div>
+                    <div class="adm-bar">
+                        <input type="search" id="admStatsSearch" class="adm-input adm-input--grow" placeholder="Search files…" autocomplete="off">
+                    </div>
+                    <div id="admStatsList" class="adm-list"></div>
+                </div>
+<details class="adm-fold"><summary><b>Settings</b><span>Set once, then forget: fast login, tidy-up, backup and summary emails</span></summary>
+<div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Fast login (Cloudflare)</h2></div>
+                    <p class="adm-muted">Lets the Cloudflare Worker check a correct password in a split second. New and changed passwords are sent over automatically; press the button once after setting it up, and any time you want to repair it. Status: <b id="admAuthState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admAuthSync" class="adm-btn adm-btn--sm">Sync passwords now</button>
+                    </div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Automatic tidy-up</h2></div>
+                    <p class="adm-muted">Every Monday at 3 am the site moves activity older than 90 days into the archive and clears old leftovers, so the admin page stays fast. Nothing in use is touched. Status: <b id="admTidyState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admTidyToggle" class="adm-btn adm-btn--sm">Turn on</button>
+                        <button type="button" id="admTidyNow" class="adm-btn adm-btn--ghost adm-btn--sm">Run it now</button>
+                    </div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Weekly backup email</h2></div>
+                    <p class="adm-muted">Every Monday morning you get one zip with a copy of your people, passwords, catalog and progress sheets. If the Sheet is ever lost or damaged, you can rebuild from it. Status: <b id="admBackupState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admBackupToggle" class="adm-btn adm-btn--sm">Turn on</button>
+                        <button type="button" id="admBackupNow" class="adm-btn adm-btn--ghost adm-btn--sm">Send one now</button>
+                    </div>
+                </div>
+<div class="adm-card">
+                    <div class="adm-card__head"><h2 class="adm-card__title">Weekly summary email</h2></div>
+                    <p class="adm-muted">A short email to you every Sunday evening: who came, new students, most-read files, who has gone quiet. Status: <b id="admDigestState">…</b></p>
+                    <div class="adm-bar">
+                        <button type="button" id="admDigestToggle" class="adm-btn adm-btn--sm">Turn on</button>
+                        <button type="button" id="admDigestNow" class="adm-btn adm-btn--ghost adm-btn--sm">Send one now</button>
+                    </div>
+                </div>
+</details>
             </section>
         </main>
 
@@ -879,7 +900,7 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=8"></script>
-    <script defer src="script.js?v=67"></script>
+    <script defer src="script.js?v=70"></script>
     <script defer src="qr.js?v=1"></script>
     <script defer src="install.js?v=2"></script>
 </body>

@@ -2561,8 +2561,50 @@
       const f = { 1: fEmail, 2: fCode, 3: fName }[n]; if (f) setTimeout(() => { try { f.focus(); } catch {} }, 60);
       if (n === 4) renderPay();
     };
-    const open = () => { opener = document.activeElement; go(0); modal.classList.remove("hidden"); document.body.style.overflow = "hidden"; };
-    const close = () => { modal.classList.add("hidden"); document.body.style.overflow = ""; try { if (opener && opener.focus) opener.focus(); } catch {} };
+    // ── Preview on the plan page: short clips, a 15-second try-out lab, and a peek at the notes ──
+    const demoWrap = $$("demoWrap"), demoFrame = $$("demoFrame");
+    const clips = () => Array.from(modal.querySelectorAll("video.pay__clip"));
+    let clipObs = null, notesTried = false;
+    const startPeek = () => {
+      const list = clips(); if (!list.length) return;
+      const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!clipObs && "IntersectionObserver" in window) {
+        clipObs = new IntersectionObserver((es) => es.forEach((en) => {
+          const v = en.target;
+          if (en.isIntersecting && !reduce && modal.classList.contains("pay--on")) { if (!v.src && v.dataset.src) v.src = v.dataset.src; const pr = v.play(); if (pr && pr.catch) pr.catch(() => {}); }
+          else { try { v.pause(); } catch {} }
+        }), { root: null, threshold: 0.5 });
+        list.forEach((v) => clipObs.observe(v));
+      }
+      if (!notesTried) { notesTried = true; loadNotes(); }
+    };
+    const stopPeek = () => { clips().forEach((v) => { try { v.pause(); } catch {} }); };
+    function loadNotes() {
+      const row = $$("payNotesRow"), box = $$("payNotes"); if (!row || !box) return;
+      let i = 1;
+      const next = () => {
+        if (i > 8) return;
+        const img = new Image(); const n = i++;
+        img.onload = () => { img.alt = "Handwritten notes preview " + n; img.draggable = false; img.className = "pay__note"; const f = document.createElement("div"); f.className = "pay__note-wrap"; f.appendChild(img); const l = document.createElement("span"); l.textContent = "Unlock to read the full page"; f.appendChild(l); row.appendChild(f); box.classList.remove("hidden"); next(); };
+        img.onerror = () => {};
+        img.src = "preview/notes-" + n + ".jpg";
+      };
+      next();
+    }
+    const openDemo = () => {
+      if (!demoWrap || !demoFrame) return;
+      demoFrame.src = "practicals/demo/index.html";
+      demoWrap.classList.remove("hidden");
+    };
+    const closeDemo = () => { if (!demoWrap) return; demoWrap.classList.add("hidden"); try { demoFrame.src = "about:blank"; } catch {} };
+    if ($$("payTry")) $$("payTry").addEventListener("click", openDemo);
+    if ($$("demoClose")) $$("demoClose").addEventListener("click", closeDemo);
+    window.addEventListener("message", (e) => {
+      if (e.origin !== location.origin || !e.data || !e.data.c12demo) return;
+      if (e.data.c12demo === "subscribe") { closeDemo(); go(1); }
+    });
+    const open = () => { opener = document.activeElement; go(0); modal.classList.remove("hidden"); modal.classList.add("pay--on"); document.body.style.overflow = "hidden"; startPeek(); };
+    const close = () => { closeDemo(); stopPeek(); modal.classList.remove("pay--on"); modal.classList.add("hidden"); document.body.style.overflow = ""; try { if (opener && opener.focus) opener.focus(); } catch {} };
 
     openBtn.addEventListener("click", open);
     $$("payClose").addEventListener("click", close);
@@ -2570,7 +2612,7 @@
     $$("payDone").addEventListener("click", close);
     $$("payStart").addEventListener("click", () => go(1));
     modal.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => { if (!busy) go(Number(b.dataset.go)); }));
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.classList.contains("hidden")) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.classList.contains("hidden")) { if (demoWrap && !demoWrap.classList.contains("hidden")) closeDemo(); else close(); } });
     $$("payEye").addEventListener("click", (e) => {
       const show = fPw.type === "password"; fPw.type = show ? "text" : "password"; fPw2.type = fPw.type; e.currentTarget.textContent = show ? "Hide" : "Show";
     });
@@ -4440,6 +4482,23 @@
         ctx.fillText(who ? (row % 3 === 0 ? `${who} · ${stamp}` : who) : label, x + off, y);
       }
     }
+    // Copyright line, tiled between the name rows (so a cropped screenshot still says it, and so does any AI that reads the picture).
+    const cr = "\u00a9 ISC Class 12 Portal \u00b7 All rights reserved";
+    ctx.globalAlpha = 0.12;
+    ctx.font = `${Math.round(canvas.width / 34)}px Archivo, sans-serif`;
+    row = 0;
+    for (let y = -canvas.height + stepY / 2; y < canvas.height; y += stepY, row++) {
+      const off = ((row + 1) % 2) * stepX * 0.5;
+      for (let x = -canvas.width; x < canvas.width; x += stepX) ctx.fillText(cr, x + off, y);
+    }
+    ctx.restore();
+    // A plain, readable notice at the foot of every page.
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = "#333";
+    ctx.textAlign = "center";
+    ctx.font = `${Math.max(9, Math.round(canvas.width / 52))}px Archivo, sans-serif`;
+    ctx.fillText("\u00a9 ISC Class 12 Portal \u00b7 All rights reserved \u00b7 Copying, sharing or uploading this page is prohibited" + (who ? " \u00b7 " + who : ""), canvas.width / 2, canvas.height - Math.max(8, canvas.width / 80));
     ctx.restore();
   }
 
@@ -5736,7 +5795,7 @@
   // ── Log tab: everyone's visits, newest first ──
   const LOGS = { days: 1, name: "" };
   async function loadLogTab() {
-    const host = $id("admLogList"); if (!host) return;
+    const host = $id("admVisitList"); if (!host) return;
     host.innerHTML = '<span class="adm-muted">Loading\u2026</span>';
     const d = await adminFetch("activityLog", { days: LOGS.days, limit: 200, name: LOGS.name });
     if (!d) { host.innerHTML = emptyMsg(adminErrText()); return; }
@@ -6362,7 +6421,7 @@
             ${p.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(p.expiresAt).toLocaleDateString())}</span>` : ""}
           </div>
           ${aka}
-          <div class="adm-person__stats"><span>${esc(fmtMins(p.totalSessionSeconds))} on site</span><span>${p.sessionCount || 0} visit${p.sessionCount === 1 ? "" : "s"}</span><span>${p.filesTouched || 0}/${p.totalKnownFiles || 0} files</span></div>
+          <div class="adm-person__stats"><span>${p.sessionCount || 0} visit${p.sessionCount === 1 ? "" : "s"}</span><span>${p.filesTouched || 0}/${p.totalKnownFiles || 0} files opened</span></div>
           ${(() => { const t = timeFor(p); return t ? `<div class="adm-person__stats adm-person__times"><span>active <b>${esc(fmtDur(t.active))}</b></span><span>${t.logins} login${t.logins === 1 ? "" : "s"}</span></div>` : ""; })()}
           <div class="adm-person__seen">Last seen ${whenHtml(p.lastSeen)}</div>
         </div>
@@ -6564,7 +6623,7 @@
       person.suspended ? '<span class="adm-tag adm-tag--bad">suspended</span>' : "",
       person.hasPin ? '<span class="adm-tag">password set</span>' : '<span class="adm-tag">no password yet</span>',
       person.expiresAt ? `<span class="adm-tag adm-tag--brass">expires ${esc(new Date(person.expiresAt).toLocaleDateString())}</span>` : "",
-      ...(person.aliases || []).map((a) => `<span class="adm-tag">also ${esc(a)}</span>`)
+      ...(person.aliases || []).map((a) => `<span class="adm-tag">same person as ${esc(a)}</span>`)
     ].join(" ");
 
     let timeline = "", lastDay = "";
