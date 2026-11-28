@@ -37,7 +37,7 @@
     <link rel="dns-prefetch" href="https://script.google.com">
     <link rel="preload" href="fonts/fraunces-italic.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="style.css?v=59">
+    <link rel="stylesheet" href="style.css?v=61">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -262,6 +262,10 @@
 
 
     <!-- ═══ PAID SIGN-UP: plan → email → code → account → payment → thank you ═══ -->
+    <div id="demoWrap" class="demo hidden" role="dialog" aria-modal="true" aria-label="Free lab preview">
+        <div class="demo__top"><b>Free lab preview</b><button type="button" id="demoClose" class="demo__close" aria-label="Close preview">&times;</button></div>
+        <iframe id="demoFrame" class="demo__frame" title="Free lab preview" src="about:blank" allow="fullscreen"></iframe>
+    </div>
     <div id="payModal" class="pay hidden" role="dialog" aria-modal="true" aria-label="Get lifetime access">
         <div class="pay__overlay" id="payOverlay"></div>
         <div class="pay__panel">
@@ -279,6 +283,14 @@
                 <div class="pay__plan">
                     <div class="pay__plan-head"><h2 class="pay__plan-name">Lifetime access</h2><span class="pay__badge">Launch offer &middot; save 33%</span></div>
                     <p class="pay__plan-sub">Everything you need for ISC &amp; CBSE Class 12, in one place.</p>
+                    <div class="pay__peek">
+                        <div class="pay__clips" aria-label="A look inside the labs">
+                            <video class="pay__clip" muted loop playsinline preload="none" poster="preview/clip1.jpg" data-src="preview/clip1.mp4" aria-label="Chemistry titration lab"></video>
+                            <video class="pay__clip" muted loop playsinline preload="none" poster="preview/clip2.jpg" data-src="preview/clip2.mp4" aria-label="Physics circuit lab"></video>
+                            <video class="pay__clip" muted loop playsinline preload="none" poster="preview/clip3.jpg" data-src="preview/clip3.mp4" aria-label="Physics optics lab"></video>
+                        </div>
+                        <button type="button" class="pay__try" id="payTry"><span class="pay__try-ic">&#9654;</span><span><b>Try a real lab free</b><small>15 seconds, no sign-up needed</small></span></button>
+                    </div>
                     <div class="pay__plan-price"><b id="payPlanPrice">&#8377;999</b><s id="payPlanList">&#8377;1499</s><span>one-time payment</span></div>
                     <div class="pay__promo">
                         <form id="payPromoForm" class="pay__promo-row" autocomplete="off" novalidate>
@@ -290,10 +302,11 @@
                     </div>
                     <button type="button" class="pay__btn" id="payStart">Get lifetime access</button>
                     <p class="pay__plan-fine">No subscription &middot; No renewals &middot; Pay once, use it any day</p>
+                    <div class="pay__notes hidden" id="payNotes"><hr class="pay__hr"><p class="pay__plan-h">A peek at the notes</p><p class="pay__notes-sub">Handwritten notes, typed notes, formula sheets and derivations &mdash; for every chapter.</p><div class="pay__notes-row" id="payNotesRow"></div></div>
                     <hr class="pay__hr">
                     <p class="pay__plan-h">What&rsquo;s included</p>
                     <ul class="pay__ticks">
-                        <li><svg class="tick" width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" opacity=".18"/><path d="M5.5 10.4l3 3 6-6.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>Complete chapter notes for Physics, Chemistry &amp; Maths</li>
+                        <li><svg class="tick" width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" opacity=".18"/><path d="M5.5 10.4l3 3 6-6.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>Handwritten and typed chapter notes for Physics, Chemistry &amp; Maths</li>
                         <li><svg class="tick" width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" opacity=".18"/><path d="M5.5 10.4l3 3 6-6.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>Formula sheets and worked solutions</li>
                         <li><svg class="tick" width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" opacity=".18"/><path d="M5.5 10.4l3 3 6-6.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>All physics &amp; chemistry practical labs, including exam mode</li>
                         <li><svg class="tick" width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" opacity=".18"/><path d="M5.5 10.4l3 3 6-6.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>Works on your phone and your laptop</li>
@@ -887,7 +900,7 @@
     <script defer src="config-extra.js?v=1"></script>
     <script defer src="daily.js?v=1"></script>
     <script defer src="guard.js?v=8"></script>
-    <script defer src="script.js?v=69"></script>
+    <script defer src="script.js?v=71"></script>
     <script defer src="qr.js?v=1"></script>
     <script defer src="install.js?v=2"></script>
 </body>
